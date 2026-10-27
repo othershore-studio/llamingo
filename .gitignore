@@ -1,0 +1,23 @@
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+vendor/
+
+# Wails / web build
+/build/bin/
+/frontend/dist/
+/frontend/node_modules/
+node_modules/
+
+# Local / editor / OS
+.env
+.env.*
+*.local
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
