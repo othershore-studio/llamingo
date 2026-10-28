@@ -13,7 +13,7 @@ to actually use — with real context management, chat history, MCP tools, image
 - **Context management** backed by llama.cpp's *native* API (true token metering, not a hidden window).
 - **Chat history & projects** as plain, portable files you own and can sync yourself.
 - **MCP** as a first-class citizen — the client runs the tool-call loop itself.
-- **Image generation** via MCP (e.g. a forge/ComfyUI MCP) or a native connection.
+- **Image generation** as a built-in tool (direct to forge/ComfyUI; an image-gen MCP optional).
 - **Desktop first**, with mobile and remote access as deliberate later phases.
 
 ## What it is *not*
@@ -29,9 +29,10 @@ to actually use — with real context management, chat history, MCP tools, image
 
 - **Go** core + CLI + optional gateway (single static binary, dockerable / `.service`-friendly).
 - **One shared web UI** across shells; desktop via **Wails** (all-Go) — or Tauri if a true native mobile app is later wanted.
-- Storage sync via a **bring-your-own backend** (local folder / WebDAV / SFTP / git) — no server required for the solo/LAN case.
+- **No sync engine in the client** — v1 is single-machine with plain files you can point your own sync tool at;
+  multi-device comes with the optional v2 gateway.
 
-See [`docs/architecture.md`](docs/architecture.md) and [`docs/roadmap.md`](docs/roadmap.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/roadmap.md`](docs/roadmap.md), and [`docs/ui.md`](docs/ui.md).
 
 ## The name
 
