@@ -39,7 +39,7 @@ Dependency-ordered; each is test-first (the suite starts at #1), and the CLI is 
    `ImageGen` seam.
 5. **The shell** — HTTP/SSE adapter + Wails desktop + the web UI (settles the UI framework).
 6. **Context niceties + polish** — memory (read + gated write), `AGENTS.md`, compaction UX, effort/thinking,
-   staleness cues.
+   staleness cues, and the memory-integrity hash (review-on-mismatch; the SQLite db's one non-rebuildable trust state).
 
 **Increment #1 slices**, each test-first:
 
