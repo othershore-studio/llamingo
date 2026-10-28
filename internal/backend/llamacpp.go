@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 )
 
@@ -27,8 +28,7 @@ type LlamaCppNative struct {
 // Option configures a LlamaCppNative.
 type Option func(*LlamaCppNative)
 
-// WithHTTPClient sets the HTTP client (tests inject the fake server's client;
-// defaults to http.DefaultClient).
+// WithHTTPClient sets the HTTP client (tests inject the fake server's client).
 func WithHTTPClient(c *http.Client) Option { return func(l *LlamaCppNative) { l.http = c } }
 
 // WithToken sets a bearer token for an auth-fronted reverse proxy.
@@ -69,9 +69,7 @@ func (l *LlamaCppNative) Props(ctx context.Context) (Props, error) {
 	return Props{NCtx: nctx, ModelID: raw.ModelPath, ChatTemplate: raw.ChatTemplate}, nil
 }
 
-// Tokenize returns the token count for a rendered string via /tokenize. The
-// token elements are read opaquely so both the integer and with-pieces shapes
-// count correctly.
+// Tokenize returns the token count for a rendered string via /tokenize.
 func (l *LlamaCppNative) Tokenize(ctx context.Context, text string) (int, error) {
 	var raw struct {
 		Tokens []json.RawMessage `json:"tokens"`
@@ -82,8 +80,7 @@ func (l *LlamaCppNative) Tokenize(ctx context.Context, text string) (int, error)
 	return len(raw.Tokens), nil
 }
 
-// ApplyTemplate renders messages through the model's chat template via
-// /apply-template and returns the prompt string.
+// ApplyTemplate renders messages through the model's chat template.
 func (l *LlamaCppNative) ApplyTemplate(ctx context.Context, msgs []Message) (string, error) {
 	var raw struct {
 		Prompt string `json:"prompt"`
@@ -94,13 +91,18 @@ func (l *LlamaCppNative) ApplyTemplate(ctx context.Context, msgs []Message) (str
 	return raw.Prompt, nil
 }
 
-// ChatStream streams a completion over /v1/chat/completions, requesting usage so
-// the terminal Delta carries the authoritative prompt-token count.
-func (l *LlamaCppNative) ChatStream(ctx context.Context, msgs []Message, fn func(Delta) error) error {
+// ChatStream streams a completion over /v1/chat/completions. Content and
+// reasoning stream as they arrive; streamed tool-call fragments are accumulated
+// by index and delivered, assembled, on the terminal (Done) delta along with
+// the authoritative usage.
+func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn func(Delta) error) error {
 	body := map[string]any{
-		"messages":       msgs,
+		"messages":       req.Messages,
 		"stream":         true,
 		"stream_options": map[string]any{"include_usage": true},
+	}
+	if len(req.Tools) > 0 {
+		body["tools"] = toolsWire(req.Tools)
 	}
 	resp, err := l.post(ctx, "/v1/chat/completions", body)
 	if err != nil {
@@ -108,30 +110,63 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, msgs []Message, fn func
 	}
 	defer resp.Body.Close()
 
-	sentDone := false
+	acc := map[int]*ToolCall{}
+	var order []int
+	var usage *Usage
+	emittedDone := false
+	emitDone := func() error {
+		if emittedDone {
+			return nil
+		}
+		emittedDone = true
+		d := Delta{Done: true, Usage: usage}
+		sort.Ints(order)
+		for _, idx := range order {
+			d.ToolCalls = append(d.ToolCalls, *acc[idx])
+		}
+		return fn(d)
+	}
+
 	br := bufio.NewReader(resp.Body)
 	for {
 		line, readErr := br.ReadString('\n')
 		if data, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "data:"); ok {
 			data = strings.TrimSpace(data)
 			if data == "[DONE]" {
-				if !sentDone {
-					if ferr := fn(Delta{Done: true}); ferr != nil {
-						return ferr
-					}
-					sentDone = true
+				if err := emitDone(); err != nil {
+					return err
 				}
 				break
 			}
-			d, perr := parseChatChunk(data)
+			cd, perr := parseChatChunk(data)
 			if perr != nil {
 				return fmt.Errorf("llama: parse stream chunk: %w", perr)
 			}
-			if d.Done {
-				sentDone = true
+			if cd.content != "" || cd.reasoning != "" {
+				if err := fn(Delta{Content: cd.content, Reasoning: cd.reasoning}); err != nil {
+					return err
+				}
 			}
-			if ferr := fn(d); ferr != nil {
-				return ferr
+			for _, f := range cd.toolFrags {
+				tc := acc[f.index]
+				if tc == nil {
+					tc = &ToolCall{Type: "function"}
+					acc[f.index] = tc
+					order = append(order, f.index)
+				}
+				if f.id != "" {
+					tc.ID = f.id
+				}
+				if f.name != "" {
+					tc.Function.Name = f.name
+				}
+				tc.Function.Arguments += f.args
+			}
+			if cd.usage != nil {
+				usage = cd.usage
+				if err := emitDone(); err != nil {
+					return err
+				}
 			}
 		}
 		if readErr == io.EOF {
@@ -141,19 +176,40 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, msgs []Message, fn func
 			return fmt.Errorf("llama: read stream: %w", readErr)
 		}
 	}
-	if !sentDone {
-		return fn(Delta{Done: true})
+	if !emittedDone {
+		return emitDone()
 	}
 	return nil
 }
 
-func parseChatChunk(data string) (Delta, error) {
+type chunkData struct {
+	content   string
+	reasoning string
+	toolFrags []toolFrag
+	usage     *Usage
+}
+
+type toolFrag struct {
+	index int
+	id    string
+	name  string
+	args  string
+}
+
+func parseChatChunk(data string) (chunkData, error) {
 	var chunk struct {
 		Choices []struct {
 			Delta struct {
-				Content          string          `json:"content"`
-				ReasoningContent string          `json:"reasoning_content"`
-				ToolCalls        json.RawMessage `json:"tool_calls"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				ToolCalls        []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
@@ -164,24 +220,42 @@ func parseChatChunk(data string) (Delta, error) {
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return Delta{}, err
+		return chunkData{}, err
 	}
-	var d Delta
+	var cd chunkData
 	if len(chunk.Choices) > 0 {
 		c := chunk.Choices[0]
-		d.Content = c.Delta.Content
-		d.Reasoning = c.Delta.ReasoningContent
-		d.HasToolCall = len(c.Delta.ToolCalls) > 0 && string(c.Delta.ToolCalls) != "null"
+		cd.content = c.Delta.Content
+		cd.reasoning = c.Delta.ReasoningContent
+		for _, tc := range c.Delta.ToolCalls {
+			cd.toolFrags = append(cd.toolFrags, toolFrag{
+				index: tc.Index,
+				id:    tc.ID,
+				name:  tc.Function.Name,
+				args:  tc.Function.Arguments,
+			})
+		}
 	}
 	if chunk.Usage != nil {
-		d.Usage = &Usage{
+		cd.usage = &Usage{
 			PromptTokens:     chunk.Usage.PromptTokens,
 			CompletionTokens: chunk.Usage.CompletionTokens,
 			TotalTokens:      chunk.Usage.TotalTokens,
 		}
-		d.Done = true
 	}
-	return d, nil
+	return cd, nil
+}
+
+func toolsWire(tools []ToolDef) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		fn := map[string]any{"name": t.Name, "description": t.Description}
+		if len(t.Parameters) > 0 {
+			fn["parameters"] = t.Parameters
+		}
+		out = append(out, map[string]any{"type": "function", "function": fn})
+	}
+	return out
 }
 
 func (l *LlamaCppNative) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {

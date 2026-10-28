@@ -4,9 +4,9 @@
 
 // Package lcpptest provides a deterministic, in-process fake of a llama.cpp
 // `llama-server`, so the engine path is tested GPU-free. /props and the
-// streamed completion are replayed fixtures; /tokenize and /apply-template are
-// computed deterministically so context-budget math is assertable. Nothing in
-// the engine path merges without a test through here.
+// streamed completion(s) are replayed fixtures; /tokenize and /apply-template
+// are computed deterministically so context-budget math is assertable. Nothing
+// in the engine path merges without a test through here.
 package lcpptest
 
 import (
@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 )
 
 //go:embed testdata/props.json
@@ -38,8 +39,19 @@ func ApproxTokens(s string) int {
 	return (n + 3) / 4
 }
 
-// NewServer starts a fake llama-server and returns it. The caller must Close it.
-func NewServer() *httptest.Server {
+// NewServer starts a fake llama-server whose chat endpoint always replies with
+// the default text completion.
+func NewServer() *httptest.Server { return NewServerScript(string(chatStreamSSE)) }
+
+// NewServerScript starts a fake llama-server whose /v1/chat/completions returns
+// the given SSE bodies on successive calls (the last one repeats). This lets a
+// test script a multi-round exchange — e.g. a tool call, then a final answer.
+func NewServerScript(chatTurns ...string) *httptest.Server {
+	if len(chatTurns) == 0 {
+		chatTurns = []string{string(chatStreamSSE)}
+	}
+	var calls int32
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/props", func(w http.ResponseWriter, r *http.Request) {
@@ -78,9 +90,13 @@ func NewServer() *httptest.Server {
 	})
 
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		i := int(atomic.AddInt32(&calls, 1)) - 1
+		if i >= len(chatTurns) {
+			i = len(chatTurns) - 1
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
-		w.Write(chatStreamSSE)
+		w.Write([]byte(chatTurns[i]))
 	})
 
 	return httptest.NewServer(mux)

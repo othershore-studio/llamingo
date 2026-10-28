@@ -54,7 +54,7 @@ func TestSmoke_LiveServer(t *testing.T) {
 	}
 
 	var reply strings.Builder
-	err = be.ChatStream(ctx, bld.Messages(segments), func(d backend.Delta) error {
+	err = be.ChatStream(ctx, backend.ChatRequest{Messages: bld.Messages(segments)}, func(d backend.Delta) error {
 		reply.WriteString(d.Content)
 		if d.Usage != nil {
 			bud.Authoritative = d.Usage.PromptTokens
