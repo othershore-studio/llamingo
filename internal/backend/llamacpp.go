@@ -116,13 +116,14 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn fun
 	acc := map[int]*ToolCall{}
 	var order []int
 	var usage *Usage
+	var timings *Timings
 	emittedDone := false
 	emitDone := func() error {
 		if emittedDone {
 			return nil
 		}
 		emittedDone = true
-		d := Delta{Done: true, Usage: usage}
+		d := Delta{Done: true, Usage: usage, Timings: timings}
 		sort.Ints(order)
 		for _, idx := range order {
 			d.ToolCalls = append(d.ToolCalls, *acc[idx])
@@ -165,6 +166,9 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn fun
 				}
 				tc.Function.Arguments += f.args
 			}
+			if cd.timings != nil {
+				timings = cd.timings
+			}
 			if cd.usage != nil {
 				usage = cd.usage
 				if err := emitDone(); err != nil {
@@ -190,6 +194,7 @@ type chunkData struct {
 	reasoning string
 	toolFrags []toolFrag
 	usage     *Usage
+	timings   *Timings
 }
 
 type toolFrag struct {
@@ -221,6 +226,12 @@ func parseChatChunk(data string) (chunkData, error) {
 			CompletionTokens int `json:"completion_tokens"`
 			TotalTokens      int `json:"total_tokens"`
 		} `json:"usage"`
+		Timings *struct {
+			PromptN            int     `json:"prompt_n"`
+			PromptPerSecond    float64 `json:"prompt_per_second"`
+			PredictedN         int     `json:"predicted_n"`
+			PredictedPerSecond float64 `json:"predicted_per_second"`
+		} `json:"timings"`
 	}
 	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 		return chunkData{}, err
@@ -244,6 +255,14 @@ func parseChatChunk(data string) (chunkData, error) {
 			PromptTokens:     chunk.Usage.PromptTokens,
 			CompletionTokens: chunk.Usage.CompletionTokens,
 			TotalTokens:      chunk.Usage.TotalTokens,
+		}
+	}
+	if chunk.Timings != nil {
+		cd.timings = &Timings{
+			PromptN:          chunk.Timings.PromptN,
+			PromptPerSecond:  chunk.Timings.PromptPerSecond,
+			PredictN:         chunk.Timings.PredictedN,
+			PredictPerSecond: chunk.Timings.PredictedPerSecond,
 		}
 	}
 	return cd, nil

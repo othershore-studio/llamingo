@@ -485,6 +485,25 @@ func TestAutoCompact(t *testing.T) {
 	}
 }
 
+// The done event carries the generation speed (llama.cpp timings → tok/s).
+func TestChatStreamReportsSpeed(t *testing.T) {
+	api := newAPI(t)
+	id := createChat(t, api, "Speed")
+	resp, err := http.Post(api.URL+"/api/chat/stream", "application/json",
+		strings.NewReader(`{"id":"`+id+`","content":"Hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	if body := buf.String(); !strings.Contains(body, "predictPerSecond") {
+		t.Errorf("done event missing tok/s timings:\n%s", body)
+	}
+}
+
 // A turn against an unknown conversation id is rejected before streaming.
 func TestChatStreamUnknownConversation(t *testing.T) {
 	api := newAPI(t)

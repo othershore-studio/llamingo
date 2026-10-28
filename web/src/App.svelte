@@ -18,6 +18,7 @@
   let input = $state('')
   let streaming = $state(false)
   let budget = $state(null) // { used, nCtx, level }
+  let speed = $state(null) // last turn's tokens/sec: { promptPerSecond, predictPerSecond, predictN }
   let error = $state(null)
   let activeSummary = $state(null) // the active compaction summary, if any
   let report = $state(null) // transient compaction report
@@ -91,7 +92,7 @@
       if (e.kind === 'reasoning') {
         trace = e.content
       } else if (e.kind === 'msg') {
-        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '' })
+        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', time: e.time })
         trace = ''
       }
     }
@@ -217,8 +218,9 @@
     if (!text || streaming) return
     if (!activeId) await newChat()
     input = ''
-    messages.push({ role: 'user', content: text })
-    messages.push({ role: 'assistant', content: '', reasoning: '', tools: [] })
+    const now = new Date().toISOString()
+    messages.push({ role: 'user', content: text, time: now })
+    messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], time: now })
     streaming = true
     try {
       // The client sends only the new turn; the core persists both sides.
@@ -276,9 +278,20 @@
       pending = payload
     } else if (event === 'done') {
       budget = payload.budget
+      speed = payload.timings ?? null
       reachable = true
     } else if (event === 'error') {
       error = payload.error
+    }
+  }
+
+  // ISO-ish local timestamp ("2026-10-28 15:42") — numeric, not "Wednesday".
+  function fmtTime(ts) {
+    if (!ts) return ''
+    try {
+      return new Date(ts).toLocaleString('sv-SE').slice(0, 16)
+    } catch {
+      return ''
     }
   }
 
@@ -396,6 +409,9 @@
               <div class="msg assistant">…</div>
             {/if}
           {/if}
+          {#if m.time && (m.role === 'user' || m.content !== '')}
+            <div class="meta" class:mine={m.role === 'user'}>{fmtTime(m.time)}</div>
+          {/if}
         {:else}
           <p class="empty muted">Ask something to get started.</p>
         {/each}
@@ -442,6 +458,7 @@
     {/if}
     <span class="spacer"></span>
     {#if report}<span class="report">{report}</span>{/if}
+    {#if speed}<span title="generation tokens per second">{Math.round(speed.predictPerSecond)} tok/s</span>{/if}
     {#if budget}
       <span>context {budget.used} / {budget.nCtx}</span>
       <span class="bar {budget.level}"><span class="fill" style="width:{pct}%"></span></span>
@@ -648,6 +665,15 @@
   }
   .report {
     color: var(--muted);
+  }
+  .meta {
+    font-size: 11px;
+    color: var(--muted);
+    opacity: 0.7;
+    margin: -8px 2px 10px;
+  }
+  .meta.mine {
+    text-align: right;
   }
   .statusbtn {
     border: 0.5px solid var(--border);
