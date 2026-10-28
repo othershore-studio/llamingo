@@ -81,6 +81,11 @@ type Delta struct {
 type ChatRequest struct {
 	Messages []Message
 	Tools    []ToolDef
+	// TemplateKwargs are extra variables passed to the model's chat template
+	// (llama.cpp's `chat_template_kwargs`), e.g. {"enable_thinking": false} to
+	// turn a model's thinking on or off per request. Omitted from the wire when
+	// empty, so the server's own default applies.
+	TemplateKwargs map[string]any
 }
 
 // Backend is the one boundary to the engine. LlamaCppNative is the only

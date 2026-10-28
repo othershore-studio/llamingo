@@ -173,8 +173,9 @@ func TestProps(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	var p struct {
-		Model string `json:"model"`
-		NCtx  int    `json:"nCtx"`
+		Model             string `json:"model"`
+		NCtx              int    `json:"nCtx"`
+		ThinkingSupported bool   `json:"thinkingSupported"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
 		t.Fatal(err)
@@ -184,6 +185,9 @@ func TestProps(t *testing.T) {
 	}
 	if !strings.Contains(p.Model, "gemma") {
 		t.Errorf("model = %q", p.Model)
+	}
+	if !p.ThinkingSupported {
+		t.Error("thinkingSupported = false, want true (the fixture template has enable_thinking)")
 	}
 }
 

@@ -364,6 +364,14 @@ to), shown when a chat is reopened. It is kept **out of the prompt** — `store.
 summaries — so storing the thinking costs no context budget and does not change when auto-compaction fires; the only
 cost is a larger log file on disk. Always-on for now; an opt-out is a later nicety.
 
+**Thinking control** — the user can turn a model's thinking on or off **per turn**. llaminGO offers the toggle
+only when the model's chat template exposes `enable_thinking` (a template-string check on the `/props`
+`chat_template`; a render-diff probe against `/apply-template` is a stronger upgrade), and drives it with
+llama.cpp's `chat_template_kwargs` — a **server extension the OpenAI standard does not define**, so a generic
+client (OpenWebUI) can't send it and is reduced to a system-prompt `<|think|>` hack that can't be turned off per
+request. Omitted when unset, so the server's own default stands. This is a concrete instance of *why* llaminGO is
+llama.cpp-native rather than "any OpenAI backend".
+
 ## Testing
 
 Two kinds, split by infrastructure (the real test suite starts at increment #1):
@@ -408,3 +416,4 @@ Two kinds, split by infrastructure (the real test suite starts at increment #1):
 - 2026-10-27: Memory integrity settled — a hash of each `memory.md` in the local SQLite (the db's one non-rebuildable trust-state), review-on-mismatch (never a block), with a keystore-keyed HMAC as the hardening path; conversation hashing ruled out (churn + wrong vector). An increment-#6 feature.
 - 2026-10-28: Agentic capstone — the client-owned tool loop (`mcp.Run`) wired into the chat stream, with the **permission handshake** over SSE (a `permission` event + out-of-band `POST /api/permission/{id}`, correlated by an in-process broker; per-conversation gates). `write_memory` lands as the **second native tool** (gated, medium-risk) and the proving customer; image gen + MCP servers join the same `mcp.Combine` registry. Tool-call turns stream live but only the final answer persists (faithful tool-trail persistence deferred to a log-schema change).
 - 2026-10-28: Reasoning trace persisted — the model's thinking is stored as a display-only `reasoning` log entry before each answer (its own HTML-comment marker), shown on reload. `store.Project` keeps it out of the prompt, so it costs no budget and leaves compaction unchanged; the only cost is a bigger log. Always-on (an opt-out toggle is a later nicety).
+- 2026-10-28: Thinking toggle — a per-turn thinking control wired to llama.cpp's `chat_template_kwargs.enable_thinking` (a field on `ChatRequest`, threaded through `mcp.Run`), offered in the UI only when the model's template exposes `enable_thinking` (detected from the `/props` `chat_template`). Honest, per-request control the OpenAI-standard surface can't express; omitted when unset so the server default stands. The render-diff probe against `/apply-template` is the noted v2 upgrade.

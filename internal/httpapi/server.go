@@ -76,7 +76,15 @@ func (s *Server) handleProps(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, map[string]any{"model": p.ModelID, "nCtx": p.NCtx})
+	writeJSON(w, map[string]any{"model": p.ModelID, "nCtx": p.NCtx, "thinkingSupported": thinkingSupported(p.ChatTemplate)})
+}
+
+// thinkingSupported reports whether the model's chat template exposes an
+// enable_thinking variable — i.e. whether a per-request thinking toggle actually
+// does anything. A template-string check (data /props already returns); a
+// render-diff probe against /apply-template is a stronger v2 upgrade.
+func thinkingSupported(chatTemplate string) bool {
+	return strings.Contains(chatTemplate, "enable_thinking")
 }
 
 // GET /api/chats — the free chats, newest first.
@@ -198,8 +206,9 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 // see store.AppendAssistant and store.Project.
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ID      string `json:"id"`
-		Content string `json:"content"`
+		ID       string `json:"id"`
+		Content  string `json:"content"`
+		Thinking *bool  `json:"thinking"` // nil → leave the server default; set → chat_template_kwargs.enable_thinking
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -257,6 +266,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	ctx := withEmitter(r.Context(), emit)
 	reg := s.registryFor(body.ID)
 
+	// The thinking toggle maps to the model's chat template: when the client sets
+	// it, pass enable_thinking so the user controls reasoning per turn rather than
+	// inheriting the server default. Omitted when unset.
+	var kwargs map[string]any
+	if body.Thinking != nil {
+		kwargs = map[string]any{"enable_thinking": *body.Thinking}
+	}
+
 	var think strings.Builder
 	out, runErr := mcp.Run(ctx, s.be, reg, bld.Messages(segs), func(d backend.Delta) error {
 		if d.Reasoning != "" {
@@ -275,7 +292,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			bud.Authoritative = d.Usage.PromptTokens
 		}
 		return nil
-	}, maxToolRounds)
+	}, maxToolRounds, kwargs)
 	if runErr != nil {
 		emit("error", map[string]any{"error": runErr.Error()})
 		return

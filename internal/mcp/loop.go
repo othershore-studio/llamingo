@@ -32,7 +32,9 @@ type Registry interface {
 // and repeats until the model answers without calling tools (or maxRounds is
 // reached). It returns the full message list, including the assistant and tool
 // turns. onDelta, if non-nil, receives streamed deltas for live display.
-func Run(ctx context.Context, be backend.Backend, reg Registry, msgs []backend.Message, onDelta func(backend.Delta) error, maxRounds int) ([]backend.Message, error) {
+// templateKwargs, when non-nil, pass per-request variables to the model's chat
+// template on every round (e.g. {"enable_thinking": false}).
+func Run(ctx context.Context, be backend.Backend, reg Registry, msgs []backend.Message, onDelta func(backend.Delta) error, maxRounds int, templateKwargs map[string]any) ([]backend.Message, error) {
 	if maxRounds <= 0 {
 		maxRounds = 8
 	}
@@ -40,7 +42,7 @@ func Run(ctx context.Context, be backend.Backend, reg Registry, msgs []backend.M
 		var content strings.Builder
 		var toolCalls []backend.ToolCall
 
-		err := be.ChatStream(ctx, backend.ChatRequest{Messages: msgs, Tools: reg.Tools()}, func(d backend.Delta) error {
+		err := be.ChatStream(ctx, backend.ChatRequest{Messages: msgs, Tools: reg.Tools(), TemplateKwargs: templateKwargs}, func(d backend.Delta) error {
 			if d.Content != "" {
 				content.WriteString(d.Content)
 			}
