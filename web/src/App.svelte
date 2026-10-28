@@ -1,5 +1,10 @@
 <script>
   import { onMount } from 'svelte'
+  import MarkdownIt from 'markdown-it'
+
+  // Render assistant markdown safely: html:false escapes any raw HTML the model
+  // emits, so {@html} only ever sees markdown-generated tags.
+  const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
   // The desktop app (Wails) cannot stream through its asset server, so it serves
   // the core API on a loopback port the webview calls directly; the browser and
@@ -319,18 +324,20 @@
         {#if activeSummary}
           <details class="thinking">
             <summary>Earlier conversation summarized</summary>
-            <div class="rtext">{activeSummary.content}</div>
+            <div class="rtext prose">{@html md.render(activeSummary.content)}</div>
           </details>
         {/if}
         {#each messages as m, i}
           {#if m.reasoning}
             <details class="thinking" open={streaming && i === messages.length - 1 && !m.content}>
               <summary>Thinking</summary>
-              <div class="rtext">{m.reasoning}</div>
+              <div class="rtext prose">{@html md.render(m.reasoning)}</div>
             </details>
           {/if}
-          {#if m.role === 'user' || m.content !== ''}
-            <div class="msg {m.role}">{m.content}</div>
+          {#if m.role === 'user'}
+            <div class="msg user">{m.content}</div>
+          {:else if m.content !== ''}
+            <div class="msg assistant prose">{@html md.render(m.content)}</div>
           {:else if streaming && i === messages.length - 1 && !m.reasoning}
             <div class="msg assistant">…</div>
           {/if}
@@ -723,5 +730,81 @@
   }
   .modal-foot button:hover {
     background: var(--paper);
+  }
+  .prose {
+    white-space: normal;
+  }
+  .prose :global(p) {
+    margin: 0 0 8px;
+  }
+  .prose :global(p:last-child) {
+    margin-bottom: 0;
+  }
+  .prose :global(ul),
+  .prose :global(ol) {
+    margin: 0 0 8px;
+    padding-left: 20px;
+  }
+  .prose :global(li) {
+    margin: 2px 0;
+  }
+  .prose :global(h1),
+  .prose :global(h2),
+  .prose :global(h3),
+  .prose :global(h4) {
+    margin: 12px 0 6px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .prose :global(h1) {
+    font-size: 1.3em;
+  }
+  .prose :global(h2) {
+    font-size: 1.15em;
+  }
+  .prose :global(h3) {
+    font-size: 1.05em;
+  }
+  .prose :global(code) {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 0.9em;
+    background: color-mix(in srgb, var(--ink) 8%, transparent);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .prose :global(pre) {
+    background: color-mix(in srgb, var(--ink) 8%, transparent);
+    padding: 10px 12px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 0 0 8px;
+  }
+  .prose :global(pre code) {
+    background: none;
+    padding: 0;
+    font-size: 0.85em;
+  }
+  .prose :global(blockquote) {
+    margin: 0 0 8px;
+    padding-left: 10px;
+    border-left: 2px solid var(--border);
+    color: var(--muted);
+  }
+  .prose :global(a) {
+    color: var(--clay);
+  }
+  .prose :global(table) {
+    border-collapse: collapse;
+    margin: 0 0 8px;
+  }
+  .prose :global(th),
+  .prose :global(td) {
+    border: 0.5px solid var(--border);
+    padding: 4px 8px;
+  }
+  .prose :global(hr) {
+    border: none;
+    border-top: 0.5px solid var(--border);
+    margin: 12px 0;
   }
 </style>
