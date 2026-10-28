@@ -32,7 +32,7 @@ to actually use — with real context management, chat history, MCP tools, image
 - **No sync engine in the client** — v1 is single-machine with plain files you can point your own sync tool at;
   multi-device comes with the optional v2 gateway.
 
-See [`docs/architecture.md`](docs/architecture.md) and [`docs/roadmap.md`](docs/roadmap.md).
+See [`docs/architecture.md`](docs/architecture.md), [`docs/roadmap.md`](docs/roadmap.md), and [`docs/ui.md`](docs/ui.md).
 
 ## The name
 

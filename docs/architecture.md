@@ -317,7 +317,7 @@ Two kinds, split by infrastructure (the real test suite starts at increment #1):
 - **Mobile feel:** PWA (keeps everything Go + Wails) vs a true native app (would pull the UI shell toward Tauri 2).
   Deferred — the thin-client architecture keeps it reversible.
 - **Web UI framework:** lean toward Svelte (fits llama.cpp's own webui and the small-footprint goal); not settled.
-- **UX design** is the next phase — reference point: the *margin* app's design language.
+- **UX & interface:** first pass captured in [`ui.md`](ui.md); the web UI framework (above) is the main item still open there.
 
 ## Changelog
 
@@ -332,3 +332,4 @@ Two kinds, split by infrastructure (the real test suite starts at increment #1):
   split (AGENTS.md in-repo read-only · memory.md personal, gated-write · tool-coaching in-app); **capability-awareness**
   (incl. model selection and effort/thinking) kept as a principle, leaning on llama.cpp; two-tier testing (mocked core
   vs real-model probes).
+- 2026-10-27: UX first pass captured in [`ui.md`](ui.md) — margin-derived calm sensibility, two-panel shell, distributed context budget, own Andean-warm identity.
