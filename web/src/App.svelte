@@ -10,6 +10,12 @@
   let budget = $state(null) // { used, nCtx, level }
   let error = $state(null)
 
+  let projects = $state([])
+  let expandedProject = $state(null)
+  let sessions = $state([]) // sessions of the expanded project
+  let openingFolder = $state(false)
+  let folderPath = $state('')
+
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
   })
@@ -17,6 +23,7 @@
   async function refresh() {
     conn = await fetch('/api/props').then((r) => r.json())
     chats = (await fetch('/api/chats').then((r) => r.json())) ?? []
+    projects = (await fetch('/api/projects').then((r) => r.json())) ?? []
     if (!activeId && chats.length) await selectChat(chats[0].id)
   }
 
@@ -37,6 +44,52 @@
     }).then((r) => r.json())
     chats = (await fetch('/api/chats').then((r) => r.json())) ?? []
     await selectChat(created.id)
+  }
+
+  async function loadSessions(projectId) {
+    sessions = (await fetch(`/api/projects/${projectId}/sessions`).then((r) => r.json())) ?? []
+  }
+
+  // Projects are the store's second root; a session inside one is a full
+  // conversation, selected through the same selectChat path as a free chat.
+  async function toggleProject(id) {
+    if (expandedProject === id) {
+      expandedProject = null
+      sessions = []
+      return
+    }
+    expandedProject = id
+    await loadSessions(id)
+  }
+
+  async function openFolder() {
+    const path = folderPath.trim()
+    if (!path) return
+    const created = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path, title: baseName(path) }),
+    }).then((r) => r.json())
+    folderPath = ''
+    openingFolder = false
+    projects = (await fetch('/api/projects').then((r) => r.json())) ?? []
+    expandedProject = created.id
+    await loadSessions(created.id)
+  }
+
+  async function newSession(projectId) {
+    const created = await fetch(`/api/projects/${projectId}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'New session' }),
+    }).then((r) => r.json())
+    await loadSessions(projectId)
+    await selectChat(created.id)
+  }
+
+  function baseName(path) {
+    const parts = path.split(/[\\/]/).filter(Boolean)
+    return parts.length ? parts[parts.length - 1] : path
   }
 
   async function send() {
@@ -127,6 +180,44 @@
           </li>
         {:else}
           <li class="row muted">No chats yet</li>
+        {/each}
+      </ul>
+
+      <div class="switcher">Projects</div>
+      <button class="new" onclick={() => (openingFolder = !openingFolder)}>+ Open folder</button>
+      {#if openingFolder}
+        <input
+          class="field path"
+          placeholder="/path/to/folder"
+          bind:value={folderPath}
+          onkeydown={(e) => e.key === 'Enter' && openFolder()}
+        />
+      {/if}
+      <ul class="list">
+        {#each projects as p}
+          <li>
+            <button class="row" class:active={p.id === expandedProject} onclick={() => toggleProject(p.id)}>
+              {p.title || 'Untitled'}
+            </button>
+            {#if expandedProject === p.id}
+              <ul class="sublist">
+                {#each sessions as s}
+                  <li>
+                    <button class="row sub" class:active={s.id === activeId} onclick={() => selectChat(s.id)}>
+                      {s.title || 'Untitled'}
+                    </button>
+                  </li>
+                {:else}
+                  <li class="row sub muted">No sessions yet</li>
+                {/each}
+                <li>
+                  <button class="row sub add" onclick={() => newSession(p.id)}>+ New session</button>
+                </li>
+              </ul>
+            {/if}
+          </li>
+        {:else}
+          <li class="row muted">No projects yet</li>
         {/each}
       </ul>
     </aside>
@@ -234,6 +325,7 @@
     flex-direction: column;
     padding: 8px;
     gap: 6px;
+    overflow-y: auto;
   }
   .switcher {
     font-weight: 500;
@@ -256,7 +348,22 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    overflow-y: auto;
+  }
+  .sublist {
+    list-style: none;
+    margin: 2px 0 4px;
+    padding: 0;
+  }
+  .row.sub {
+    padding-left: 22px;
+    font-size: 13px;
+  }
+  .row.sub.add {
+    color: var(--clay);
+  }
+  .path {
+    padding: 7px 10px;
+    font-size: 13px;
   }
   .row {
     display: block;

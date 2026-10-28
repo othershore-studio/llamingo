@@ -33,6 +33,9 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("GET /api/chats", s.handleListChats)
 	s.mux.HandleFunc("POST /api/chats", s.handleNewChat)
 	s.mux.HandleFunc("GET /api/projects", s.handleListProjects)
+	s.mux.HandleFunc("POST /api/projects", s.handleNewProject)
+	s.mux.HandleFunc("GET /api/projects/{id}/sessions", s.handleListSessions)
+	s.mux.HandleFunc("POST /api/projects/{id}/sessions", s.handleNewSession)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	return s
@@ -91,6 +94,59 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		ps = []store.ProjectMeta{}
 	}
 	writeJSON(w, ps)
+}
+
+// POST /api/projects {path, title} — open a working folder as a project.
+// Idempotent: re-opening the same path returns the existing project.
+func (s *Server) handleNewProject(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path  string `json:"path"`
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.Path) == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
+		return
+	}
+	m, err := s.st.OpenProject(body.Path, body.Title)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, m)
+}
+
+// GET /api/projects/{id}/sessions — a project's sessions, newest first.
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	sessions, err := s.st.ListSessions(store.ProjectID(r.PathValue("id")))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if sessions == nil {
+		sessions = []store.ConversationMeta{}
+	}
+	writeJSON(w, sessions)
+}
+
+// POST /api/projects/{id}/sessions {title} — create a session in a project.
+func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	m, err := s.st.NewSession(store.ProjectID(r.PathValue("id")), body.Title)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, m)
 }
 
 // GET /api/conversations/{id} — the conversation's entries in log order, for
