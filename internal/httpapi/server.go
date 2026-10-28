@@ -37,6 +37,9 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("GET /api/projects/{id}/sessions", s.handleListSessions)
 	s.mux.HandleFunc("POST /api/projects/{id}/sessions", s.handleNewSession)
 	s.mux.HandleFunc("POST /api/compact", s.handleCompact)
+	s.mux.HandleFunc("GET /api/memory", s.handleGetMemory)
+	s.mux.HandleFunc("PUT /api/memory", s.handlePutMemory)
+	s.mux.HandleFunc("POST /api/memory/ack", s.handleAckMemory)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	return s
@@ -200,7 +203,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 
 	bld := contextbudget.New(s.be)
-	bud, err := bld.Estimate(r.Context(), []contextbudget.Segment{{Name: "conversation", Messages: messages}})
+	segs := s.segmentsFor(messages)
+	bud, err := bld.Estimate(r.Context(), segs)
 	if err != nil {
 		writeEvent(w, flusher, "error", map[string]any{"error": err.Error()})
 		return
@@ -212,7 +216,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if res, cerr := s.compactConversation(r.Context(), body.ID); cerr == nil && res.Folded > 0 {
 			if entries, lerr := s.st.LoadConversation(body.ID); lerr == nil {
 				messages = messagesFromEntries(store.Project(entries))
-				if b, eerr := bld.Estimate(r.Context(), []contextbudget.Segment{{Name: "conversation", Messages: messages}}); eerr == nil {
+				segs = s.segmentsFor(messages)
+				if b, eerr := bld.Estimate(r.Context(), segs); eerr == nil {
 					bud = b
 				}
 				writeEvent(w, flusher, "compacted", map[string]any{"folded": res.Folded, "saved": res.Saved, "summary": res.Summary})
@@ -221,7 +226,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var reply strings.Builder
-	streamErr := s.be.ChatStream(r.Context(), backend.ChatRequest{Messages: messages}, func(d backend.Delta) error {
+	streamErr := s.be.ChatStream(r.Context(), backend.ChatRequest{Messages: bld.Messages(segs)}, func(d backend.Delta) error {
 		if d.Reasoning != "" {
 			writeEvent(w, flusher, "reasoning", map[string]any{"content": d.Reasoning})
 		}

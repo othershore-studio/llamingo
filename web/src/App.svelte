@@ -18,6 +18,10 @@
   let openingFolder = $state(false)
   let folderPath = $state('')
 
+  let memoryOpen = $state(false)
+  let memoryContent = $state('')
+  let memoryTampered = $state(false)
+
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
   })
@@ -55,6 +59,30 @@
       r.folded > 0
         ? `Folded ${r.folded} message${r.folded === 1 ? '' : 's'}, saved ~${r.saved} tokens`
         : 'Nothing old enough to compact yet'
+  }
+
+  // Personal memory is injected into every prompt (metered as its own segment)
+  // and editable here. An edit made outside the app is flagged until accepted.
+  async function openMemory() {
+    const m = await fetch('/api/memory').then((r) => r.json())
+    memoryContent = m.content ?? ''
+    memoryTampered = !!m.tampered
+    memoryOpen = true
+  }
+
+  async function saveMemory() {
+    await fetch('/api/memory', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: memoryContent }),
+    })
+    memoryTampered = false
+    memoryOpen = false
+  }
+
+  async function ackMemory() {
+    await fetch('/api/memory/ack', { method: 'POST' })
+    memoryTampered = false
   }
 
   async function newChat() {
@@ -188,6 +216,7 @@
     <span class="mark"></span>
     <span class="wordmark">llaminGO</span>
     <span class="spacer"></span>
+    <button class="pill-btn" onclick={openMemory}>Memory</button>
     {#if conn}<span class="pill">{modelName(conn.model)}</span>{/if}
   </header>
 
@@ -300,6 +329,25 @@
     {/if}
     {#if activeId}<button class="statusbtn" onclick={compact} disabled={streaming}>Compact</button>{/if}
   </footer>
+
+  {#if memoryOpen}
+    <div class="modal-backdrop" onclick={() => (memoryOpen = false)}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-head">
+          <span>Memory</span>
+          <button class="x" onclick={() => (memoryOpen = false)}>✕</button>
+        </div>
+        {#if memoryTampered}
+          <div class="warn">Edited outside llaminGO. Review it, then Save to keep it or Dismiss the warning.</div>
+        {/if}
+        <textarea class="memo" bind:value={memoryContent} placeholder="Personal memory the model always sees…"></textarea>
+        <div class="modal-foot">
+          {#if memoryTampered}<button onclick={ackMemory}>Dismiss</button>{/if}
+          <button class="primary" onclick={saveMemory}>Save</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -526,5 +574,91 @@
   }
   .bar.full .fill {
     background: #d64545;
+  }
+  .pill-btn {
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 3px 10px;
+    background: none;
+    color: var(--clay);
+    font: inherit;
+    cursor: pointer;
+  }
+  .pill-btn:hover {
+    background: var(--paper);
+  }
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, var(--ink) 40%, transparent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 10;
+  }
+  .modal {
+    width: min(560px, 100%);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    gap: 10px;
+  }
+  .modal-head {
+    display: flex;
+    align-items: center;
+    font-weight: 500;
+  }
+  .modal-head .x {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+  }
+  .warn {
+    background: color-mix(in srgb, #e0932a 15%, transparent);
+    border: 0.5px solid color-mix(in srgb, #e0932a 40%, transparent);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+  .memo {
+    flex: 1;
+    min-height: 240px;
+    resize: vertical;
+    padding: 10px 12px;
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    background: var(--paper);
+    color: var(--ink);
+    font: inherit;
+    line-height: 1.5;
+  }
+  .modal-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .modal-foot button {
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 14px;
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+  }
+  .modal-foot .primary {
+    color: var(--clay);
+    border-color: color-mix(in srgb, var(--clay) 40%, transparent);
+  }
+  .modal-foot button:hover {
+    background: var(--paper);
   }
 </style>
