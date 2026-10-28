@@ -20,9 +20,11 @@ import (
 	"github.com/othershore-studio/llamingo/internal/permission"
 )
 
-// Writer is the slice of the store the tool needs: replace the personal memory.
-// *store.Store satisfies it; tests fake it.
-type Writer interface {
+// Memory is the slice of the store the tool needs: read the current memory (so
+// an unchanged write is a no-op) and replace it. *store.Store satisfies it;
+// tests fake it.
+type Memory interface {
+	Memory() (content string, tampered bool, err error)
 	WriteMemory(content string) error
 }
 
@@ -32,13 +34,13 @@ const ToolName = "write_memory"
 // Tool is the built-in memory-write tool. Its Tools/Call methods satisfy the MCP
 // loop's Registry, so it is offered to the model alongside MCP tools.
 type Tool struct {
-	w    Writer
+	mem  Memory
 	gate *permission.Gate
 }
 
 // NewTool returns the write-memory tool.
-func NewTool(w Writer, gate *permission.Gate) *Tool {
-	return &Tool{w: w, gate: gate}
+func NewTool(mem Memory, gate *permission.Gate) *Tool {
+	return &Tool{mem: mem, gate: gate}
 }
 
 // Tools advertises the write-memory tool to the model.
@@ -46,8 +48,9 @@ func (t *Tool) Tools() []backend.ToolDef {
 	return []backend.ToolDef{{
 		Name: ToolName,
 		Description: "Replace your long-term personal memory with new content. " +
-			"The current memory is shown to you above; write the complete new version, not a " +
-			"fragment. Use it for durable facts and preferences worth remembering across chats.",
+			"The current memory is shown to you above — only call this if your new version " +
+			"actually differs from it, and write the complete new version, not a fragment. " +
+			"Use it for durable facts and preferences worth remembering across chats.",
 		Parameters: json.RawMessage(`{"type":"object","properties":{` +
 			`"content":{"type":"string","description":"the complete new memory text"}},` +
 			`"required":["content"]}`),
@@ -73,6 +76,13 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return "", fmt.Errorf("memtool: content is required")
 	}
 
+	// Read-before-write: if the proposed content matches the current memory, it is
+	// a no-op — skip the gate and the write, and say so, so the model does not
+	// prompt the user or claim a save it did not make.
+	if cur, _, err := t.mem.Memory(); err == nil && strings.TrimSpace(cur) == strings.TrimSpace(a.Content) {
+		return "No change: your personal memory already contains exactly this; nothing was written.", nil
+	}
+
 	allow, err := t.gate.Allow(ctx, permission.Request{
 		ToolID: "native:" + ToolName,
 		Label:  "update your personal memory",
@@ -83,10 +93,13 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return "", err
 	}
 	if !allow {
-		return "", fmt.Errorf("memtool: not permitted")
+		// A refusal is a decision, not an error: return it as a result (not an
+		// exception the loop labels "tool error") so the model is told plainly the
+		// write did NOT happen and does not report success.
+		return "Not saved: you declined to update your personal memory. Do not tell the user it was saved.", nil
 	}
 
-	if err := t.w.WriteMemory(a.Content); err != nil {
+	if err := t.mem.WriteMemory(a.Content); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("memory updated (%d characters)", len(a.Content)), nil
