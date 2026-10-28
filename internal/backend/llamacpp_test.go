@@ -60,7 +60,7 @@ func TestApplyTemplate(t *testing.T) {
 }
 
 func TestChatStream(t *testing.T) {
-	var content strings.Builder
+	var content, reasoning strings.Builder
 	var usage *backend.Usage
 	sawDone := false
 
@@ -68,6 +68,7 @@ func TestChatStream(t *testing.T) {
 		backend.ChatRequest{Messages: []backend.Message{{Role: backend.RoleUser, Content: "Hi"}}},
 		func(d backend.Delta) error {
 			content.WriteString(d.Content)
+			reasoning.WriteString(d.Reasoning)
 			if d.Usage != nil {
 				usage = d.Usage
 			}
@@ -81,6 +82,9 @@ func TestChatStream(t *testing.T) {
 	}
 	if got := content.String(); got != "Hello! How can I help you today?" {
 		t.Errorf("content = %q", got)
+	}
+	if got := reasoning.String(); got != "The user greeted me. I'll respond warmly and offer help." {
+		t.Errorf("reasoning = %q", got)
 	}
 	if !sawDone {
 		t.Error("never saw a terminal (Done) delta")

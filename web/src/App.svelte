@@ -45,7 +45,7 @@
     if (!activeId) await newChat()
     input = ''
     messages.push({ role: 'user', content: text })
-    messages.push({ role: 'assistant', content: '' })
+    messages.push({ role: 'assistant', content: '', reasoning: '' })
     streaming = true
     try {
       // The client sends only the new turn; the core persists both sides.
@@ -89,6 +89,8 @@
     const payload = JSON.parse(data)
     if (event === 'delta' && payload.content) {
       messages[messages.length - 1].content += payload.content
+    } else if (event === 'reasoning' && payload.content) {
+      messages[messages.length - 1].reasoning += payload.content
     } else if (event === 'done') {
       budget = payload.budget
     } else if (event === 'error') {
@@ -132,8 +134,18 @@
     <main class="conversation">
       <div class="thread">
         {#if error}<p class="error">{error}</p>{/if}
-        {#each messages as m}
-          <div class="msg {m.role}">{m.content}{#if m.role === 'assistant' && m.content === '' && streaming}…{/if}</div>
+        {#each messages as m, i}
+          {#if m.reasoning}
+            <details class="thinking" open={streaming && i === messages.length - 1 && !m.content}>
+              <summary>Thinking</summary>
+              <div class="rtext">{m.reasoning}</div>
+            </details>
+          {/if}
+          {#if m.role === 'user' || m.content !== ''}
+            <div class="msg {m.role}">{m.content}</div>
+          {:else if streaming && i === messages.length - 1 && !m.reasoning}
+            <div class="msg assistant">…</div>
+          {/if}
         {:else}
           <p class="empty muted">Ask something to get started.</p>
         {/each}
@@ -305,6 +317,24 @@
   }
   .error {
     color: #d64545;
+  }
+  .thinking {
+    max-width: 80%;
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .thinking summary {
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
+  }
+  .thinking .rtext {
+    white-space: pre-wrap;
+    line-height: 1.5;
+    margin-top: 4px;
+    padding: 6px 10px;
+    border-left: 2px solid var(--border);
   }
   .composer {
     border-top: 0.5px solid var(--border);

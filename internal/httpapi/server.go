@@ -109,8 +109,10 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/chat/stream {id, content} — the core is the source of truth for
 // history: it loads the conversation's log, appends this turn's user message,
-// streams the reply as SSE ("delta" per chunk, then "done" with the honest
-// budget), and appends the assistant reply. The client sends only the new turn.
+// streams the reply as SSE ("reasoning" and "delta" chunks, then "done" with
+// the honest budget), and appends the assistant reply. The client sends only
+// the new turn. Reasoning ("thinking") streams live but is not persisted — it
+// is model scratch, not part of the conversation.
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID      string `json:"id"`
@@ -149,6 +151,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	var reply strings.Builder
 	streamErr := s.be.ChatStream(r.Context(), backend.ChatRequest{Messages: messages}, func(d backend.Delta) error {
+		if d.Reasoning != "" {
+			writeEvent(w, flusher, "reasoning", map[string]any{"content": d.Reasoning})
+		}
 		if d.Content != "" {
 			reply.WriteString(d.Content)
 			writeEvent(w, flusher, "delta", map[string]any{"content": d.Content})
