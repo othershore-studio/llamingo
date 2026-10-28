@@ -13,9 +13,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
+	"github.com/othershore-studio/llamingo/internal/mcp"
+	"github.com/othershore-studio/llamingo/internal/permission"
 	"github.com/othershore-studio/llamingo/internal/store"
 )
 
@@ -24,11 +27,29 @@ type Server struct {
 	be  backend.Backend
 	st  *store.Store
 	mux *http.ServeMux
+
+	// Agentic wiring: the tool loop's permission gate reaches the user over the
+	// chat stream. The broker + prompter are app-wide; gates are per-conversation
+	// so session grants don't leak across chats (see permission.go).
+	broker   *broker
+	prompter *ssePrompter
+	grants   permission.GrantStore
+	gates    map[string]*permission.Gate
+	gatesMu  sync.Mutex
 }
 
 // New wires the API over the given backend and store.
 func New(be backend.Backend, st *store.Store) *Server {
-	s := &Server{be: be, st: st, mux: http.NewServeMux()}
+	br := newBroker()
+	s := &Server{
+		be:       be,
+		st:       st,
+		mux:      http.NewServeMux(),
+		broker:   br,
+		prompter: newSSEPrompter(br),
+		grants:   permission.NewMemoryGrantStore(),
+		gates:    map[string]*permission.Gate{},
+	}
 	s.mux.HandleFunc("GET /api/props", s.handleProps)
 	s.mux.HandleFunc("GET /api/chats", s.handleListChats)
 	s.mux.HandleFunc("POST /api/chats", s.handleNewChat)
@@ -42,6 +63,7 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("POST /api/memory/ack", s.handleAckMemory)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
+	s.mux.HandleFunc("POST /api/permission/{id}", s.handlePermission)
 	return s
 }
 
@@ -225,29 +247,41 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var reply strings.Builder
-	streamErr := s.be.ChatStream(r.Context(), backend.ChatRequest{Messages: bld.Messages(segs)}, func(d backend.Delta) error {
+	// Drive the client-owned tool loop instead of a bare completion: the model
+	// may call tools (write_memory now; image gen / MCP servers later), each
+	// mediated by this conversation's permission gate. The emitter in the context
+	// lets the gate surface a consent prompt on this very SSE stream, and the
+	// answer returns on POST /api/permission/{id} (see permission.go).
+	emit := func(event string, data any) { writeEvent(w, flusher, event, data) }
+	ctx := withEmitter(r.Context(), emit)
+	reg := s.registryFor(body.ID)
+
+	out, runErr := mcp.Run(ctx, s.be, reg, bld.Messages(segs), func(d backend.Delta) error {
 		if d.Reasoning != "" {
-			writeEvent(w, flusher, "reasoning", map[string]any{"content": d.Reasoning})
+			emit("reasoning", map[string]any{"content": d.Reasoning})
 		}
 		if d.Content != "" {
-			reply.WriteString(d.Content)
-			writeEvent(w, flusher, "delta", map[string]any{"content": d.Content})
+			emit("delta", map[string]any{"content": d.Content})
 		}
-		if d.Usage != nil {
+		if d.Done {
+			for _, tc := range d.ToolCalls {
+				emit("tool_call", map[string]any{"name": tc.Function.Name, "arguments": tc.Function.Arguments})
+			}
+		}
+		if d.Usage != nil && d.Usage.PromptTokens > bud.Authoritative {
 			bud.Authoritative = d.Usage.PromptTokens
 		}
 		return nil
-	})
-	if streamErr != nil {
-		writeEvent(w, flusher, "error", map[string]any{"error": streamErr.Error()})
+	}, maxToolRounds)
+	if runErr != nil {
+		emit("error", map[string]any{"error": runErr.Error()})
 		return
 	}
-	if _, err := s.st.AppendMessage(body.ID, "assistant", reply.String()); err != nil {
-		writeEvent(w, flusher, "error", map[string]any{"error": err.Error()})
+	if _, err := s.st.AppendMessage(body.ID, "assistant", finalAssistant(out)); err != nil {
+		emit("error", map[string]any{"error": err.Error()})
 		return
 	}
-	writeEvent(w, flusher, "done", map[string]any{
+	emit("done", map[string]any{
 		"budget": map[string]any{"used": bud.Used(), "nCtx": bud.NCtx, "level": string(bud.Level())},
 	})
 }
@@ -266,6 +300,24 @@ func messagesFromEntries(entries []store.Entry) []backend.Message {
 		msgs = append(msgs, backend.Message{Role: backend.Role(e.Role), Content: e.Content})
 	}
 	return msgs
+}
+
+// maxToolRounds caps the client-owned tool loop so a misbehaving model cannot
+// spin forever; 8 rounds is ample for the native tools and typical MCP use.
+const maxToolRounds = 8
+
+// finalAssistant returns the content of the loop's last assistant message — the
+// answer after any tools have settled. Intermediate tool-call turns and tool
+// results are not persisted (model scratch, like reasoning): the live SSE stream
+// shows them in the moment, and a tool's durable effect is its own artifact
+// (e.g. the memory file). Persisting the tool trail is a later log-schema change.
+func finalAssistant(msgs []backend.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == backend.RoleAssistant {
+			return msgs[i].Content
+		}
+	}
+	return ""
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
