@@ -5,17 +5,19 @@
 //go:build windows
 
 // Command llamingo is the Wails desktop shell: a native window whose webview
-// loads the embedded Svelte SPA, with the core's HTTP/SSE adapter mounted as
-// the asset server's handler so /api/* is served same-origin. The UI is a thin
-// client of that API — exactly as in the browser and the v2 PWA. Windows-only
-// for now (the roadmap adds macOS/Linux later); the build tag keeps the
-// cross-platform `go test ./...` CI from compiling the GUI dependencies.
+// loads the embedded Svelte SPA. The core's HTTP/SSE adapter runs on a loopback
+// port that the webview calls directly — Wails' asset server cannot flush, so
+// streaming (SSE) must come from a real net/http server. The UI is the same thin
+// client of that API as in the browser and the v2 PWA. Windows-only for now; the
+// build tag keeps the cross-platform `go test ./...` CI from compiling the GUI.
 package main
 
 import (
 	"embed"
 	"io/fs"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -30,6 +32,10 @@ import (
 
 //go:embed all:web/dist
 var assets embed.FS
+
+// apiAddr is the loopback address the core API listens on inside the desktop
+// app; the embedded webview fetches it directly (see web/src: window.runtime).
+const apiAddr = "127.0.0.1:8766"
 
 func main() {
 	url := env("LLAMINGO_URL", "http://localhost:8080")
@@ -49,17 +55,38 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Serve the core API on loopback (a real server that streams); bind before
+	// the window opens so the SPA's first request can't race the listener.
+	ln, err := net.Listen("tcp", apiAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	go func() { _ = http.Serve(ln, withCORS(httpapi.New(be, st))) }()
+
 	if err := wails.Run(&options.App{
 		Title:  "llaminGO",
 		Width:  1100,
 		Height: 720,
 		AssetServer: &assetserver.Options{
-			Assets:  dist,
-			Handler: httpapi.New(be, st),
+			Assets: dist,
 		},
 	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// withCORS lets the webview (a wails:// origin) call the loopback API.
+func withCORS(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "content-type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func env(key, def string) string {

@@ -57,6 +57,59 @@ Dependency-ordered; each is test-first (the suite starts at #1), and the CLI is 
 **Done:** `go test ./...` green and GPU-free (all mocked), and the CLI holds a streamed exchange against a real
 `llama-server` with a budget matching its reported `usage`.
 
+## Status (2026-10-28)
+
+Increments #1–#6 are built and largely merged — core + honest metering, the two-root store, the client-owned MCP
+loop and permission gate (proven by image gen), the shell (CLI → HTTP/SSE adapter → Svelte web UI → Wails desktop),
+and #6's context niceties: live thinking, **compaction** (manual + auto, non-destructive projection), the **memory
+foundation** (injected as a metered segment, user-editable, tamper-evident hash), and **server/staleness monitoring**.
+
+A real-model testing pass against the lab (Gemma 4 12B QAT, 64K context) surfaced three fixes now on branch
+`increment-6-staleness` (pending merge):
+
+- **staleness cues** — poll `/props`, warn on model/context change or an unreachable server.
+- **desktop loopback-API fix** — Wails' asset server can't flush, so SSE failed in the desktop app (broken since the
+  #5 build). The desktop now runs the core API on a loopback `net/http` server (`127.0.0.1:8766`) with CORS; the SPA
+  targets it under Wails (`window.runtime`) and stays relative in the browser/PWA.
+- **markdown rendering** — markdown-it with `html:false` (safe), rendering assistant replies, thinking, and summaries.
+
+**Remaining #6 piece — the capstone:** the **agentic memory write** — `write_memory` as a gated tool, which wires
+`mcp.Run` into the chat stream and adds the **SSE permission handshake** (consent over a one-way stream). It also
+lights up native tools (image gen) and MCP servers generally. A design session of its own.
+
+## Backlog — surfaced by real-model testing (2026-10)
+
+Captured while using the app against the real model; none blocking, ordered loosely.
+
+**UI / UX**
+
+- **Responsive to window resizing** — the two-panel layout at narrow/wide sizes (toward the v2 PWA / mobile).
+- **Frameless window + custom title bar** — Wails `Frameless` + a `--wails-draggable` header (like margin). The chrome
+  is just HTML, so this is cheap.
+- **Per-message actions** — hover tools on each message (copy, …); fenced code blocks get a copy button. (The HTML UI
+  already makes everything selectable/copyable — a deliberate win of the web-UI architecture.)
+- **Compaction values on return** — show the stored `replaced`/`summary` token savings on the summary block when a
+  chat is reopened (today only in the transient toast; the counts are already on disk in the summary entry).
+- **Rename chats/sessions** — inline title edit (`PUT` the title to `meta.json`). Later: suggested names, **opt-in and
+  off the hot path** (a background title-generation call is exactly the OpenWebUI tax to avoid).
+- **tokens/sec readout** — llama.cpp returns `timings` in the `/v1/chat/completions` final chunk (prompt/predict
+  tokens + ms + per-second rates); surface it beside the budget. Shares the terminal-`Delta` plumbing with the tools
+  work. Honest metering extended to speed.
+
+**Model / backend**
+
+- **Friendly model name** — prefer llama.cpp's `model_alias` from `/props` (set with `--alias`) over the path-derived
+  name.
+- **Model configuration UI** — later; `LLAMINGO_URL` via env var is fine during development.
+
+**Native tools (local, gated)**
+
+- **image generation** (seam already built), plus **time** and **location**. `time` is trivial; **location** needs a
+  deliberate design — source (configured / IP / OS) and privacy (explicit, gated like any tool).
+
+**Guiding principle:** keep it lean, fast, and transparent — this simplicity (and speed: a lean prompt, no background
+model calls) is preferred over OpenWebUI's feature-heaviness. Everything added stays opt-in and surfaces its cost.
+
 ## v2 — the gateway (remote + mobile + sync)
 
 The **optional** small server that earns its place only when you leave the LAN.
