@@ -1,0 +1,140 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+// Package httpapi exposes the core over one HTTP + SSE API — the single surface
+// the web UI consumes, in the Wails desktop app and (v2) the gateway PWA alike.
+// Keeping every UI a thin client of this API is what makes the desktop shell
+// reversible. See docs/architecture.md → "The core and its three faces".
+package httpapi
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+
+	"github.com/othershore-studio/llamingo/internal/backend"
+	"github.com/othershore-studio/llamingo/internal/contextbudget"
+	"github.com/othershore-studio/llamingo/internal/store"
+)
+
+// Server is the HTTP handler for the core API.
+type Server struct {
+	be  backend.Backend
+	st  *store.Store
+	mux *http.ServeMux
+}
+
+// New wires the API over the given backend and store.
+func New(be backend.Backend, st *store.Store) *Server {
+	s := &Server{be: be, st: st, mux: http.NewServeMux()}
+	s.mux.HandleFunc("GET /api/props", s.handleProps)
+	s.mux.HandleFunc("GET /api/chats", s.handleListChats)
+	s.mux.HandleFunc("POST /api/chats", s.handleNewChat)
+	s.mux.HandleFunc("GET /api/projects", s.handleListProjects)
+	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
+	return s
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+
+// GET /api/props — the honest connect handshake.
+func (s *Server) handleProps(w http.ResponseWriter, r *http.Request) {
+	p, err := s.be.Props(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]any{"model": p.ModelID, "nCtx": p.NCtx})
+}
+
+// GET /api/chats — the free chats, newest first.
+func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
+	chats, err := s.st.ListChats()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, chats)
+}
+
+// POST /api/chats {title} — create a free chat.
+func (s *Server) handleNewChat(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	m, err := s.st.NewChat(body.Title)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, m)
+}
+
+// GET /api/projects — the known projects, newest first.
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	ps, err := s.st.ListProjects()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, ps)
+}
+
+// POST /api/chat/stream {messages} — stream a reply as SSE: a "delta" event per
+// content chunk, then a "done" event carrying the honest budget.
+func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Messages []backend.Message `json:"messages"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	bld := contextbudget.New(s.be)
+	bud, err := bld.Estimate(r.Context(), []contextbudget.Segment{{Name: "conversation", Messages: body.Messages}})
+	if err != nil {
+		writeEvent(w, flusher, "error", map[string]any{"error": err.Error()})
+		return
+	}
+
+	streamErr := s.be.ChatStream(r.Context(), backend.ChatRequest{Messages: body.Messages}, func(d backend.Delta) error {
+		if d.Content != "" {
+			writeEvent(w, flusher, "delta", map[string]any{"content": d.Content})
+		}
+		if d.Usage != nil {
+			bud.Authoritative = d.Usage.PromptTokens
+		}
+		return nil
+	})
+	if streamErr != nil {
+		writeEvent(w, flusher, "error", map[string]any{"error": streamErr.Error()})
+		return
+	}
+	writeEvent(w, flusher, "done", map[string]any{
+		"budget": map[string]any{"used": bud.Used(), "nCtx": bud.NCtx, "level": string(bud.Level())},
+	})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeEvent(w http.ResponseWriter, flusher http.Flusher, event string, data any) {
+	b, _ := json.Marshal(data)
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+	flusher.Flush()
+}
