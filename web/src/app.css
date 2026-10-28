@@ -1,0 +1,39 @@
+/* llaminGO's warm identity: a calm paper surface, ink text, a clay accent,
+   adapting to the OS light/dark setting. */
+:root {
+  --paper: #f3efe6;
+  --surface: #fbf9f3;
+  --ink: #232019;
+  --muted: #837b6b;
+  --clay: #9e5a3c;
+  --border: rgba(35, 32, 25, 0.12);
+  --ok: #1d9e75;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #17150f;
+    --surface: #211e18;
+    --ink: #ece7db;
+    --muted: #9a917f;
+    --clay: #c77b52;
+    --border: rgba(236, 231, 219, 0.14);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+#app {
+  height: 100vh;
+}
