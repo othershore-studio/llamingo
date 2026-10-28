@@ -343,6 +343,40 @@ func TestChatStreamReasoning(t *testing.T) {
 	}
 }
 
+// A full context auto-compacts before the turn: after several large messages
+// the stream reports a "compacted" event and a summary is on disk.
+func TestAutoCompact(t *testing.T) {
+	api := newAPI(t)
+	id := createChat(t, api, "Big chat")
+	big := strings.Repeat("word ", 3000) // ~15k chars; a few of these overrun the window
+
+	var lastBody string
+	for i := 0; i < 3; i++ {
+		b, _ := json.Marshal(map[string]string{"id": id, "content": big})
+		resp, err := http.Post(api.URL+"/api/chat/stream", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastBody = string(buf)
+	}
+
+	if !strings.Contains(lastBody, "event: compacted") {
+		t.Error("expected a 'compacted' event once the budget filled")
+	}
+	entries := getConversation(t, api, id)
+	summaries := 0
+	for _, e := range entries {
+		if e["kind"] == "summary" {
+			summaries++
+		}
+	}
+	if summaries == 0 {
+		t.Fatal("expected auto-compaction to have folded at least once")
+	}
+}
+
 // A turn against an unknown conversation id is rejected before streaming.
 func TestChatStreamUnknownConversation(t *testing.T) {
 	api := newAPI(t)

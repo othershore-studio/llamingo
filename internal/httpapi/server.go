@@ -206,6 +206,20 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-compact before the turn when the projected prompt is full, then
+	// rebuild the prompt on the folded log and re-meter.
+	if shouldAutoCompact(bud) {
+		if res, cerr := s.compactConversation(r.Context(), body.ID); cerr == nil && res.Folded > 0 {
+			if entries, lerr := s.st.LoadConversation(body.ID); lerr == nil {
+				messages = messagesFromEntries(store.Project(entries))
+				if b, eerr := bld.Estimate(r.Context(), []contextbudget.Segment{{Name: "conversation", Messages: messages}}); eerr == nil {
+					bud = b
+				}
+				writeEvent(w, flusher, "compacted", map[string]any{"folded": res.Folded, "saved": res.Saved, "summary": res.Summary})
+			}
+		}
+	}
+
 	var reply strings.Builder
 	streamErr := s.be.ChatStream(r.Context(), backend.ChatRequest{Messages: messages}, func(d backend.Delta) error {
 		if d.Reasoning != "" {
