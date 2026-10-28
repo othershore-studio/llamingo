@@ -120,3 +120,63 @@ func TestLoadUnknownConversation(t *testing.T) {
 		t.Fatal("expected error loading an unknown conversation")
 	}
 }
+
+func TestAppendSummary(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.NewChat("Chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := s.AppendMessage(c.ID, "user", "one")
+	b, _ := s.AppendMessage(c.ID, "assistant", "two")
+
+	if _, err := s.AppendSummary(c.ID, SummaryInput{
+		CoversFrom: a.ID, CoversTo: b.ID, Model: "m", Content: "folded", Replaced: 10, SummaryTokens: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.LoadConversation(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries, want 3 (2 msgs + 1 summary): %+v", len(got), got)
+	}
+	sum := got[2]
+	if sum.Kind != KindSummary || sum.CoversFrom != a.ID || sum.CoversTo != b.ID || sum.Content != "folded" {
+		t.Errorf("summary entry = %+v", sum)
+	}
+}
+
+// Project substitutes the active summary for the messages it shadows.
+func TestProject(t *testing.T) {
+	msgs := []Entry{
+		{ID: "m1", Kind: KindMessage, Role: "user", Content: "1"},
+		{ID: "m2", Kind: KindMessage, Role: "assistant", Content: "2"},
+		{ID: "m3", Kind: KindMessage, Role: "user", Content: "3"},
+		{ID: "m4", Kind: KindMessage, Role: "assistant", Content: "4"},
+	}
+
+	// No summary → messages unchanged.
+	if p := Project(msgs); len(p) != 4 {
+		t.Fatalf("no-summary projection = %d entries, want 4", len(p))
+	}
+
+	// A summary covering m1..m2 → [summary, m3, m4] (the summary stands first).
+	s1 := Entry{ID: "s1", Kind: KindSummary, CoversFrom: "m1", CoversTo: "m2", Content: "folded"}
+	proj := Project(append(append([]Entry{}, msgs...), s1))
+	if len(proj) != 3 || proj[0].Kind != KindSummary || proj[1].ID != "m3" || proj[2].ID != "m4" {
+		t.Fatalf("projection = %+v, want [summary, m3, m4]", proj)
+	}
+
+	// A later, larger summary wins over the earlier one.
+	s2 := Entry{ID: "s2", Kind: KindSummary, CoversFrom: "m1", CoversTo: "m3", Content: "folded more"}
+	proj2 := Project(append(append([]Entry{}, msgs...), s1, s2))
+	if len(proj2) != 2 || proj2[0].ID != "s2" || proj2[1].ID != "m4" {
+		t.Fatalf("projection2 = %+v, want [s2, m4]", proj2)
+	}
+}

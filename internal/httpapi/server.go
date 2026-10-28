@@ -36,6 +36,7 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("POST /api/projects", s.handleNewProject)
 	s.mux.HandleFunc("GET /api/projects/{id}/sessions", s.handleListSessions)
 	s.mux.HandleFunc("POST /api/projects/{id}/sessions", s.handleNewSession)
+	s.mux.HandleFunc("POST /api/compact", s.handleCompact)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	return s
@@ -193,7 +194,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	messages := append(messagesFromEntries(prior), backend.Message{Role: backend.RoleUser, Content: body.Content})
+	messages := append(messagesFromEntries(store.Project(prior)), backend.Message{Role: backend.RoleUser, Content: body.Content})
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -232,13 +233,15 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// messagesFromEntries projects a conversation's log to the message list sent to
-// the model. Message entries map 1:1; summary entries (compaction, later) will
-// be substituted by the context builder, so they are skipped here for now.
+// messagesFromEntries maps projected log entries to the message list sent to the
+// model: a message entry keeps its role; a summary entry (produced by compaction
+// and substituted for its covered range by store.Project) becomes a system
+// message carrying the folded context.
 func messagesFromEntries(entries []store.Entry) []backend.Message {
 	msgs := make([]backend.Message, 0, len(entries))
 	for _, e := range entries {
-		if e.Kind != store.KindMessage {
+		if e.Kind == store.KindSummary {
+			msgs = append(msgs, backend.Message{Role: backend.RoleSystem, Content: "Summary of earlier conversation:\n" + e.Content})
 			continue
 		}
 		msgs = append(msgs, backend.Message{Role: backend.Role(e.Role), Content: e.Content})
