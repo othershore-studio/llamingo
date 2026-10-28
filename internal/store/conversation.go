@@ -80,6 +80,117 @@ func (s *Store) LoadConversation(id string) ([]Entry, error) {
 	return entries, nil
 }
 
+// SummaryInput is the data for a compaction summary entry: the id-range it
+// shadows, the model that produced it, the summary text, and the token
+// accounting (what it replaced vs. its own size) for honest reporting.
+type SummaryInput struct {
+	CoversFrom    string
+	CoversTo      string
+	Model         string
+	Content       string
+	Replaced      int
+	SummaryTokens int
+}
+
+// AppendSummary appends a compaction summary entry shadowing [CoversFrom,
+// CoversTo]. Append-only: the messages it summarizes are left untouched, so the
+// file on disk stays the full truth.
+func (s *Store) AppendSummary(id string, in SummaryInput) (Entry, error) {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return Entry{}, err
+	}
+	eid, err := newEntryID()
+	if err != nil {
+		return Entry{}, err
+	}
+	e := Entry{
+		ID: eid, Kind: KindSummary, Time: time.Now().UTC(),
+		CoversFrom: in.CoversFrom, CoversTo: in.CoversTo,
+		Model: in.Model, Content: in.Content,
+		Replaced: in.Replaced, SummaryTokens: in.SummaryTokens,
+	}
+	if err := appendEntry(filepath.Join(dir, "conversation.md"), e); err != nil {
+		return Entry{}, err
+	}
+	if err := touchUpdated(filepath.Join(dir, "meta.json"), e.Time); err != nil {
+		return Entry{}, err
+	}
+	return e, nil
+}
+
+// Project applies compaction to a conversation's entries: the active summary
+// (the one shadowing the largest prefix of messages) stands in for the messages
+// it covers, followed by the messages it does not. Without a summary the
+// messages are returned unchanged. The stored log is never modified — this is
+// the projection the context builder sends to the model.
+func Project(entries []Entry) []Entry {
+	var msgs, summaries []Entry
+	for _, e := range entries {
+		switch e.Kind {
+		case KindMessage:
+			msgs = append(msgs, e)
+		case KindSummary:
+			summaries = append(summaries, e)
+		}
+	}
+	if len(summaries) == 0 {
+		return msgs
+	}
+	active, cut := activeSummary(msgs, summaries)
+	if active == nil {
+		return msgs
+	}
+	return append([]Entry{*active}, msgs[cut+1:]...)
+}
+
+// ActiveSummary returns the summary shadowing the largest prefix of a
+// conversation's messages and the number of messages it covers (nil, 0 when
+// there is no summary). Compaction uses it to skip already-folded messages.
+func ActiveSummary(entries []Entry) (*Entry, int) {
+	var msgs, summaries []Entry
+	for _, e := range entries {
+		switch e.Kind {
+		case KindMessage:
+			msgs = append(msgs, e)
+		case KindSummary:
+			summaries = append(summaries, e)
+		}
+	}
+	if len(summaries) == 0 {
+		return nil, 0
+	}
+	active, cut := activeSummary(msgs, summaries)
+	if active == nil {
+		return nil, 0
+	}
+	return active, cut + 1
+}
+
+// activeSummary returns the summary whose covered range reaches furthest along
+// the message sequence, and the index of its last covered message (-1 if none
+// of the summaries name a known message).
+func activeSummary(msgs, summaries []Entry) (*Entry, int) {
+	best := -1
+	var active *Entry
+	for i := range summaries {
+		if c := indexOfID(msgs, summaries[i].CoversTo); c > best {
+			best = c
+			active = &summaries[i]
+		}
+	}
+	return active, best
+}
+
+func indexOfID(msgs []Entry, id string) int {
+	for i := range msgs {
+		if msgs[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 // conversationDir resolves a conversation id to its directory, whether it is a
 // free chat (chat/<id>) or a project session (folder/<project>/<id>).
 func (s *Store) conversationDir(id string) (string, error) {

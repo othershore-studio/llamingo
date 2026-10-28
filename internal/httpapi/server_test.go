@@ -217,6 +217,52 @@ func TestProjectsAndSessions(t *testing.T) {
 	}
 }
 
+// Compaction folds the oldest messages into a summary, non-destructively: the
+// originals stay in the log and a summary entry is appended.
+func TestCompact(t *testing.T) {
+	api := newAPI(t)
+	id := createChat(t, api, "Long chat")
+
+	// A short conversation has nothing to fold yet.
+	if r := postJSON(t, api, "/api/compact", `{"id":"`+id+`"}`); int(r["folded"].(float64)) != 0 {
+		t.Fatalf("compact on short chat folded %v, want 0", r["folded"])
+	}
+
+	// Build several turns (each persists a user + assistant message).
+	for i := 0; i < 3; i++ {
+		resp, err := http.Post(api.URL+"/api/chat/stream", "application/json",
+			strings.NewReader(`{"id":"`+id+`","content":"turn"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	r := postJSON(t, api, "/api/compact", `{"id":"`+id+`"}`)
+	if folded := int(r["folded"].(float64)); folded <= 0 {
+		t.Fatalf("compact folded %d, want > 0", folded)
+	}
+
+	// Append-only: all six messages remain, with one summary entry added.
+	entries := getConversation(t, api, id)
+	msgs, summaries := 0, 0
+	for _, e := range entries {
+		switch e["kind"] {
+		case "msg":
+			msgs++
+		case "summary":
+			summaries++
+		}
+	}
+	if msgs != 6 {
+		t.Errorf("got %d msg entries, want 6 (nothing deleted)", msgs)
+	}
+	if summaries != 1 {
+		t.Errorf("got %d summary entries, want 1", summaries)
+	}
+}
+
 // A new conversation has no entries yet — GET returns an empty list, not an error.
 func TestGetNewConversationEmpty(t *testing.T) {
 	api := newAPI(t)

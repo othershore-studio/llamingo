@@ -9,6 +9,8 @@
   let streaming = $state(false)
   let budget = $state(null) // { used, nCtx, level }
   let error = $state(null)
+  let activeSummary = $state(null) // the active compaction summary, if any
+  let report = $state(null) // transient compaction report
 
   let projects = $state([])
   let expandedProject = $state(null)
@@ -32,8 +34,27 @@
     activeId = id
     error = null
     budget = null
+    report = null
     const entries = (await fetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
+    const summaries = entries.filter((e) => e.kind === 'summary')
+    activeSummary = summaries.length ? summaries[summaries.length - 1] : null
     messages = entries.filter((e) => e.kind === 'msg').map((e) => ({ role: e.role, content: e.content }))
+  }
+
+  // Compaction folds the oldest messages into a summary (non-destructive); the
+  // core returns how many it folded and the tokens saved.
+  async function compact() {
+    if (!activeId || streaming) return
+    const r = await fetch('/api/compact', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: activeId }),
+    }).then((r) => r.json())
+    await selectChat(activeId)
+    report =
+      r.folded > 0
+        ? `Folded ${r.folded} message${r.folded === 1 ? '' : 's'}, saved ~${r.saved} tokens`
+        : 'Nothing old enough to compact yet'
   }
 
   async function newChat() {
@@ -225,6 +246,12 @@
     <main class="conversation">
       <div class="thread">
         {#if error}<p class="error">{error}</p>{/if}
+        {#if activeSummary}
+          <details class="thinking">
+            <summary>Earlier conversation summarized</summary>
+            <div class="rtext">{activeSummary.content}</div>
+          </details>
+        {/if}
         {#each messages as m, i}
           {#if m.reasoning}
             <details class="thinking" open={streaming && i === messages.length - 1 && !m.content}>
@@ -263,10 +290,12 @@
       <span>connecting…</span>
     {/if}
     <span class="spacer"></span>
+    {#if report}<span class="report">{report}</span>{/if}
     {#if budget}
       <span>context {budget.used} / {budget.nCtx}</span>
       <span class="bar {budget.level}"><span class="fill" style="width:{pct}%"></span></span>
     {/if}
+    {#if activeId}<button class="statusbtn" onclick={compact} disabled={streaming}>Compact</button>{/if}
   </footer>
 </div>
 
@@ -424,6 +453,26 @@
   }
   .error {
     color: #d64545;
+  }
+  .report {
+    color: var(--muted);
+  }
+  .statusbtn {
+    border: 0.5px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 8px;
+    background: none;
+    color: var(--clay);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .statusbtn:hover:not(:disabled) {
+    background: var(--paper);
+  }
+  .statusbtn:disabled {
+    color: var(--muted);
+    cursor: default;
   }
   .thinking {
     max-width: 80%;
