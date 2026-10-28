@@ -22,9 +22,35 @@
   let memoryContent = $state('')
   let memoryTampered = $state(false)
 
+  let reachable = $state(true)
+  let staleNote = $state(null) // transient "server changed" note
+
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
+    const t = setInterval(checkServer, 15000)
+    return () => clearInterval(t)
   })
+
+  // Monitor the server: warn if the model or context size changed under us, and
+  // reflect when it becomes unreachable.
+  async function checkServer() {
+    try {
+      const p = await fetch('/api/props').then((r) => {
+        if (!r.ok) throw new Error('unreachable')
+        return r.json()
+      })
+      reachable = true
+      if (conn && (p.model !== conn.model || p.nCtx !== conn.nCtx)) {
+        staleNote =
+          p.model !== conn.model
+            ? `Server model changed to ${modelName(p.model)}`
+            : `Server context changed to ${p.nCtx}`
+        conn = p
+      }
+    } catch {
+      reachable = false
+    }
+  }
 
   async function refresh() {
     conn = await fetch('/api/props').then((r) => r.json())
@@ -154,6 +180,7 @@
       await streamChat(activeId, text)
     } catch (e) {
       error = String(e)
+      reachable = false
     } finally {
       streaming = false
     }
@@ -165,6 +192,7 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id, content }),
     })
+    if (!resp.ok) throw new Error('stream request failed')
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -198,6 +226,7 @@
       if (payload.summary) activeSummary = { content: payload.summary }
     } else if (event === 'done') {
       budget = payload.budget
+      reachable = true
     } else if (event === 'error') {
       error = payload.error
     }
@@ -219,6 +248,10 @@
     <button class="pill-btn" onclick={openMemory}>Memory</button>
     {#if conn}<span class="pill">{modelName(conn.model)}</span>{/if}
   </header>
+
+  {#if staleNote}
+    <button class="notice" onclick={() => (staleNote = null)}>{staleNote} · dismiss</button>
+  {/if}
 
   <div class="body">
     <aside class="left">
@@ -313,9 +346,12 @@
   </div>
 
   <footer class="statusbar">
-    {#if conn}
+    {#if conn && reachable}
       <span class="dot"></span>
       <span>{modelName(conn.model)} · {conn.nCtx} ctx</span>
+    {:else if conn && !reachable}
+      <span class="dot off"></span>
+      <span>server unreachable — reconnecting…</span>
     {:else if error}
       <span>couldn't reach the server</span>
     {:else}
@@ -391,6 +427,28 @@
     border-radius: 8px;
     padding: 3px 10px;
     color: var(--muted);
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4a9e5c;
+  }
+  .dot.off {
+    background: #e0932a;
+  }
+  .notice {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: none;
+    border-bottom: 0.5px solid var(--border);
+    background: color-mix(in srgb, #e0932a 15%, transparent);
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
+    padding: 8px 12px;
+    cursor: pointer;
   }
   .body {
     display: flex;
