@@ -273,8 +273,15 @@ func TestProjectsAndSessions(t *testing.T) {
 	}
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if entries := getConversation(t, api, sid); len(entries) != 2 {
-		t.Fatalf("session conversation has %d entries, want 2", len(entries))
+	sessEntries := getConversation(t, api, sid)
+	sessMsgs := 0
+	for _, e := range sessEntries {
+		if e["kind"] == "msg" {
+			sessMsgs++
+		}
+	}
+	if sessMsgs != 2 {
+		t.Fatalf("session conversation has %d message entries, want 2 (user + assistant)", sessMsgs)
 	}
 }
 
@@ -363,20 +370,41 @@ func TestChatStreamPersists(t *testing.T) {
 	}
 
 	entries := getConversation(t, api, id)
-	if len(entries) != 2 {
-		t.Fatalf("persisted %d entries, want 2 (user + assistant): %+v", len(entries), entries)
+	// The turn persists the user message, the thinking trace, and the reply.
+	var msgs, reasoning int
+	var userE, asstE map[string]any
+	for _, e := range entries {
+		switch e["kind"] {
+		case "msg":
+			msgs++
+			if e["role"] == "user" {
+				userE = e
+			}
+			if e["role"] == "assistant" {
+				asstE = e
+			}
+		case "reasoning":
+			reasoning++
+		}
 	}
-	if entries[0]["role"] != "user" || entries[0]["content"] != "Hi" {
-		t.Errorf("entry 0 = %+v, want the user's 'Hi'", entries[0])
+	if msgs != 2 {
+		t.Fatalf("persisted %d message entries, want 2 (user + assistant): %+v", msgs, entries)
 	}
-	reply, _ := entries[1]["content"].(string)
-	if entries[1]["role"] != "assistant" || !strings.Contains(reply, "Hello") {
-		t.Errorf("entry 1 = %+v, want the assistant reply", entries[1])
+	if reasoning != 1 {
+		t.Errorf("persisted %d reasoning entries, want 1 (the thinking trace)", reasoning)
+	}
+	if userE == nil || userE["content"] != "Hi" {
+		t.Errorf("user entry = %+v, want the user's 'Hi'", userE)
+	}
+	reply, _ := asstE["content"].(string)
+	if asstE == nil || !strings.Contains(reply, "Hello") {
+		t.Errorf("assistant entry = %+v, want the assistant reply", asstE)
 	}
 }
 
-// Reasoning ("thinking") streams as its own SSE events but is not persisted —
-// it is model scratch, not part of the conversation.
+// Reasoning ("thinking") streams as its own SSE events and is persisted as a
+// reasoning entry — shown on reload, but kept out of the prompt (Project drops
+// it) and never mixed into the assistant's reply.
 func TestChatStreamReasoning(t *testing.T) {
 	api := newAPI(t)
 	id := createChat(t, api, "Thinker")
@@ -398,9 +426,24 @@ func TestChatStreamReasoning(t *testing.T) {
 	}
 
 	entries := getConversation(t, api, id)
-	reply, _ := entries[len(entries)-1]["content"].(string)
-	if strings.Contains(reply, "respond warmly") {
-		t.Errorf("reasoning leaked into the persisted reply: %q", reply)
+	// The trace is persisted as its own reasoning entry...
+	var reasoning map[string]any
+	for _, e := range entries {
+		if e["kind"] == "reasoning" {
+			reasoning = e
+		}
+	}
+	if reasoning == nil {
+		t.Fatal("reasoning trace was not persisted")
+	}
+	if trace, _ := reasoning["content"].(string); !strings.Contains(trace, "respond warmly") {
+		t.Errorf("reasoning entry = %+v, want the thinking trace", reasoning)
+	}
+	// ...and not mixed into the assistant's reply.
+	last := entries[len(entries)-1]
+	reply, _ := last["content"].(string)
+	if last["role"] != "assistant" || strings.Contains(reply, "respond warmly") {
+		t.Errorf("reasoning leaked into the assistant reply: %q", reply)
 	}
 }
 

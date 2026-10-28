@@ -180,3 +180,87 @@ func TestProject(t *testing.T) {
 		t.Fatalf("projection2 = %+v, want [s2, m4]", proj2)
 	}
 }
+
+// AppendAssistant stores the reasoning trace as its own entry before the answer;
+// Project keeps it out of the prompt, so the trace is display-only.
+func TestAppendAssistantWithReasoning(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.NewChat("Thinking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(c.ID, "user", "remember I like tea"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendAssistant(c.ID, "Noted!", "The user wants a preference saved. I'll call write_memory."); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.LoadConversation(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("loaded %d entries, want 3 (user, reasoning, assistant): %+v", len(got), got)
+	}
+	if got[1].Kind != KindReasoning || got[1].Content != "The user wants a preference saved. I'll call write_memory." {
+		t.Errorf("reasoning entry = %+v", got[1])
+	}
+	if got[2].Kind != KindMessage || got[2].Role != "assistant" || got[2].Content != "Noted!" {
+		t.Errorf("assistant entry = %+v", got[2])
+	}
+
+	// Display-only: the projection the model sees has only the two messages.
+	proj := Project(got)
+	if len(proj) != 2 || proj[0].Role != "user" || proj[1].Role != "assistant" {
+		t.Fatalf("projection = %+v, want [user, assistant] (no reasoning)", proj)
+	}
+	for _, e := range proj {
+		if e.Kind == KindReasoning {
+			t.Error("reasoning leaked into the projection sent to the model")
+		}
+	}
+}
+
+// An assistant turn without a trace stores just the answer — no empty reasoning entry.
+func TestAppendAssistantNoReasoning(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.NewChat("Plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendAssistant(c.ID, "Hi!", "   "); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadConversation(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Kind != KindMessage || got[0].Content != "Hi!" {
+		t.Fatalf("want a single assistant message, got %+v", got)
+	}
+}
+
+// A reasoning entry round-trips through the on-disk format like any other entry.
+func TestReasoningRoundTrip(t *testing.T) {
+	entries := []Entry{
+		{ID: "0b01", Kind: KindMessage, Role: "user", Time: mustTime("2026-10-28T14:02:11Z"), Content: "hi"},
+		{ID: "0b02", Kind: KindReasoning, Time: mustTime("2026-10-28T14:02:14Z"), Content: "They greeted me.\nI'll answer warmly."},
+		{ID: "0b03", Kind: KindMessage, Role: "assistant", Time: mustTime("2026-10-28T14:02:19Z"), Content: "Hello!"},
+	}
+	data := marshalEntries("Chat", entries)
+
+	_, got := parseConversation(data)
+	if len(got) != 3 || got[1].Kind != KindReasoning || got[1].Content != "They greeted me.\nI'll answer warmly." {
+		t.Fatalf("reasoning did not round-trip: %+v\n%s", got, data)
+	}
+	if string(marshalEntries("Chat", got)) != string(data) {
+		t.Errorf("round-trip mismatch:\n%s", data)
+	}
+}

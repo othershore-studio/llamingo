@@ -193,8 +193,9 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 // history: it loads the conversation's log, appends this turn's user message,
 // streams the reply as SSE ("reasoning" and "delta" chunks, then "done" with
 // the honest budget), and appends the assistant reply. The client sends only
-// the new turn. Reasoning ("thinking") streams live but is not persisted — it
-// is model scratch, not part of the conversation.
+// the new turn. Reasoning ("thinking") streams live and is persisted as a
+// reasoning entry (shown when a chat is reopened) but kept out of the prompt —
+// see store.AppendAssistant and store.Project.
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID      string `json:"id"`
@@ -256,8 +257,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	ctx := withEmitter(r.Context(), emit)
 	reg := s.registryFor(body.ID)
 
+	var think strings.Builder
 	out, runErr := mcp.Run(ctx, s.be, reg, bld.Messages(segs), func(d backend.Delta) error {
 		if d.Reasoning != "" {
+			think.WriteString(d.Reasoning)
 			emit("reasoning", map[string]any{"content": d.Reasoning})
 		}
 		if d.Content != "" {
@@ -277,7 +280,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		emit("error", map[string]any{"error": runErr.Error()})
 		return
 	}
-	if _, err := s.st.AppendMessage(body.ID, "assistant", finalAssistant(out)); err != nil {
+	if _, err := s.st.AppendAssistant(body.ID, finalAssistant(out), think.String()); err != nil {
 		emit("error", map[string]any{"error": err.Error()})
 		return
 	}

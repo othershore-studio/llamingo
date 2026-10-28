@@ -20,8 +20,9 @@ import (
 type EntryKind string
 
 const (
-	KindMessage EntryKind = "msg"
-	KindSummary EntryKind = "summary"
+	KindMessage   EntryKind = "msg"
+	KindSummary   EntryKind = "summary"
+	KindReasoning EntryKind = "reasoning" // the model's thinking trace for the answer that follows it
 )
 
 // Entry is one entry in a conversation's append-only log (conversation.md). A
@@ -61,6 +62,41 @@ func (s *Store) AppendMessage(id, role, content string) (Entry, error) {
 		return Entry{}, err
 	}
 	if err := touchUpdated(filepath.Join(dir, "meta.json"), e.Time); err != nil {
+		return Entry{}, err
+	}
+	return e, nil
+}
+
+// AppendAssistant appends an assistant turn: its reasoning trace (when non-empty,
+// as a reasoning entry immediately before the answer) and then the answer itself.
+// A reasoning entry is display-only — Project keeps only messages and summaries,
+// so the trace is shown when a chat is reopened but never re-enters the prompt or
+// the token budget. See docs/architecture.md → "Effort / thinking".
+func (s *Store) AppendAssistant(id, content, reasoning string) (Entry, error) {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return Entry{}, err
+	}
+	logPath := filepath.Join(dir, "conversation.md")
+	now := time.Now().UTC()
+	if strings.TrimSpace(reasoning) != "" {
+		rid, err := newEntryID()
+		if err != nil {
+			return Entry{}, err
+		}
+		if err := appendEntry(logPath, Entry{ID: rid, Kind: KindReasoning, Time: now, Content: reasoning}); err != nil {
+			return Entry{}, err
+		}
+	}
+	eid, err := newEntryID()
+	if err != nil {
+		return Entry{}, err
+	}
+	e := Entry{ID: eid, Kind: KindMessage, Role: "assistant", Time: now, Content: content}
+	if err := appendEntry(logPath, e); err != nil {
+		return Entry{}, err
+	}
+	if err := touchUpdated(filepath.Join(dir, "meta.json"), now); err != nil {
 		return Entry{}, err
 	}
 	return e, nil
@@ -123,7 +159,9 @@ func (s *Store) AppendSummary(id string, in SummaryInput) (Entry, error) {
 // (the one shadowing the largest prefix of messages) stands in for the messages
 // it covers, followed by the messages it does not. Without a summary the
 // messages are returned unchanged. The stored log is never modified — this is
-// the projection the context builder sends to the model.
+// the projection the context builder sends to the model. Entries that are
+// neither messages nor summaries (reasoning traces) are display-only and
+// excluded here, so the thinking never re-enters the prompt.
 func Project(entries []Entry) []Entry {
 	var msgs, summaries []Entry
 	for _, e := range entries {
@@ -257,6 +295,10 @@ func marshalMarker(e Entry) string {
 	if e.Kind == KindSummary {
 		return fmt.Sprintf("<!-- llamingo:summary id=%s covers=%s..%s model=%s t=%s replaced=%d summary=%d -->",
 			e.ID, e.CoversFrom, e.CoversTo, e.Model, e.Time.UTC().Format(time.RFC3339), e.Replaced, e.SummaryTokens)
+	}
+	if e.Kind == KindReasoning {
+		return fmt.Sprintf("<!-- llamingo:reasoning id=%s t=%s -->",
+			e.ID, e.Time.UTC().Format(time.RFC3339))
 	}
 	return fmt.Sprintf("<!-- llamingo:msg id=%s role=%s t=%s -->",
 		e.ID, e.Role, e.Time.UTC().Format(time.RFC3339))
