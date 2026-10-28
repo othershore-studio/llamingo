@@ -81,7 +81,19 @@
     const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
     const summaries = entries.filter((e) => e.kind === 'summary')
     activeSummary = summaries.length ? summaries[summaries.length - 1] : null
-    messages = entries.filter((e) => e.kind === 'msg').map((e) => ({ role: e.role, content: e.content }))
+    // Pair each persisted reasoning entry with the assistant answer that follows
+    // it, so the thinking trace shows in its collapsible block on reload.
+    const msgs = []
+    let trace = ''
+    for (const e of entries) {
+      if (e.kind === 'reasoning') {
+        trace = e.content
+      } else if (e.kind === 'msg') {
+        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '' })
+        trace = ''
+      }
+    }
+    messages = msgs
   }
 
   // Compaction folds the oldest messages into a summary (non-destructive); the
