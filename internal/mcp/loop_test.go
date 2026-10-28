@@ -7,11 +7,13 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/lcpptest"
 	"github.com/othershore-studio/llamingo/internal/mcp"
+	"github.com/othershore-studio/llamingo/internal/permission"
 )
 
 // echoReg is a fake Registry: one "echo" tool whose Call always succeeds.
@@ -24,6 +26,36 @@ func (r *echoReg) Tools() []backend.ToolDef {
 func (r *echoReg) Call(ctx context.Context, name, arguments string) (string, error) {
 	r.calls++
 	return "echoed: hi", nil
+}
+
+// staticReg offers one named tool returning a fixed result.
+type staticReg struct{ name, result string }
+
+func (s *staticReg) Tools() []backend.ToolDef {
+	return []backend.ToolDef{{Name: s.name, Parameters: json.RawMessage(`{"type":"object"}`)}}
+}
+
+func (s *staticReg) Call(ctx context.Context, name, arguments string) (string, error) {
+	if name != s.name {
+		return "", fmt.Errorf("no such tool %q", name)
+	}
+	return s.result, nil
+}
+
+type allowPrompter struct{}
+
+func (allowPrompter) Ask(ctx context.Context, req permission.Request, allowed []permission.Scope) (permission.Decision, error) {
+	return permission.Decision{Allow: true, Scope: permission.ScopeSession}, nil
+}
+
+type denyPrompter struct{}
+
+func (denyPrompter) Ask(ctx context.Context, req permission.Request, allowed []permission.Scope) (permission.Decision, error) {
+	return permission.Decision{Allow: false}, nil
+}
+
+func gate(p permission.Prompter) *permission.Gate {
+	return permission.New(p, permission.NewMemoryGrantStore())
 }
 
 const toolTurnSSE = `data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}
@@ -83,35 +115,60 @@ func TestRunLoop(t *testing.T) {
 	}
 }
 
-func TestServerRegistryTrust(t *testing.T) {
+func TestServerRegistryGating(t *testing.T) {
 	ctx := context.Background()
 
-	// A global (trusted) server: its tools are offered and callable.
-	trusted := mcp.NewRegistry(nil)
+	// A global (trusted) server runs freely — the gate is never consulted, so a
+	// denying prompter still lets it through.
+	trusted := mcp.NewRegistry(gate(denyPrompter{}))
 	if err := trusted.Add(ctx, mcp.Server{Name: "g", Scope: mcp.ScopeGlobal}, newFakeClient(t)); err != nil {
 		t.Fatal(err)
 	}
 	if tools := trusted.Tools(); len(tools) != 1 || tools[0].Name != "echo" {
-		t.Fatalf("trusted tools = %+v, want one named echo", tools)
+		t.Fatalf("trusted tools = %+v", tools)
 	}
-	out, err := trusted.Call(ctx, "echo", `{"text":"hi"}`)
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	if out != "echoed: hi" {
-		t.Errorf("Call result = %q", out)
+	if out, err := trusted.Call(ctx, "echo", `{"text":"hi"}`); err != nil || out != "echoed: hi" {
+		t.Fatalf("trusted call = %q, %v (should bypass the gate)", out, err)
 	}
 
-	// A project (untrusted) server: tools withheld and calls refused until the
-	// gate approves it (increment #4).
-	untrusted := mcp.NewRegistry(nil)
-	if err := untrusted.Add(ctx, mcp.Server{Name: "p", Scope: mcp.ScopeProject}, newFakeClient(t)); err != nil {
+	// A project (untrusted) server offers its tools and runs them when the gate
+	// allows.
+	project := mcp.NewRegistry(gate(allowPrompter{}))
+	if err := project.Add(ctx, mcp.Server{Name: "p", Scope: mcp.ScopeProject}, newFakeClient(t)); err != nil {
 		t.Fatal(err)
 	}
-	if tools := untrusted.Tools(); len(tools) != 0 {
-		t.Errorf("untrusted server offered tools: %+v", tools)
+	if tools := project.Tools(); len(tools) != 1 {
+		t.Fatalf("project tools should still be offered, got %+v", tools)
 	}
-	if _, err := untrusted.Call(ctx, "echo", `{"text":"hi"}`); err == nil {
-		t.Error("want a refusal for an unapproved server's tool, got nil")
+	if out, err := project.Call(ctx, "echo", `{"text":"hi"}`); err != nil || out != "echoed: hi" {
+		t.Fatalf("project call (gate allows) = %q, %v", out, err)
+	}
+
+	// With a denying gate, the project server's tool is refused.
+	denied := mcp.NewRegistry(gate(denyPrompter{}))
+	if err := denied.Add(ctx, mcp.Server{Name: "p2", Scope: mcp.ScopeProject}, newFakeClient(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := denied.Call(ctx, "echo", `{"text":"hi"}`); err == nil {
+		t.Error("want a refusal when the gate denies a project tool")
+	}
+}
+
+func TestCombine(t *testing.T) {
+	combo := mcp.Combine(&echoReg{}, &staticReg{name: "ping", result: "pong"})
+
+	names := map[string]bool{}
+	for _, d := range combo.Tools() {
+		names[d.Name] = true
+	}
+	if !names["echo"] || !names["ping"] {
+		t.Fatalf("combined tools = %v, want echo and ping", names)
+	}
+
+	if out, err := combo.Call(context.Background(), "ping", ""); err != nil || out != "pong" {
+		t.Errorf("Call(ping) = %q, %v", out, err)
+	}
+	if _, err := combo.Call(context.Background(), "nope", ""); err == nil {
+		t.Error("want an error for a tool no registry offers")
 	}
 }

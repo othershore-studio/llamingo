@@ -6,15 +6,19 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
+	"github.com/othershore-studio/llamingo/internal/permission"
 )
 
 // Registry is the set of tools the loop can offer the model and execute. The
-// concrete ServerRegistry below is backed by MCP servers; tests use a fake.
+// ServerRegistry below is backed by MCP servers; a native tool (e.g. image
+// generation) satisfies this interface too, and Combine merges them.
 type Registry interface {
 	// Tools returns the tool definitions to offer the model this turn.
 	Tools() []backend.ToolDef
@@ -86,26 +90,24 @@ type connected struct {
 	tools  []Tool
 }
 
-// ServerRegistry is a Registry backed by connected MCP servers, honoring trust:
-// tools from an unapproved server (a project server, until the increment-#4
-// gate approves it) are neither offered nor callable.
+// ServerRegistry is a Registry backed by connected MCP servers, with the
+// permission gate mediating project-server tools. A trusted (global) server
+// runs freely; a project server's tools are offered to the model but must clear
+// the gate on first use — persistent/session grants remember the answer.
 type ServerRegistry struct {
-	approved func(Server) bool
-	conns    []*connected
-	byTool   map[string]*connected
+	gate   *permission.Gate
+	conns  []*connected
+	byTool map[string]*connected
 }
 
-// NewRegistry returns an empty registry. approved decides which servers' tools
-// are live; nil means "global servers only" (the default trust rule).
-func NewRegistry(approved func(Server) bool) *ServerRegistry {
-	if approved == nil {
-		approved = func(s Server) bool { return s.TrustedByDefault() }
-	}
-	return &ServerRegistry{approved: approved, byTool: map[string]*connected{}}
+// NewRegistry returns an empty registry whose project-server tools are mediated
+// by gate.
+func NewRegistry(gate *permission.Gate) *ServerRegistry {
+	return &ServerRegistry{gate: gate, byTool: map[string]*connected{}}
 }
 
-// Add initializes the client, lists its tools, and registers it. The server is
-// always recorded, but its tools are offered and callable only if approved.
+// Add initializes the client, lists its tools, and registers them. All tools
+// are offered; trust is enforced at call time by the gate.
 func (r *ServerRegistry) Add(ctx context.Context, s Server, c *Client) error {
 	if err := c.Initialize(ctx); err != nil {
 		return fmt.Errorf("mcp: initialize %q: %w", s.Name, err)
@@ -116,39 +118,46 @@ func (r *ServerRegistry) Add(ctx context.Context, s Server, c *Client) error {
 	}
 	cc := &connected{server: s, client: c, tools: tools}
 	r.conns = append(r.conns, cc)
-	if r.approved(s) {
-		for _, t := range tools {
-			r.byTool[t.Name] = cc
-		}
+	for _, t := range tools {
+		r.byTool[t.Name] = cc
 	}
 	return nil
 }
 
-// Tools offers the tools of approved servers to the model.
+// Tools offers every connected server's tools to the model.
 func (r *ServerRegistry) Tools() []backend.ToolDef {
 	var out []backend.ToolDef
 	for _, cc := range r.conns {
-		if !r.approved(cc.server) {
-			continue
-		}
 		for _, t := range cc.tools {
-			out = append(out, backend.ToolDef{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.InputSchema,
-			})
+			out = append(out, toToolDef(t))
 		}
 	}
 	return out
 }
 
-// Call routes a tool invocation to the owning server, refusing tools whose
-// server is not approved.
+// Call routes a tool invocation to its server. A trusted (global) server runs
+// freely; a project server must clear the gate first.
 func (r *ServerRegistry) Call(ctx context.Context, name, arguments string) (string, error) {
 	cc, ok := r.byTool[name]
 	if !ok {
-		return "", fmt.Errorf("mcp: tool %q is not available (unknown, or its server is not approved)", name)
+		return "", fmt.Errorf("mcp: unknown tool %q", name)
 	}
+	if !cc.server.TrustedByDefault() {
+		t, _ := findTool(cc.tools, name)
+		allow, err := r.gate.Allow(ctx, permission.Request{
+			ToolID: mcpToolID(cc.server, t),
+			Label:  fmt.Sprintf("run tool %q from project server %q", name, cc.server.Name),
+			Detail: arguments,
+			Risk:   permission.RiskMedium,
+		})
+		if err != nil {
+			return "", err
+		}
+		if !allow {
+			return "", fmt.Errorf("mcp: tool %q from project server %q is not permitted", name, cc.server.Name)
+		}
+	}
+
 	var args any
 	if strings.TrimSpace(arguments) != "" {
 		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
@@ -164,3 +173,54 @@ func (r *ServerRegistry) Call(ctx context.Context, name, arguments string) (stri
 	}
 	return res.Text(), nil
 }
+
+func toToolDef(t Tool) backend.ToolDef {
+	return backend.ToolDef{Name: t.Name, Description: t.Description, Parameters: t.InputSchema}
+}
+
+func findTool(tools []Tool, name string) (Tool, bool) {
+	for _, t := range tools {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return Tool{}, false
+}
+
+// mcpToolID is the gate identity of an MCP tool: server + name + a hash of the
+// tool definition, so a reshaped tool re-prompts (the confused-deputy guard).
+func mcpToolID(s Server, t Tool) string {
+	sum := sha256.Sum256([]byte(t.Name + "\x00" + t.Description + "\x00" + string(t.InputSchema)))
+	return fmt.Sprintf("mcp:%s:%s#%s", s.Name, t.Name, hex.EncodeToString(sum[:])[:8])
+}
+
+// Combine merges registries into one for the loop: Tools concatenates them, and
+// Call routes to the first registry that offers the named tool. This is how MCP
+// tools and native tools (e.g. image generation) are offered together.
+func Combine(regs ...Registry) Registry { return combined(regs) }
+
+type combined []Registry
+
+func (c combined) Tools() []backend.ToolDef {
+	var out []backend.ToolDef
+	for _, r := range c {
+		out = append(out, r.Tools()...)
+	}
+	return out
+}
+
+func (c combined) Call(ctx context.Context, name, arguments string) (string, error) {
+	for _, r := range c {
+		for _, t := range r.Tools() {
+			if t.Name == name {
+				return r.Call(ctx, name, arguments)
+			}
+		}
+	}
+	return "", fmt.Errorf("mcp: no registry offers tool %q", name)
+}
+
+var (
+	_ Registry = (*ServerRegistry)(nil)
+	_ Registry = combined(nil)
+)
