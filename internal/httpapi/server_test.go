@@ -184,6 +184,35 @@ func TestChatStreamPersists(t *testing.T) {
 	}
 }
 
+// Reasoning ("thinking") streams as its own SSE events but is not persisted —
+// it is model scratch, not part of the conversation.
+func TestChatStreamReasoning(t *testing.T) {
+	api := newAPI(t)
+	id := createChat(t, api, "Thinker")
+
+	resp, err := http.Post(api.URL+"/api/chat/stream", "application/json",
+		strings.NewReader(`{"id":"`+id+`","content":"Hi"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	body := buf.String()
+
+	if !strings.Contains(body, "event: reasoning") || !strings.Contains(body, "respond warmly") {
+		t.Errorf("missing reasoning stream:\n%s", body)
+	}
+
+	entries := getConversation(t, api, id)
+	reply, _ := entries[len(entries)-1]["content"].(string)
+	if strings.Contains(reply, "respond warmly") {
+		t.Errorf("reasoning leaked into the persisted reply: %q", reply)
+	}
+}
+
 // A turn against an unknown conversation id is rejected before streaming.
 func TestChatStreamUnknownConversation(t *testing.T) {
 	api := newAPI(t)

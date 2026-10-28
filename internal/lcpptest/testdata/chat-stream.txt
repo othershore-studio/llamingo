@@ -1,5 +1,9 @@
 data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
 
+data: {"choices":[{"index":0,"delta":{"reasoning_content":"The user greeted me. "}}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning_content":"I'll respond warmly and offer help."}}]}
+
 data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}
 
 data: {"choices":[{"index":0,"delta":{"content":"! How can I help you today?"}}]}
