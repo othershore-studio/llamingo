@@ -126,6 +126,42 @@ func TestEmptyListsAreArrays(t *testing.T) {
 	}
 }
 
+func TestMemoryEndpoints(t *testing.T) {
+	api := newAPI(t)
+
+	get := func() map[string]any {
+		resp, err := http.Get(api.URL + "/api/memory")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var m map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	if m := get(); m["content"] != "" || m["tampered"] != false {
+		t.Fatalf("empty memory = %+v, want blank and not tampered", m)
+	}
+
+	req, _ := http.NewRequest(http.MethodPut, api.URL+"/api/memory", strings.NewReader(`{"content":"likes tea"}`))
+	req.Header.Set("content-type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT /api/memory status = %d, want 204", resp.StatusCode)
+	}
+
+	if m := get(); m["content"] != "likes tea" || m["tampered"] != false {
+		t.Fatalf("after PUT = %+v, want the saved content and not tampered", m)
+	}
+}
+
 func TestProps(t *testing.T) {
 	api := newAPI(t)
 	resp, err := http.Get(api.URL + "/api/props")
