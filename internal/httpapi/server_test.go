@@ -73,6 +73,42 @@ func getConversation(t *testing.T, api *httptest.Server, id string) []map[string
 	return entries
 }
 
+// postJSON posts a JSON body and returns the decoded object.
+func postJSON(t *testing.T, api *httptest.Server, path, body string) map[string]any {
+	t.Helper()
+	resp, err := http.Post(api.URL+path, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s status = %d", path, resp.StatusCode)
+	}
+	var m map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// getList gets a JSON array and returns it.
+func getList(t *testing.T, api *httptest.Server, path string) []map[string]any {
+	t.Helper()
+	resp, err := http.Get(api.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d", path, resp.StatusCode)
+	}
+	var list []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	return list
+}
+
 // Empty lists serialize as [] (a nil Go slice would be null, which a client
 // iterating or reading .length chokes on).
 func TestEmptyListsAreArrays(t *testing.T) {
@@ -130,6 +166,54 @@ func TestChatsCreateAndList(t *testing.T) {
 	}
 	if len(chats) != 1 || chats[0]["title"] != "Trip ideas" {
 		t.Fatalf("chats = %+v, want one titled 'Trip ideas'", chats)
+	}
+}
+
+// Projects: open a folder as a project, create a session in it, and confirm a
+// session is a full conversation (a streamed turn persists to its log).
+func TestProjectsAndSessions(t *testing.T) {
+	api := newAPI(t)
+
+	proj := postJSON(t, api, "/api/projects", `{"path":"/projects/acme","title":"Acme"}`)
+	pid, _ := proj["id"].(string)
+	if pid == "" || proj["title"] != "Acme" {
+		t.Fatalf("project = %+v, want an id and title Acme", proj)
+	}
+
+	// Re-opening the same path is idempotent (identity is the path hash).
+	if again := postJSON(t, api, "/api/projects", `{"path":"/projects/acme","title":"Acme"}`); again["id"] != pid {
+		t.Errorf("re-open gave a different id: %v vs %v", again["id"], pid)
+	}
+
+	if projects := getList(t, api, "/api/projects"); len(projects) != 1 {
+		t.Fatalf("projects = %+v, want exactly 1", projects)
+	}
+
+	if sessions := getList(t, api, "/api/projects/"+pid+"/sessions"); len(sessions) != 0 {
+		t.Fatalf("new project has %d sessions, want 0", len(sessions))
+	}
+
+	sess := postJSON(t, api, "/api/projects/"+pid+"/sessions", `{"title":"First session"}`)
+	sid, _ := sess["id"].(string)
+	if sid == "" {
+		t.Fatal("session has no id")
+	}
+
+	sessions := getList(t, api, "/api/projects/"+pid+"/sessions")
+	if len(sessions) != 1 || sessions[0]["title"] != "First session" {
+		t.Fatalf("sessions = %+v, want one titled 'First session'", sessions)
+	}
+
+	// A session is a full conversation: a streamed turn persists to its log.
+	resp, err := http.Post(api.URL+"/api/chat/stream", "application/json",
+		strings.NewReader(`{"id":"`+sid+`","content":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if entries := getConversation(t, api, sid); len(entries) != 2 {
+		t.Fatalf("session conversation has %d entries, want 2", len(entries))
 	}
 }
 
