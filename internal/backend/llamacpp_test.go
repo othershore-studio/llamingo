@@ -6,6 +6,7 @@ package backend_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -64,7 +65,7 @@ func TestChatStream(t *testing.T) {
 	sawDone := false
 
 	err := newClient(t).ChatStream(context.Background(),
-		[]backend.Message{{Role: backend.RoleUser, Content: "Hi"}},
+		backend.ChatRequest{Messages: []backend.Message{{Role: backend.RoleUser, Content: "Hi"}}},
 		func(d backend.Delta) error {
 			content.WriteString(d.Content)
 			if d.Usage != nil {
@@ -86,5 +87,52 @@ func TestChatStream(t *testing.T) {
 	}
 	if usage == nil || usage.PromptTokens != 12 {
 		t.Errorf("usage = %+v, want PromptTokens 12", usage)
+	}
+}
+
+func TestChatStreamToolCalls(t *testing.T) {
+	// Tool-call arguments arrive as two fragments and must be accumulated.
+	const toolSSE = `data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"echo","arguments":"{\"text\":"}}]}}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"hi\"}"}}]}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":5,"total_tokens":25}}
+
+data: [DONE]
+`
+	srv := lcpptest.NewServerScript(toolSSE)
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+
+	var got []backend.ToolCall
+	sawDone := false
+	err := be.ChatStream(context.Background(),
+		backend.ChatRequest{
+			Messages: []backend.Message{{Role: backend.RoleUser, Content: "say hi via echo"}},
+			Tools:    []backend.ToolDef{{Name: "echo", Description: "echo", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+		func(d backend.Delta) error {
+			if d.Done {
+				sawDone = true
+				got = d.ToolCalls
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawDone {
+		t.Fatal("never saw a terminal (Done) delta")
+	}
+	if len(got) != 1 {
+		t.Fatalf("tool calls = %+v, want exactly 1", got)
+	}
+	tc := got[0]
+	if tc.ID != "call_1" || tc.Function.Name != "echo" || tc.Function.Arguments != `{"text":"hi"}` {
+		t.Errorf("tool call = %+v, want id call_1, name echo, args {\"text\":\"hi\"}", tc)
 	}
 }

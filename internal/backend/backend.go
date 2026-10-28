@@ -7,7 +7,10 @@
 // contained change here, not a codebase-wide rewrite. See docs/architecture.md.
 package backend
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Role identifies who authored a chat message.
 type Role string
@@ -19,14 +22,17 @@ const (
 	RoleTool      Role = "tool"
 )
 
-// Message is one chat message in a conversation.
+// Message is one chat message. An assistant message may carry ToolCalls; a tool
+// message carries ToolCallID (which call it answers). The JSON tags match the
+// OpenAI shape the server's chat template expects.
 type Message struct {
-	Role    Role   `json:"role"`
-	Content string `json:"content"`
+	Role       Role       `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
-// Props is the slice of llama-server /props state the client needs: the real
-// context window, the model identifier, and the model's chat template.
+// Props is the slice of llama-server /props state the client needs.
 type Props struct {
 	NCtx         int
 	ModelID      string
@@ -40,19 +46,41 @@ type Usage struct {
 	TotalTokens      int
 }
 
+// ToolDef is a tool offered to the model. Parameters is the raw JSON Schema for
+// the arguments, passed through unchanged.
+type ToolDef struct {
+	Name        string
+	Description string
+	Parameters  json.RawMessage
+}
+
+// FunctionCall is the function portion of a tool call.
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // raw JSON string
+}
+
+// ToolCall is a tool invocation requested by the model (OpenAI shape).
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function FunctionCall `json:"function"`
+}
+
 // Delta is one streamed increment of a chat completion.
 type Delta struct {
-	// Content is assistant text produced in this chunk, if any.
-	Content string
-	// Reasoning is "thinking" text (reasoning_content) in this chunk, if any.
-	Reasoning string
-	// HasToolCall reports whether this chunk carried a tool call. Increment #1
-	// detects but does not act on tool calls.
-	HasToolCall bool
-	// Done is true on the terminal chunk.
-	Done bool
-	// Usage is set on the terminal chunk when the server reports token usage.
-	Usage *Usage
+	Content   string     // assistant text in this chunk, if any
+	Reasoning string     // reasoning_content ("thinking") in this chunk, if any
+	ToolCalls []ToolCall // assembled tool calls, set on the terminal (Done) delta
+	Done      bool       // true on the terminal chunk
+	Usage     *Usage     // set on the terminal chunk when the server reports it
+}
+
+// ChatRequest is a chat-completion request: the conversation plus any tools the
+// client offers the model for this turn.
+type ChatRequest struct {
+	Messages []Message
+	Tools    []ToolDef
 }
 
 // Backend is the one boundary to the engine. LlamaCppNative is the only
@@ -62,10 +90,10 @@ type Backend interface {
 	Props(ctx context.Context) (Props, error)
 	// Tokenize returns the exact token count for a rendered string.
 	Tokenize(ctx context.Context, text string) (int, error)
-	// ApplyTemplate renders messages through the model's chat template and
-	// returns the resulting prompt string.
+	// ApplyTemplate renders messages through the model's chat template.
 	ApplyTemplate(ctx context.Context, msgs []Message) (string, error)
-	// ChatStream streams a completion for msgs, invoking fn for each Delta in
-	// order. It returns when the stream ends or when fn returns an error.
-	ChatStream(ctx context.Context, msgs []Message, fn func(Delta) error) error
+	// ChatStream streams a completion for req, invoking fn for each Delta in
+	// order. Content streams as it arrives; assembled tool calls arrive on the
+	// terminal (Done) delta.
+	ChatStream(ctx context.Context, req ChatRequest, fn func(Delta) error) error
 }

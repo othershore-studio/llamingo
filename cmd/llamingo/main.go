@@ -81,7 +81,7 @@ func chat(ctx context.Context, be backend.Backend, url, system, prompt string, o
 	}
 	fmt.Fprintf(errOut, "context ~%d/%d [%s]  (%s)\n", bud.Used(), bud.NCtx, bud.Level(), breakdown(bud))
 
-	err = be.ChatStream(ctx, bld.Messages(segments), func(d backend.Delta) error {
+	err = be.ChatStream(ctx, backend.ChatRequest{Messages: bld.Messages(segments)}, func(d backend.Delta) error {
 		if d.Content != "" {
 			fmt.Fprint(out, d.Content)
 		}
