@@ -1,23 +1,15 @@
-# Go
+# Build output
 /bin/
 /dist/
-*.exe
+/llamingo
+/llamingo.exe
+
+# Go test / coverage artifacts
 *.test
 *.out
-vendor/
+coverage.*
 
-# Wails / web build
-/build/bin/
-/frontend/dist/
-/frontend/node_modules/
-node_modules/
-
-# Local / editor / OS
-.env
-.env.*
+# Local, never commit (endpoints, tokens, scratch)
 *.local
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.log
+.env
+/.llamingo-local/
