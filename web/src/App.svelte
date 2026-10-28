@@ -1,6 +1,11 @@
 <script>
   import { onMount } from 'svelte'
 
+  // The desktop app (Wails) cannot stream through its asset server, so it serves
+  // the core API on a loopback port the webview calls directly; the browser and
+  // PWA use same-origin relative paths.
+  const apiFetch = (path, opts) => fetch((window.runtime ? 'http://127.0.0.1:8766' : '') + path, opts)
+
   let conn = $state(null) // { model, nCtx }
   let chats = $state([])
   let activeId = $state(null)
@@ -35,7 +40,7 @@
   // reflect when it becomes unreachable.
   async function checkServer() {
     try {
-      const p = await fetch('/api/props').then((r) => {
+      const p = await apiFetch('/api/props').then((r) => {
         if (!r.ok) throw new Error('unreachable')
         return r.json()
       })
@@ -53,9 +58,9 @@
   }
 
   async function refresh() {
-    conn = await fetch('/api/props').then((r) => r.json())
-    chats = (await fetch('/api/chats').then((r) => r.json())) ?? []
-    projects = (await fetch('/api/projects').then((r) => r.json())) ?? []
+    conn = await apiFetch('/api/props').then((r) => r.json())
+    chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+    projects = (await apiFetch('/api/projects').then((r) => r.json())) ?? []
     if (!activeId && chats.length) await selectChat(chats[0].id)
   }
 
@@ -65,7 +70,7 @@
     error = null
     budget = null
     report = null
-    const entries = (await fetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
+    const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
     const summaries = entries.filter((e) => e.kind === 'summary')
     activeSummary = summaries.length ? summaries[summaries.length - 1] : null
     messages = entries.filter((e) => e.kind === 'msg').map((e) => ({ role: e.role, content: e.content }))
@@ -75,7 +80,7 @@
   // core returns how many it folded and the tokens saved.
   async function compact() {
     if (!activeId || streaming) return
-    const r = await fetch('/api/compact', {
+    const r = await apiFetch('/api/compact', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id: activeId }),
@@ -90,14 +95,14 @@
   // Personal memory is injected into every prompt (metered as its own segment)
   // and editable here. An edit made outside the app is flagged until accepted.
   async function openMemory() {
-    const m = await fetch('/api/memory').then((r) => r.json())
+    const m = await apiFetch('/api/memory').then((r) => r.json())
     memoryContent = m.content ?? ''
     memoryTampered = !!m.tampered
     memoryOpen = true
   }
 
   async function saveMemory() {
-    await fetch('/api/memory', {
+    await apiFetch('/api/memory', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ content: memoryContent }),
@@ -107,22 +112,22 @@
   }
 
   async function ackMemory() {
-    await fetch('/api/memory/ack', { method: 'POST' })
+    await apiFetch('/api/memory/ack', { method: 'POST' })
     memoryTampered = false
   }
 
   async function newChat() {
-    const created = await fetch('/api/chats', {
+    const created = await apiFetch('/api/chats', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'New chat' }),
     }).then((r) => r.json())
-    chats = (await fetch('/api/chats').then((r) => r.json())) ?? []
+    chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
     await selectChat(created.id)
   }
 
   async function loadSessions(projectId) {
-    sessions = (await fetch(`/api/projects/${projectId}/sessions`).then((r) => r.json())) ?? []
+    sessions = (await apiFetch(`/api/projects/${projectId}/sessions`).then((r) => r.json())) ?? []
   }
 
   // Projects are the store's second root; a session inside one is a full
@@ -140,20 +145,20 @@
   async function openFolder() {
     const path = folderPath.trim()
     if (!path) return
-    const created = await fetch('/api/projects', {
+    const created = await apiFetch('/api/projects', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path, title: baseName(path) }),
     }).then((r) => r.json())
     folderPath = ''
     openingFolder = false
-    projects = (await fetch('/api/projects').then((r) => r.json())) ?? []
+    projects = (await apiFetch('/api/projects').then((r) => r.json())) ?? []
     expandedProject = created.id
     await loadSessions(created.id)
   }
 
   async function newSession(projectId) {
-    const created = await fetch(`/api/projects/${projectId}/sessions`, {
+    const created = await apiFetch(`/api/projects/${projectId}/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'New session' }),
@@ -187,7 +192,7 @@
   }
 
   async function streamChat(id, content) {
-    const resp = await fetch('/api/chat/stream', {
+    const resp = await apiFetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id, content }),
