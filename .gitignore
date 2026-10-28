@@ -4,6 +4,14 @@
 /llamingo
 /llamingo.exe
 
+# Wails desktop build: ignore the compiled binary, keep build/ scaffolding
+# (appicon.png, windows/ manifest + icon) committed as the customization point.
+/build/bin/
+# Wails-generated frontend runtime/bindings + install cache: regenerated on
+# every `wails build`, and unused here (the SPA talks to the core over HTTP).
+/web/wailsjs/
+/web/package.json.md5
+
 # Go test / coverage artifacts
 *.test
 *.out
