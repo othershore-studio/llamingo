@@ -120,6 +120,31 @@ instructions can't be clobbered by a model; and instructions (shared, committed)
 memory (personal, local). `AGENTS.md` is the nearest cross-tool convention; `CLAUDE.md` is widespread — honor both as
 read-only directives.
 
+### Memory integrity — tamper-evidence
+
+Memory is the design's prime injection surface — it is injected into context, the model can write it (gated), and it
+rarely changes — so an unexpected change is a strong signal (tested: an external edit to `memory.md` does alter model
+behaviour). llaminGO keeps a **hash of each `memory.md`** in the local SQLite db, recorded after every edit through a
+known path: the UI editor (user) or the gated write-tool (model). On load, a hash mismatch means memory changed
+*outside* those paths.
+
+- **Mismatch is a review alert, never a block.** The files are the user's to edit in any tool, so a mismatch surfaces
+  a calm *"memory changed outside llaminGO — review and accept?"*; accepting stores the new hash. The user owns their
+  data, so an alert is enough for v1.
+- **Tamper-evidence, not tamper-proofing.** A local actor who can write `memory.md` can usually write the db too, so
+  this is a tripwire against accidental, external, or injected edits — not a guarantee. The hardening path is to key
+  the hash with a secret (a per-install seed / HMAC in the OS keystore), so defeating it needs the keystore secret,
+  not just file+db write. Hash *normalized* content (LF, trimmed) so a line-ending rewrite is not a false positive.
+- **This is the db's one piece of non-rebuildable trust state** — unlike the index (a rebuildable cache), losing it
+  leaves the app able only to re-trust whatever is on disk. It lands with memory and SQLite in increment #6.
+
+**Conversation hashing is deliberately out of scope.** A transcript changes every turn, so a whole-file hash is
+noise; and a conversation's real injection vector is the *content the model reads* (tool results, web pages,
+`@`-mentioned files), defended by the instruction-source boundary and the permission gate, not by hashing the
+transcript. v1 is fully local, too — without the v2 server there is no authority to flag a conversation as
+suspicious. If conversation integrity is ever wanted, the shape is a hash-chain over the append-only log (enforcing
+non-destructive compaction's append-only history), deferred to v2+.
+
 ### Sync is not a client concern
 
 Earlier drafts had the client do "bring-your-own-backend" file sync. **Dropped.** A folder of plain files already gets
@@ -352,3 +377,4 @@ Two kinds, split by infrastructure (the real test suite starts at increment #1):
   vs real-model probes).
 - 2026-10-27: UX first pass captured in [`ui.md`](ui.md) — margin-derived calm sensibility, two-panel shell, distributed context budget, own Andean-warm identity.
 - 2026-10-27: MCP config settled — Claude-compatible global `~/.llamingo/mcp.json` + per-project repo `.mcp.json`; project servers gated, global trusted; the frontier hand-off rationale; a scope-aware Tools surface (see [`ui.md`](ui.md)); "compatible with" other clients deferred to v2.
+- 2026-10-27: Memory integrity settled — a hash of each `memory.md` in the local SQLite (the db's one non-rebuildable trust-state), review-on-mismatch (never a block), with a keystore-keyed HMAC as the hardening path; conversation hashing ruled out (churn + wrong vector). An increment-#6 feature.
