@@ -102,6 +102,21 @@ Distribute, don't centralize — margin's instinct that state lives where it is 
 the filename, not a dashboard). A dedicated context inspector is held in reserve only if the distributed version
 proves too thin; it suits the small-model flow, where each short session's state is visible in-session at a glance.
 
+## Tools & MCP
+
+Configured MCP servers live in plain, **Claude-compatible** files — a **global** `~/.llamingo/mcp.json` and a
+**per-project** `.mcp.json` in the working folder (see [`architecture.md`](architecture.md) → *MCP*). The UI is a
+convenience over them, never a second source of truth.
+
+- **A scope-aware Tools surface**, summoned as a dialog/slide-over (margin's Settings-dialog pattern) — never a
+  permanent column. In a project it lists **global + that project's** servers and their tools; in Chats, just global —
+  the switcher's scope model again.
+- It shows each server's state plainly — **enabled · pending approval · blocked** — because a project's servers come
+  from the repo and must clear the permission gate before first run, while global servers are trusted.
+- **Access, not a slash command:** a visible `Tools…` in the top-bar overflow, and a jump-in from the budget
+  popover's **tools** line — which already shows, honestly, what the active servers cost in context. Managing servers
+  and managing that cost become one gesture (and on a small model, leaner tool defs mean a healthier window).
+
 ## Visual identity
 
 - **Shared with margin: the sensibility.** Calm warm-neutral paper surface, flat, hairline borders, system light/dark,
@@ -130,3 +145,5 @@ proves too thin; it suits the small-model flow, where each short session's state
   `/props` → Chat mode) + progressive disclosure; **distributed context budget** (ambient status bar + color ramp,
   on-tap popover, inline-in-thread; no inspector); **visual identity** (shared calm/paper sensibility with margin, own
   Andean-warm identity, functional accent kept clear of the alarm ramp).
+- 2026-10-27: Added Tools & MCP — Claude-compatible global/project `mcp.json`, project servers gated (global trusted),
+  a scope-aware Tools surface over the canonical files.

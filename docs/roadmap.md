@@ -36,6 +36,9 @@ The **optional** small server that earns its place only when you leave the LAN.
 - Serves the same web UI as a **PWA** → mobile without a native-app lift.
 - The same HTTP/SSE adapter from v1, exposed and authenticated — a deploy mode, not a rewrite.
 - *(Open: syncing the `chat/` root is the leaning; not finally committed.)*
+- **Client-compat exploration:** survey other popular clients' project formats and offer a per-project "compatible
+  with" setting. (v1 targets Claude, whose `.mcp.json` + `AGENTS.md` already give a frictionless hand-off to a
+  frontier model when a local task outgrows the window.)
 
 ## Later — local tools (permission-gated)
 

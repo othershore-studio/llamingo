@@ -205,6 +205,23 @@ With `--jinja` emitting `tool_calls`, the client runs the full loop itself:
 
 This removes any dependency on an OpenAPI bridge (mcpo) or a separate chat front-end for tool use.
 
+### Configuration, trust & the frontier hand-off
+
+- **Claude-compatible config, two scopes:** a **global** `~/.llamingo/mcp.json` (your servers, everywhere) and a
+  **per-project** `.mcp.json` in the **working folder** (the repo), using Claude Code's `mcpServers` schema (stdio
+  `command`/`args`/`env`, or remote `type`/`url`). Both are plain files you own; the Tools UI (see [`ui.md`](ui.md))
+  is a convenience over them, never a second source of truth. `.mcp.json` sits in the repo beside `AGENTS.md` — a
+  project's servers are shared "how to work here," not personal.
+- **Why compatibility is strategic, not just convenient.** Local has a ceiling; for a complex task the user may
+  escalate to a frontier model. Because a project carries a Claude-shaped `.mcp.json` *and* `AGENTS.md` in its repo,
+  it **opens in Claude Code / Claude Desktop as-is** — servers and instructions intact. That is the README thesis made
+  operational: local for the routine load, a **frictionless hand-off to the frontier** when a task needs it. llaminGO
+  is the local tier of a continuum, not a walled garden; the project folder is the portable unit that rides up. Claude
+  is the de-facto standard and the v1 target (`AGENTS.md` is already cross-tool).
+- **Trust follows the source.** A committed `.mcp.json` is *data from the repo*, and an MCP server is arbitrary
+  execution — so **project servers clear the permission gate before first run**, while **global servers are trusted**
+  (you authored them). Same instruction-source-boundary logic as everywhere else: the repo is not a standing grant.
+
 ## Tools, image generation & the permission gate
 
 ### Native tools vs MCP tools
@@ -318,6 +335,7 @@ Two kinds, split by infrastructure (the real test suite starts at increment #1):
   Deferred — the thin-client architecture keeps it reversible.
 - **Web UI framework:** lean toward Svelte (fits llama.cpp's own webui and the small-footprint goal); not settled.
 - **UX & interface:** first pass captured in [`ui.md`](ui.md); the web UI framework (above) is the main item still open there.
+- **"Compatible with" other clients (v2):** survey other popular clients' project/standard formats and a per-project *compatible-with* setting; Claude is the v1 target.
 
 ## Changelog
 
@@ -333,3 +351,4 @@ Two kinds, split by infrastructure (the real test suite starts at increment #1):
   (incl. model selection and effort/thinking) kept as a principle, leaning on llama.cpp; two-tier testing (mocked core
   vs real-model probes).
 - 2026-10-27: UX first pass captured in [`ui.md`](ui.md) — margin-derived calm sensibility, two-panel shell, distributed context budget, own Andean-warm identity.
+- 2026-10-27: MCP config settled — Claude-compatible global `~/.llamingo/mcp.json` + per-project repo `.mcp.json`; project servers gated, global trusted; the frontier hand-off rationale; a scope-aware Tools surface (see [`ui.md`](ui.md)); "compatible with" other clients deferred to v2.
