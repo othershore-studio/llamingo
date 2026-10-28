@@ -85,7 +85,7 @@ func TestRunLoop(t *testing.T) {
 	reg := &echoReg{}
 
 	start := []backend.Message{{Role: backend.RoleUser, Content: "say hi via echo"}}
-	msgs, err := mcp.Run(context.Background(), be, reg, start, nil, 8)
+	msgs, err := mcp.Run(context.Background(), be, reg, start, nil, 8, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

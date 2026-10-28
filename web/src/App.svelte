@@ -37,6 +37,8 @@
 
   let pending = $state(null) // a tool's consent prompt: { id, label, detail, risk, scopes }
 
+  let thinking = $state(true) // per-turn thinking toggle; only shown when the model supports it
+
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
     const t = setInterval(checkServer, 15000)
@@ -233,7 +235,7 @@
     const resp = await apiFetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, content }),
+      body: JSON.stringify({ id, content, thinking: conn?.thinkingSupported ? thinking : undefined }),
     })
     if (!resp.ok) throw new Error('stream request failed')
     const reader = resp.body.getReader()
@@ -293,6 +295,14 @@
     <span class="mark"></span>
     <span class="wordmark">llaminGO</span>
     <span class="spacer"></span>
+    {#if conn?.thinkingSupported}
+      <button
+        class="pill-btn"
+        class:on={thinking}
+        onclick={() => (thinking = !thinking)}
+        title="Toggle the model's thinking for new messages"
+      >Thinking {thinking ? 'on' : 'off'}</button>
+    {/if}
     <button class="pill-btn" onclick={openMemory}>Memory</button>
     {#if conn}<span class="pill">{modelName(conn.model)}</span>{/if}
   </header>
@@ -796,6 +806,11 @@
   }
   .pill-btn:hover {
     background: var(--paper);
+  }
+  .pill-btn.on {
+    color: var(--clay);
+    border-color: color-mix(in srgb, var(--clay) 40%, transparent);
+    background: color-mix(in srgb, var(--clay) 12%, transparent);
   }
   .modal-backdrop {
     position: fixed;

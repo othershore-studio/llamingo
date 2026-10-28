@@ -104,6 +104,9 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn fun
 	if len(req.Tools) > 0 {
 		body["tools"] = toolsWire(req.Tools)
 	}
+	if len(req.TemplateKwargs) > 0 {
+		body["chat_template_kwargs"] = req.TemplateKwargs
+	}
 	resp, err := l.post(ctx, "/v1/chat/completions", body)
 	if err != nil {
 		return err
