@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
+	"github.com/othershore-studio/llamingo/internal/contextbudget"
 	"github.com/othershore-studio/llamingo/internal/store"
 )
 
@@ -21,10 +22,59 @@ const compactSystemPrompt = "You are compacting a chat conversation to save cont
 	"Summarize the exchange below concisely, preserving key facts, decisions, names, and any " +
 	"open threads or todos. Write only the summary."
 
+// compactResult reports the outcome of a compaction: how many messages were
+// folded, the net tokens saved, and the summary text produced.
+type compactResult struct {
+	Folded  int
+	Saved   int
+	Summary string
+}
+
+// shouldAutoCompact reports whether the projected prompt is full enough to fold
+// the oldest messages before this turn.
+func shouldAutoCompact(bud contextbudget.Budget) bool {
+	return bud.Level() == contextbudget.LevelFull
+}
+
+// compactConversation folds a conversation's oldest messages into a summary and
+// appends it (non-destructive). It returns a zero result (Folded 0) when there
+// is nothing old enough to fold. Both the manual endpoint and auto-compaction
+// use it.
+func (s *Server) compactConversation(ctx context.Context, id string) (compactResult, error) {
+	entries, err := s.st.LoadConversation(id)
+	if err != nil {
+		return compactResult{}, err
+	}
+	prior, fold, from, to := compactionPlan(entries)
+	if len(fold) == 0 {
+		return compactResult{}, nil
+	}
+	span := renderSpan(prior, fold)
+	summary, err := summarize(ctx, s.be, span)
+	if err != nil {
+		return compactResult{}, err
+	}
+	replaced, _ := s.be.Tokenize(ctx, span)
+	summaryTokens, _ := s.be.Tokenize(ctx, summary)
+	model := ""
+	if p, err := s.be.Props(ctx); err == nil {
+		model = p.ModelID
+	}
+	if _, err := s.st.AppendSummary(id, store.SummaryInput{
+		CoversFrom: from, CoversTo: to, Model: model, Content: summary,
+		Replaced: replaced, SummaryTokens: summaryTokens,
+	}); err != nil {
+		return compactResult{}, err
+	}
+	saved := replaced - summaryTokens
+	if saved < 0 {
+		saved = 0
+	}
+	return compactResult{Folded: len(fold), Saved: saved, Summary: summary}, nil
+}
+
 // POST /api/compact {id} — fold the oldest messages of a conversation into a
-// summary, keeping the most recent few verbatim. Non-destructive: the summary is
-// appended (store.Project substitutes it for its range when building the prompt)
-// and the originals are untouched. Returns {folded, saved}.
+// summary on demand (non-destructive). Returns {folded, saved, summary}.
 func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID string `json:"id"`
@@ -33,45 +83,12 @@ func (s *Server) handleCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	entries, err := s.st.LoadConversation(body.ID)
+	res, err := s.compactConversation(r.Context(), body.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
-	prior, fold, from, to := compactionPlan(entries)
-	if len(fold) == 0 {
-		writeJSON(w, map[string]any{"folded": 0, "saved": 0})
-		return
-	}
-
-	span := renderSpan(prior, fold)
-	summary, err := summarize(r.Context(), s.be, span)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	replaced, _ := s.be.Tokenize(r.Context(), span)
-	summaryTokens, _ := s.be.Tokenize(r.Context(), summary)
-	model := ""
-	if p, err := s.be.Props(r.Context()); err == nil {
-		model = p.ModelID
-	}
-
-	if _, err := s.st.AppendSummary(body.ID, store.SummaryInput{
-		CoversFrom: from, CoversTo: to, Model: model, Content: summary,
-		Replaced: replaced, SummaryTokens: summaryTokens,
-	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	saved := replaced - summaryTokens
-	if saved < 0 {
-		saved = 0
-	}
-	writeJSON(w, map[string]any{"folded": len(fold), "saved": saved})
+	writeJSON(w, map[string]any{"folded": res.Folded, "saved": res.Saved, "summary": res.Summary})
 }
 
 // compactionPlan decides what to fold: the messages after the current active

@@ -165,6 +165,9 @@
       messages[messages.length - 1].content += payload.content
     } else if (event === 'reasoning' && payload.content) {
       messages[messages.length - 1].reasoning += payload.content
+    } else if (event === 'compacted') {
+      report = `Auto-compacted: folded ${payload.folded}, saved ~${payload.saved} tokens`
+      if (payload.summary) activeSummary = { content: payload.summary }
     } else if (event === 'done') {
       budget = payload.budget
     } else if (event === 'error') {
