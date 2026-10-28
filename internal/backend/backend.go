@@ -46,6 +46,16 @@ type Usage struct {
 	TotalTokens      int
 }
 
+// Timings is the server's performance report for a completion (llama.cpp
+// `timings`): tokens processed and the per-second rates for prompt processing
+// and token generation.
+type Timings struct {
+	PromptN          int
+	PromptPerSecond  float64
+	PredictN         int
+	PredictPerSecond float64
+}
+
 // ToolDef is a tool offered to the model. Parameters is the raw JSON Schema for
 // the arguments, passed through unchanged.
 type ToolDef struct {
@@ -74,6 +84,7 @@ type Delta struct {
 	ToolCalls []ToolCall // assembled tool calls, set on the terminal (Done) delta
 	Done      bool       // true on the terminal chunk
 	Usage     *Usage     // set on the terminal chunk when the server reports it
+	Timings   *Timings   // set on the terminal chunk when the server reports timings
 }
 
 // ChatRequest is a chat-completion request: the conversation plus any tools the

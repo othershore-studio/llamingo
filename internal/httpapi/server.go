@@ -275,6 +275,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var think strings.Builder
+	var timings *backend.Timings
 	out, runErr := mcp.Run(ctx, s.be, reg, bld.Messages(segs), func(d backend.Delta) error {
 		if d.Reasoning != "" {
 			think.WriteString(d.Reasoning)
@@ -291,6 +292,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if d.Usage != nil && d.Usage.PromptTokens > bud.Authoritative {
 			bud.Authoritative = d.Usage.PromptTokens
 		}
+		if d.Timings != nil {
+			timings = d.Timings
+		}
 		return nil
 	}, maxToolRounds, kwargs)
 	if runErr != nil {
@@ -301,9 +305,17 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		emit("error", map[string]any{"error": err.Error()})
 		return
 	}
-	emit("done", map[string]any{
+	donePayload := map[string]any{
 		"budget": map[string]any{"used": bud.Used(), "nCtx": bud.NCtx, "level": string(bud.Level())},
-	})
+	}
+	if timings != nil {
+		donePayload["timings"] = map[string]any{
+			"promptPerSecond":  timings.PromptPerSecond,
+			"predictPerSecond": timings.PredictPerSecond,
+			"predictN":         timings.PredictN,
+		}
+	}
+	emit("done", donePayload)
 }
 
 // messagesFromEntries maps projected log entries to the message list sent to the
