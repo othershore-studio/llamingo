@@ -288,6 +288,29 @@ file; session grants live in memory and die with the chat. A grant **binds to a 
 v1 surface is tiny: image gen is low-risk → `allow this chat / always / ask each time`. The machinery is designed now;
 future tiers (Python, shell, filesystem) slot in by declaring higher risk.
 
+### write_memory — the second native tool
+
+Memory's **read** path is always-on (injected as a metered segment; see *Memory & instructions*). The **write** path
+is a native tool, `write_memory`, so the model can propose durable updates — gated at **medium risk** (a side effect),
+so the gate offers only *this-chat* or *once*, never a standing "always" (the model cannot silently rewrite memory on a
+blanket grant). The model already sees current memory in context, so it composes the **complete** new version; the tool
+writes it verbatim and re-hashes (clearing the tamper flag). The consent prompt shows the exact proposed content.
+
+### The permission handshake
+
+The gate asks the user over the **one-way SSE chat stream**, without breaking the thin-client seam. When a tool clears
+no standing grant, the gate's `Prompter` — reached synchronously deep in the tool loop, on the request goroutine —
+emits a **`permission` event** (`{id, label, detail, risk, scopes}`) on that stream and **blocks**. The answer returns
+out-of-band on **`POST /api/permission/{id}`** `{allow, scope}`; a small in-process **broker** (`id → channel`) routes
+it back to the waiting call, which records the granted scope and proceeds. Silence times out to a deny; a dropped
+connection is reaped by the request context. One app-wide prompter + broker serve every in-flight chat (the stream is
+found in the request context), while **gates are per-conversation** so a *this-chat* grant never leaks across chats.
+
+This is also what wires the **client-owned MCP loop** (`internal/mcp.Run`) into the live chat: the stream drives the
+loop, mapping its deltas to `reasoning` / `delta` / `tool_call` SSE events and persisting only the **final** assistant
+answer (tool-call turns are live-streamed scratch, like reasoning — a tool's durable effect is its own artifact). Image
+generation and project MCP servers join the same registry (`mcp.Combine`) behind the same gate.
+
 ## Model & capability awareness
 
 ### Model selection
@@ -378,3 +401,4 @@ Two kinds, split by infrastructure (the real test suite starts at increment #1):
 - 2026-10-27: UX first pass captured in [`ui.md`](ui.md) — margin-derived calm sensibility, two-panel shell, distributed context budget, own Andean-warm identity.
 - 2026-10-27: MCP config settled — Claude-compatible global `~/.llamingo/mcp.json` + per-project repo `.mcp.json`; project servers gated, global trusted; the frontier hand-off rationale; a scope-aware Tools surface (see [`ui.md`](ui.md)); "compatible with" other clients deferred to v2.
 - 2026-10-27: Memory integrity settled — a hash of each `memory.md` in the local SQLite (the db's one non-rebuildable trust-state), review-on-mismatch (never a block), with a keystore-keyed HMAC as the hardening path; conversation hashing ruled out (churn + wrong vector). An increment-#6 feature.
+- 2026-10-28: Agentic capstone — the client-owned tool loop (`mcp.Run`) wired into the chat stream, with the **permission handshake** over SSE (a `permission` event + out-of-band `POST /api/permission/{id}`, correlated by an in-process broker; per-conversation gates). `write_memory` lands as the **second native tool** (gated, medium-risk) and the proving customer; image gen + MCP servers join the same `mcp.Combine` registry. Tool-call turns stream live but only the final answer persists (faithful tool-trail persistence deferred to a log-schema change).

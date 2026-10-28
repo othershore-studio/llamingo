@@ -1,0 +1,229 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+package httpapi
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/othershore-studio/llamingo/internal/mcp"
+	"github.com/othershore-studio/llamingo/internal/memtool"
+	"github.com/othershore-studio/llamingo/internal/permission"
+)
+
+// This file is the agentic wiring: the permission gate reaches the user over the
+// one-way SSE chat stream. The gate's Prompter is called deep inside the tool
+// loop, on the handler goroutine, with the request context in hand; it emits a
+// "permission" event on that stream and blocks. The answer returns out-of-band
+// on POST /api/permission/{id}, which the broker routes back to the waiting
+// call. See docs/architecture.md → "The permission handshake".
+
+// permissionTimeout is how long a tool waits for the user to answer before it is
+// auto-denied (the safe default). A dropped connection is reaped sooner by the
+// request context.
+const permissionTimeout = 2 * time.Minute
+
+// emitter writes an SSE event on the in-flight chat stream. handleChatStream
+// stashes one in the request context so the gate's prompter — reached deep in
+// the tool loop — can surface a consent prompt on the very stream that provoked
+// it.
+type emitter func(event string, data any)
+
+type emitterKeyT struct{}
+
+var emitterKey emitterKeyT
+
+func withEmitter(ctx context.Context, e emitter) context.Context {
+	return context.WithValue(ctx, emitterKey, e)
+}
+
+func emitterFrom(ctx context.Context) emitter {
+	e, _ := ctx.Value(emitterKey).(emitter)
+	return e
+}
+
+// broker correlates a consent prompt (sent out over the SSE stream) with its
+// answer (arriving on a separate POST). Each pending prompt gets an id and a
+// buffered channel; the POST handler resolves it, unblocking the waiting Ask.
+type broker struct {
+	mu      sync.Mutex
+	pending map[string]chan permission.Decision
+}
+
+func newBroker() *broker { return &broker{pending: map[string]chan permission.Decision{}} }
+
+func (b *broker) register(id string) chan permission.Decision {
+	ch := make(chan permission.Decision, 1)
+	b.mu.Lock()
+	b.pending[id] = ch
+	b.mu.Unlock()
+	return ch
+}
+
+func (b *broker) cancel(id string) {
+	b.mu.Lock()
+	delete(b.pending, id)
+	b.mu.Unlock()
+}
+
+// resolve delivers a decision to the waiting Ask. It reports whether a prompt
+// with that id was pending (false → unknown, or already answered/expired). The
+// channel is buffered, so the send never blocks the POST handler.
+func (b *broker) resolve(id string, dec permission.Decision) bool {
+	b.mu.Lock()
+	ch, ok := b.pending[id]
+	b.mu.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ch <- dec:
+		return true
+	default:
+		return false // already answered
+	}
+}
+
+// ssePrompter is the production permission.Prompter: it surfaces a consent
+// prompt on the request's SSE stream and blocks until the user answers via POST,
+// the request is cancelled, or the timeout elapses (auto-deny). It is app-scoped
+// and shared by every per-conversation gate; the per-request stream is found in
+// the context, so one prompter serves all in-flight chats.
+type ssePrompter struct {
+	broker  *broker
+	timeout time.Duration
+}
+
+func newSSEPrompter(b *broker) *ssePrompter {
+	return &ssePrompter{broker: b, timeout: permissionTimeout}
+}
+
+// Ask implements permission.Prompter.
+func (p *ssePrompter) Ask(ctx context.Context, req permission.Request, allowed []permission.Scope) (permission.Decision, error) {
+	emit := emitterFrom(ctx)
+	if emit == nil {
+		// No stream to ask on — deny rather than act unasked.
+		return permission.Decision{}, nil
+	}
+	id, err := newRequestID()
+	if err != nil {
+		return permission.Decision{}, err
+	}
+	ch := p.broker.register(id)
+	defer p.broker.cancel(id)
+
+	emit("permission", map[string]any{
+		"id":     id,
+		"label":  req.Label,
+		"detail": req.Detail,
+		"risk":   riskName(req.Risk),
+		"scopes": scopeNames(allowed),
+	})
+
+	select {
+	case dec := <-ch:
+		return dec, nil
+	case <-ctx.Done():
+		return permission.Decision{}, ctx.Err()
+	case <-time.After(p.timeout):
+		return permission.Decision{}, nil // auto-deny on silence
+	}
+}
+
+// POST /api/permission/{id} {allow, scope} — the answer to a consent prompt,
+// routed back to the tool call waiting on the chat stream.
+func (s *Server) handlePermission(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Allow bool   `json:"allow"`
+		Scope string `json:"scope"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	dec := permission.Decision{Allow: body.Allow, Scope: parseScope(body.Scope)}
+	if !s.broker.resolve(r.PathValue("id"), dec) {
+		http.Error(w, "no such pending permission", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// gateFor returns the permission gate for a conversation, creating it on first
+// use. Session grants ("allow for this chat") live in the gate's own memory, so
+// a gate per conversation keeps them from leaking across chats; persistent
+// grants and the prompter are shared app-wide.
+func (s *Server) gateFor(convID string) *permission.Gate {
+	s.gatesMu.Lock()
+	defer s.gatesMu.Unlock()
+	g, ok := s.gates[convID]
+	if !ok {
+		g = permission.New(s.prompter, s.grants)
+		s.gates[convID] = g
+	}
+	return g
+}
+
+// registryFor builds the tool registry offered for a conversation's turn: the
+// native write_memory tool today, mediated by that conversation's gate. Image
+// generation and project MCP servers join here (mcp.Combine) as they are wired.
+func (s *Server) registryFor(convID string) mcp.Registry {
+	gate := s.gateFor(convID)
+	return mcp.Combine(memtool.NewTool(s.st, gate))
+}
+
+func newRequestID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+func riskName(r permission.Risk) string {
+	switch r {
+	case permission.RiskLow:
+		return "low"
+	case permission.RiskHigh:
+		return "high"
+	default:
+		return "medium"
+	}
+}
+
+func scopeNames(scopes []permission.Scope) []string {
+	out := make([]string, 0, len(scopes))
+	for _, s := range scopes {
+		out = append(out, scopeName(s))
+	}
+	return out
+}
+
+func scopeName(s permission.Scope) string {
+	switch s {
+	case permission.ScopeSession:
+		return "session"
+	case permission.ScopePersistent:
+		return "persistent"
+	default:
+		return "once"
+	}
+}
+
+func parseScope(name string) permission.Scope {
+	switch name {
+	case "session":
+		return permission.ScopeSession
+	case "persistent":
+		return permission.ScopePersistent
+	default:
+		return permission.ScopeOnce
+	}
+}

@@ -35,6 +35,8 @@
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
 
+  let pending = $state(null) // a tool's consent prompt: { id, label, detail, risk, scopes }
+
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
     const t = setInterval(checkServer, 15000)
@@ -75,6 +77,7 @@
     error = null
     budget = null
     report = null
+    pending = null
     const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
     const summaries = entries.filter((e) => e.kind === 'summary')
     activeSummary = summaries.length ? summaries[summaries.length - 1] : null
@@ -119,6 +122,24 @@
   async function ackMemory() {
     await apiFetch('/api/memory/ack', { method: 'POST' })
     memoryTampered = false
+  }
+
+  // A tool paused for consent: the gate sent a "permission" event over the chat
+  // stream (held in `pending`). The answer returns on its own POST, which
+  // unblocks the waiting tool call server-side.
+  async function answerPermission(allow, scope) {
+    const id = pending?.id
+    pending = null
+    if (!id) return
+    await apiFetch('/api/permission/' + id, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ allow, scope }),
+    })
+  }
+
+  function scopeLabel(scope) {
+    return { once: 'Allow once', session: 'Allow this chat', persistent: 'Always allow' }[scope] ?? scope
   }
 
   async function newChat() {
@@ -183,7 +204,7 @@
     if (!activeId) await newChat()
     input = ''
     messages.push({ role: 'user', content: text })
-    messages.push({ role: 'assistant', content: '', reasoning: '' })
+    messages.push({ role: 'assistant', content: '', reasoning: '', tools: [] })
     streaming = true
     try {
       // The client sends only the new turn; the core persists both sides.
@@ -234,6 +255,11 @@
     } else if (event === 'compacted') {
       report = `Auto-compacted: folded ${payload.folded}, saved ~${payload.saved} tokens`
       if (payload.summary) activeSummary = { content: payload.summary }
+    } else if (event === 'tool_call') {
+      const last = messages[messages.length - 1]
+      if (last) (last.tools ??= []).push({ name: payload.name, arguments: payload.arguments })
+    } else if (event === 'permission') {
+      pending = payload
     } else if (event === 'done') {
       budget = payload.budget
       reachable = true
@@ -336,15 +362,38 @@
           {/if}
           {#if m.role === 'user'}
             <div class="msg user">{m.content}</div>
-          {:else if m.content !== ''}
-            <div class="msg assistant prose">{@html md.render(m.content)}</div>
-          {:else if streaming && i === messages.length - 1 && !m.reasoning}
-            <div class="msg assistant">…</div>
+          {:else}
+            {#if m.tools?.length}
+              {#each m.tools as t}
+                <div class="toolcall" title={t.arguments}>used <strong>{t.name}</strong></div>
+              {/each}
+            {/if}
+            {#if m.content !== ''}
+              <div class="msg assistant prose">{@html md.render(m.content)}</div>
+            {:else if streaming && i === messages.length - 1 && !m.reasoning}
+              <div class="msg assistant">…</div>
+            {/if}
           {/if}
         {:else}
           <p class="empty muted">Ask something to get started.</p>
         {/each}
       </div>
+      {#if pending}
+        <div class="consent">
+          <div class="consent-head">
+            Permission needed
+            <span class="risk {pending.risk}">{pending.risk} risk</span>
+          </div>
+          <div class="consent-label">{pending.label}</div>
+          {#if pending.detail}<pre class="consent-detail">{pending.detail}</pre>{/if}
+          <div class="consent-actions">
+            {#each pending.scopes as scope}
+              <button class="primary" onclick={() => answerPermission(true, scope)}>{scopeLabel(scope)}</button>
+            {/each}
+            <button onclick={() => answerPermission(false, '')}>Deny</button>
+          </div>
+        </div>
+      {/if}
       <div class="composer">
         <input
           class="field"
@@ -625,6 +674,85 @@
     background: var(--paper);
     color: var(--ink);
     font: inherit;
+  }
+  .toolcall {
+    max-width: 80%;
+    margin: 0 0 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .toolcall strong {
+    font-weight: 600;
+    color: var(--clay);
+  }
+  .consent {
+    margin: 0 12px 12px;
+    border: 0.5px solid color-mix(in srgb, var(--clay) 40%, transparent);
+    background: color-mix(in srgb, var(--clay) 8%, transparent);
+    border-radius: 12px;
+    padding: 12px;
+  }
+  .consent-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+    margin-bottom: 6px;
+  }
+  .risk {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border-radius: 6px;
+    padding: 1px 7px;
+    color: var(--muted);
+    border: 0.5px solid var(--border);
+  }
+  .risk.medium {
+    color: #e0932a;
+    border-color: color-mix(in srgb, #e0932a 40%, transparent);
+  }
+  .risk.high {
+    color: #d64545;
+    border-color: color-mix(in srgb, #d64545 40%, transparent);
+  }
+  .consent-label {
+    margin-bottom: 6px;
+  }
+  .consent-detail {
+    max-height: 160px;
+    overflow: auto;
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--paper);
+    border: 0.5px solid var(--border);
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    line-height: 1.45;
+  }
+  .consent-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .consent-actions button {
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 14px;
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+  }
+  .consent-actions button:hover {
+    background: var(--paper);
+  }
+  .consent-actions .primary {
+    color: var(--clay);
+    border-color: color-mix(in srgb, var(--clay) 40%, transparent);
   }
   .bar {
     display: inline-block;
