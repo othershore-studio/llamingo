@@ -187,6 +187,31 @@ func TestProps(t *testing.T) {
 	}
 }
 
+// With the backend unreachable, /api/props fails with 502 — the signal the UI's
+// server monitor polls on to show a disconnected cue.
+func TestPropsBackendDown(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := dead.URL
+	dead.Close() // the backend now refuses connections
+
+	be := backend.New(url)
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(httpapi.New(be, st))
+	t.Cleanup(api.Close)
+
+	resp, err := http.Get(api.URL + "/api/props")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("props with a down backend = %d, want 502", resp.StatusCode)
+	}
+}
+
 func TestChatsCreateAndList(t *testing.T) {
 	api := newAPI(t)
 	createChat(t, api, "Trip ideas")
