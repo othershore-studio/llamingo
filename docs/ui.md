@@ -63,7 +63,7 @@ The floor is **download → connect → chat**:
 
 1. On launch, **auto-probe `http://localhost:8080`** (llama-server's default) — if a server is already on the machine,
    zero input.
-2. Otherwise, one field: **host/IP** (port prefilled to 8080). Probe **`/props`**, which confirms the server *and*
+2. Otherwise, one field: a **base URL** (`http(s)://host[:port][/path]` — a reverse-proxied or TLS-fronted server, or a bare `host:8080`, both work; an optional token lives in the OS keystore, never in config). Probe **`/props`**, which confirms the server *and*
    returns the model + context size, so the success state is honest: *"Found llama 3.2 3B · 8192 ctx."*
 3. Land in **Chat mode**, cursor in the composer.
 4. On failure, a **calm, specific** line (*"couldn't reach llama.cpp at `<addr>` — is `llama-server` running? default

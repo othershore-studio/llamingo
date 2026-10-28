@@ -26,6 +26,37 @@ The whole product, usable solo, with **no server to run or secure and no sync en
 Proves the full product without a server. **Cross-device is explicitly not here** — a single machine's store only;
 LAN mobile can still hit `llama-server` for fresh inference, but shared history is a v2 capability.
 
+### Build order (increments)
+
+Dependency-ordered; each is test-first (the suite starts at #1), and the CLI is usable before the web UI exists:
+
+1. **Native core + honest metering** — `Backend` seam + `LlamaCppNative` (`/props`, `/apply-template` + `/tokenize`,
+   streaming `/v1/chat/completions`, `/slots` when present), the context builder + budget, proven against a
+   **mocked `llama-server`** (recorded fixtures, GPU-free CI) and exercised by a thin CLI.
+2. **Store** — two-root plain files, slug+hash keying, rebuildable/self-healing index.
+3. **MCP loop** — client-owned tool-call loop; global + project `mcp.json`; mock-MCP tests.
+4. **Permission gate + first native tool** — scope × risk gate (+ project-server trust), image generation via the
+   `ImageGen` seam.
+5. **The shell** — HTTP/SSE adapter + Wails desktop + the web UI (settles the UI framework).
+6. **Context niceties + polish** — memory (read + gated write), `AGENTS.md`, compaction UX, effort/thinking,
+   staleness cues.
+
+**Increment #1 slices**, each test-first:
+
+- `1a` scaffolding + the mock server — module `github.com/othershore-studio/llamingo`, Go 1.24, MPL-2.0 headers,
+  `go test` CI, a stdlib `httptest.Server` replaying recorded fixtures.
+- `1b` the `Backend` seam (`Props` / `Tokenize` / `ApplyTemplate` / `ChatStream`).
+- `1c` read endpoints (`/props`, `/tokenize`, `/apply-template`).
+- `1d` streaming chat + SSE parse (content deltas, end-of-stream `usage`, `tool_calls` / `reasoning_content` shapes
+  detected but not yet acted on).
+- `1e` the context builder + segment breakdown + a `format overhead` line, reconciled against the authoritative
+  `usage`.
+- `1f` connect / auto-probe + a minimal CLI + a **live smoke test against a real `llama-server`**, which also supplies
+  the `1c`/`1d` fixtures.
+
+**Done:** `go test ./...` green and GPU-free (all mocked), and the CLI holds a streamed exchange against a real
+`llama-server` with a budget matching its reported `usage`.
+
 ## v2 — the gateway (remote + mobile + sync)
 
 The **optional** small server that earns its place only when you leave the LAN.
