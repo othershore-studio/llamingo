@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
@@ -32,6 +33,7 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("GET /api/chats", s.handleListChats)
 	s.mux.HandleFunc("POST /api/chats", s.handleNewChat)
 	s.mux.HandleFunc("GET /api/projects", s.handleListProjects)
+	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	return s
 }
@@ -54,6 +56,9 @@ func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if chats == nil {
+		chats = []store.ConversationMeta{}
 	}
 	writeJSON(w, chats)
 }
@@ -82,14 +87,34 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if ps == nil {
+		ps = []store.ProjectMeta{}
+	}
 	writeJSON(w, ps)
 }
 
-// POST /api/chat/stream {messages} — stream a reply as SSE: a "delta" event per
-// content chunk, then a "done" event carrying the honest budget.
+// GET /api/conversations/{id} — the conversation's entries in log order, for
+// the UI to render when a chat is opened.
+func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.st.LoadConversation(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if entries == nil {
+		entries = []store.Entry{}
+	}
+	writeJSON(w, entries)
+}
+
+// POST /api/chat/stream {id, content} — the core is the source of truth for
+// history: it loads the conversation's log, appends this turn's user message,
+// streams the reply as SSE ("delta" per chunk, then "done" with the honest
+// budget), and appends the assistant reply. The client sends only the new turn.
 func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Messages []backend.Message `json:"messages"`
+		ID      string `json:"id"`
+		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -100,18 +125,32 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+
+	prior, err := s.st.LoadConversation(body.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if _, err := s.st.AppendMessage(body.ID, "user", body.Content); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	messages := append(messagesFromEntries(prior), backend.Message{Role: backend.RoleUser, Content: body.Content})
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 
 	bld := contextbudget.New(s.be)
-	bud, err := bld.Estimate(r.Context(), []contextbudget.Segment{{Name: "conversation", Messages: body.Messages}})
+	bud, err := bld.Estimate(r.Context(), []contextbudget.Segment{{Name: "conversation", Messages: messages}})
 	if err != nil {
 		writeEvent(w, flusher, "error", map[string]any{"error": err.Error()})
 		return
 	}
 
-	streamErr := s.be.ChatStream(r.Context(), backend.ChatRequest{Messages: body.Messages}, func(d backend.Delta) error {
+	var reply strings.Builder
+	streamErr := s.be.ChatStream(r.Context(), backend.ChatRequest{Messages: messages}, func(d backend.Delta) error {
 		if d.Content != "" {
+			reply.WriteString(d.Content)
 			writeEvent(w, flusher, "delta", map[string]any{"content": d.Content})
 		}
 		if d.Usage != nil {
@@ -123,9 +162,27 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		writeEvent(w, flusher, "error", map[string]any{"error": streamErr.Error()})
 		return
 	}
+	if _, err := s.st.AppendMessage(body.ID, "assistant", reply.String()); err != nil {
+		writeEvent(w, flusher, "error", map[string]any{"error": err.Error()})
+		return
+	}
 	writeEvent(w, flusher, "done", map[string]any{
 		"budget": map[string]any{"used": bud.Used(), "nCtx": bud.NCtx, "level": string(bud.Level())},
 	})
+}
+
+// messagesFromEntries projects a conversation's log to the message list sent to
+// the model. Message entries map 1:1; summary entries (compaction, later) will
+// be substituted by the context builder, so they are skipped here for now.
+func messagesFromEntries(entries []store.Entry) []backend.Message {
+	msgs := make([]backend.Message, 0, len(entries))
+	for _, e := range entries {
+		if e.Kind != store.KindMessage {
+			continue
+		}
+		msgs = append(msgs, backend.Message{Role: backend.Role(e.Role), Content: e.Content})
+	}
+	return msgs
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

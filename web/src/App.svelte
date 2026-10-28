@@ -3,6 +3,7 @@
 
   let conn = $state(null) // { model, nCtx }
   let chats = $state([])
+  let activeId = $state(null)
   let messages = $state([]) // { role, content }
   let input = $state('')
   let streaming = $state(false)
@@ -15,30 +16,40 @@
 
   async function refresh() {
     conn = await fetch('/api/props').then((r) => r.json())
-    chats = await fetch('/api/chats').then((r) => r.json())
+    chats = (await fetch('/api/chats').then((r) => r.json())) ?? []
+    if (!activeId && chats.length) await selectChat(chats[0].id)
+  }
+
+  // Open a conversation: the core owns history, so load its log from disk.
+  async function selectChat(id) {
+    activeId = id
+    error = null
+    budget = null
+    const entries = (await fetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
+    messages = entries.filter((e) => e.kind === 'msg').map((e) => ({ role: e.role, content: e.content }))
   }
 
   async function newChat() {
-    await fetch('/api/chats', {
+    const created = await fetch('/api/chats', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title: 'New chat' }),
-    })
-    messages = []
-    budget = null
-    chats = await fetch('/api/chats').then((r) => r.json())
+    }).then((r) => r.json())
+    chats = (await fetch('/api/chats').then((r) => r.json())) ?? []
+    await selectChat(created.id)
   }
 
   async function send() {
     const text = input.trim()
     if (!text || streaming) return
+    if (!activeId) await newChat()
     input = ''
     messages.push({ role: 'user', content: text })
-    const history = messages.map((m) => ({ role: m.role, content: m.content }))
     messages.push({ role: 'assistant', content: '' })
     streaming = true
     try {
-      await streamChat(history)
+      // The client sends only the new turn; the core persists both sides.
+      await streamChat(activeId, text)
     } catch (e) {
       error = String(e)
     } finally {
@@ -46,11 +57,11 @@
     }
   }
 
-  async function streamChat(history) {
+  async function streamChat(id, content) {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ messages: history }),
+      body: JSON.stringify({ id, content }),
     })
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
@@ -107,7 +118,11 @@
       <button class="new" onclick={newChat}>+ New chat</button>
       <ul class="list">
         {#each chats as c}
-          <li class="row">{c.title || 'Untitled'}</li>
+          <li>
+            <button class="row" class:active={c.id === activeId} onclick={() => selectChat(c.id)}>
+              {c.title || 'Untitled'}
+            </button>
+          </li>
         {:else}
           <li class="row muted">No chats yet</li>
         {/each}
@@ -232,8 +247,29 @@
     overflow-y: auto;
   }
   .row {
+    display: block;
+    width: 100%;
+    text-align: left;
     padding: 7px 8px;
     border-radius: 8px;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .row:hover {
+    background: var(--paper);
+  }
+  .row.active {
+    background: color-mix(in srgb, var(--clay) 12%, transparent);
+    color: var(--clay);
+  }
+  .row.muted {
+    cursor: default;
+  }
+  .row.muted:hover {
+    background: none;
   }
   .muted {
     color: var(--muted);
