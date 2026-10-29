@@ -156,30 +156,24 @@
     report = null
     pending = null
     const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
-    // Pair each persisted reasoning entry with the assistant answer that follows it.
-    // The summary entry is appended at the end of the log but shadows an id-range, so
-    // anchor the active (latest) summary after the last message it covers (coversTo) —
-    // that renders it at the fold boundary in the thread, not pinned on top.
+    // Pair each persisted reasoning entry with the assistant answer that follows it,
+    // and anchor each compaction summary where it ran: after the message it followed
+    // in the log (the summary entry is appended at that moment), shown with its time.
     const msgs = []
+    const sums = []
     let trace = ''
-    let activeSum = null
     for (const e of entries) {
       if (e.kind === 'reasoning') {
         trace = e.content
       } else if (e.kind === 'msg') {
-        msgs.push({ id: e.id, role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', time: e.time })
+        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', time: e.time })
         trace = ''
       } else if (e.kind === 'summary') {
-        activeSum = e
+        sums.push({ content: e.content, time: e.time, afterIndex: msgs.length - 1 })
       }
     }
     messages = msgs
-    if (activeSum) {
-      const idx = msgs.findIndex((m) => m.id === activeSum.coversTo)
-      convSummaries = [{ content: activeSum.content, time: activeSum.time, afterIndex: idx >= 0 ? idx : msgs.length - 1 }]
-    } else {
-      convSummaries = []
-    }
+    convSummaries = sums
   }
 
   // Compaction folds the oldest messages into a summary (non-destructive); the
@@ -421,7 +415,7 @@
       messages[messages.length - 1].reasoning += payload.content
     } else if (event === 'compacted') {
       report = `Auto-compacted: folded ${payload.folded}, saved ~${payload.saved} tokens`
-      // the compaction summary marker renders at its fold boundary on the next conversation load
+      if (payload.summary) convSummaries = [...convSummaries, { content: payload.summary, time: new Date().toISOString(), afterIndex: messages.length - 1 }]
     } else if (event === 'tool_call') {
       const last = messages[messages.length - 1]
       if (last) (last.tools ??= []).push({ name: payload.name, arguments: payload.arguments })
@@ -592,7 +586,7 @@
         {/if}
       </svg>
     </button>
-    <span class="wordmark">llaminGO</span>
+    <span class="wordmark">llaminGO{activeTitle ? ` › ${activeTitle}` : ''}</span>
     <span class="spacer"></span>
     {#if conn?.thinkingSupported}
       <button
