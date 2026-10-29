@@ -46,6 +46,7 @@
   let thinking = $state(true) // per-turn thinking toggle; only shown when the model supports it
   let sysMenu = $state(false) // desktop window menu open?
   let onTop = $state(false) // always-on-top state
+  let sidebarOpen = $state(loadSidebar()) // left panel shown? persisted per browser
 
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
@@ -332,6 +333,22 @@
     return { update: enhance }
   }
 
+  // Sidebar collapse state, persisted per browser (lean localStorage; defaults
+  // to shown if storage is unavailable).
+  function loadSidebar() {
+    try {
+      return localStorage.getItem('llamingo.sidebar') !== 'closed'
+    } catch {
+      return true
+    }
+  }
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen
+    try {
+      localStorage.setItem('llamingo.sidebar', sidebarOpen ? 'open' : 'closed')
+    } catch {}
+  }
+
   function modelName(path) {
     if (!path) return 'unknown model'
     return path.split(/[\\/]/).pop().replace(/\.gguf$/, '')
@@ -354,6 +371,23 @@
     {:else}
       <img class="mark" src="/favicon.svg" alt="" width="24" height="24" />
     {/if}
+    <button
+      class="icon-btn"
+      aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+      title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+      onclick={toggleSidebar}
+    >
+      <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="2" y1="4.5" x2="10" y2="4.5" />
+        <line x1="2" y1="8" x2="10" y2="8" />
+        <line x1="2" y1="11.5" x2="10" y2="11.5" />
+        {#if sidebarOpen}
+          <polyline points="14.5,5.5 12,8 14.5,10.5" />
+        {:else}
+          <polyline points="12,5.5 14.5,8 12,10.5" />
+        {/if}
+      </svg>
+    </button>
     <span class="wordmark">llaminGO</span>
     <span class="spacer"></span>
     {#if conn?.thinkingSupported}
@@ -396,7 +430,7 @@
   {/if}
 
   <div class="body">
-    <aside class="left">
+    <aside class="left" class:collapsed={!sidebarOpen}>
       <div class="switcher">Chats</div>
       <button class="new" onclick={newChat}>+ New chat</button>
       <ul class="list">
@@ -621,6 +655,23 @@
   .mark-btn:hover {
     opacity: 0.85;
   }
+  .icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--muted);
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .icon-btn:hover {
+    background: var(--paper);
+    color: var(--ink);
+  }
   .sysmenu-backdrop {
     position: fixed;
     inset: 0;
@@ -706,9 +757,11 @@
     display: flex;
     flex: 1;
     min-height: 0;
+    overflow: hidden;
   }
   .left {
     width: 240px;
+    flex: none;
     border-right: 0.5px solid var(--border);
     background: var(--surface);
     display: flex;
@@ -716,6 +769,10 @@
     padding: 8px;
     gap: 6px;
     overflow-y: auto;
+    transition: margin-left 0.18s ease;
+  }
+  .left.collapsed {
+    margin-left: -240px;
   }
   .switcher {
     font-weight: 500;
