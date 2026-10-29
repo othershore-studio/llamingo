@@ -68,6 +68,7 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	s.mux.HandleFunc("PUT /api/conversations/{id}", s.handleRenameConversation)
 	s.mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
+	s.mux.HandleFunc("GET /api/conversations/{id}/attachments/{name}", s.handleGetAttachment)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
@@ -397,7 +398,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		emit("error", map[string]any{"error": runErr.Error()})
 		return
 	}
-	if _, err := s.st.AppendAssistant(body.ID, finalAssistant(out), think.String()); err != nil {
+	// Persist any images the answer links (while their links are still fresh),
+	// then save the answer with the rewritten local refs. See attachment.go.
+	answer := s.imageAttachments(r.Context(), body.ID, finalAssistant(out))
+	if _, err := s.st.AppendAssistant(body.ID, answer, think.String()); err != nil {
 		emit("error", map[string]any{"error": err.Error()})
 		return
 	}

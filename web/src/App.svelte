@@ -9,7 +9,14 @@
   // The desktop app (Wails) cannot stream through its asset server, so it serves
   // the core API on a loopback port the webview calls directly; the browser and
   // PWA use same-origin relative paths.
-  const apiFetch = (path, opts) => fetch((window.runtime ? 'http://127.0.0.1:8766' : '') + path, opts)
+  const apiOrigin = () => (window.runtime ? 'http://127.0.0.1:8766' : '')
+  const apiFetch = (path, opts) => fetch(apiOrigin() + path, opts)
+
+  // Rewrite local attachment refs (attachments/<name>, as written in the log) to
+  // the serve route for the open conversation, so persisted and generated images
+  // load in the desktop app and the browser alike. Remote URLs pass through.
+  const renderContent = (text) =>
+    md.render(text).replaceAll('src="attachments/', `src="${apiOrigin()}/api/conversations/${activeId}/attachments/`)
 
   // In the Wails desktop shell the window is frameless, so the HTML topbar is the
   // title bar: draggable, with our own min/max/close. The browser/PWA has none.
@@ -779,7 +786,7 @@
               {/each}
             {/if}
             {#if m.content !== ''}
-              <div class="msg assistant prose" use:copyableCode={m.content}>{@html md.render(m.content)}</div>
+              <div class="msg assistant prose" use:copyableCode={m.content}>{@html renderContent(m.content)}</div>
             {:else if streaming && i === messages.length - 1 && !m.reasoning}
               <div class="msg assistant">…</div>
             {/if}
@@ -1610,6 +1617,12 @@
   }
   .prose {
     white-space: normal;
+  }
+  .prose :global(img) {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    margin: 4px 0;
   }
   .prose :global(p) {
     margin: 0 0 8px;
