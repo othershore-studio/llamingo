@@ -22,6 +22,7 @@
   let error = $state(null)
   let activeSummary = $state(null) // the active compaction summary, if any
   let report = $state(null) // transient compaction report
+  let copiedAt = $state(null) // index of the message whose copy button just fired
 
   let projects = $state([])
   let expandedProject = $state(null)
@@ -295,6 +296,36 @@
     }
   }
 
+  // Copy a message's raw markdown; flash "copied" on its button briefly.
+  function copyMsg(text, i) {
+    navigator.clipboard?.writeText(text)
+    copiedAt = i
+    setTimeout(() => { if (copiedAt === i) copiedAt = null }, 1200)
+  }
+
+  // Svelte action: give each fenced code block in rendered markdown its own copy
+  // button. Re-runs when the content changes (streaming); the guard avoids a
+  // duplicate button.
+  function copyableCode(node) {
+    const enhance = () => {
+      for (const pre of node.querySelectorAll('pre')) {
+        if (pre.querySelector('.codecopy')) continue
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.className = 'codecopy'
+        btn.textContent = 'copy'
+        btn.addEventListener('click', () => {
+          navigator.clipboard?.writeText((pre.querySelector('code') ?? pre).textContent ?? '')
+          btn.textContent = 'copied'
+          setTimeout(() => { btn.textContent = 'copy' }, 1200)
+        })
+        pre.appendChild(btn)
+      }
+    }
+    enhance()
+    return { update: enhance }
+  }
+
   function modelName(path) {
     if (!path) return 'unknown model'
     return path.split(/[\\/]/).pop().replace(/\.gguf$/, '')
@@ -404,13 +435,16 @@
               {/each}
             {/if}
             {#if m.content !== ''}
-              <div class="msg assistant prose">{@html md.render(m.content)}</div>
+              <div class="msg assistant prose" use:copyableCode={m.content}>{@html md.render(m.content)}</div>
             {:else if streaming && i === messages.length - 1 && !m.reasoning}
               <div class="msg assistant">…</div>
             {/if}
           {/if}
           {#if m.time && (m.role === 'user' || m.content !== '')}
-            <div class="meta" class:mine={m.role === 'user'}>{fmtTime(m.time)}</div>
+            <div class="meta" class:mine={m.role === 'user'}>
+              <button class="metabtn" onclick={() => copyMsg(m.content, i)}>{copiedAt === i ? 'copied' : 'copy'}</button>
+              <span>{fmtTime(m.time)}</span>
+            </div>
           {/if}
         {:else}
           <p class="empty muted">Ask something to get started.</p>
@@ -667,13 +701,30 @@
     color: var(--muted);
   }
   .meta {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
     font-size: 11px;
     color: var(--muted);
     opacity: 0.7;
     margin: -8px 2px 10px;
   }
   .meta.mine {
-    text-align: right;
+    justify-content: flex-end;
+  }
+  .metabtn {
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    padding: 0;
+    cursor: pointer;
+    opacity: 0.65;
+  }
+  .metabtn:hover {
+    opacity: 1;
+    color: var(--clay);
   }
   .statusbtn {
     border: 0.5px solid var(--border);
@@ -954,11 +1005,30 @@
     border-radius: 4px;
   }
   .prose :global(pre) {
+    position: relative;
     background: color-mix(in srgb, var(--ink) 8%, transparent);
     padding: 10px 12px;
     border-radius: 8px;
     overflow-x: auto;
     margin: 0 0 8px;
+  }
+  :global(.codecopy) {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    border: 0.5px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    padding: 2px 7px;
+    cursor: pointer;
+    opacity: 0.75;
+  }
+  :global(.codecopy):hover {
+    opacity: 1;
+    color: var(--clay);
   }
   .prose :global(pre code) {
     background: none;
