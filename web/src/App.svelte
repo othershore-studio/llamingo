@@ -490,7 +490,7 @@
       <button onclick={() => { window.runtime?.WindowMinimise?.(); sysMenu = false }}>Minimize</button>
       <button onclick={() => { window.runtime?.WindowToggleMaximise?.(); sysMenu = false }}>Maximize / Restore</button>
       <button onclick={() => { onTop = !onTop; window.runtime?.WindowSetAlwaysOnTop?.(onTop); sysMenu = false }}>{onTop ? '✓ ' : ''}Always on top</button>
-      <button class="danger" onclick={() => window.runtime?.Quit?.()}>Close</button>
+      <button class="danger" onclick={() => { window.runtime?.EventsEmit?.('app:quit'); sysMenu = false }}>Close llaminGO</button>
     </nav>
   {/if}
 
