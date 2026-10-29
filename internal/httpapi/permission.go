@@ -9,7 +9,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -172,11 +175,56 @@ func (s *Server) gateFor(convID string) *permission.Gate {
 }
 
 // registryFor builds the tool registry offered for a conversation's turn: the
-// native write_memory tool today, mediated by that conversation's gate. Image
-// generation and project MCP servers join here (mcp.Combine) as they are wired.
+// native write_memory tool (mediated by that conversation's gate) combined with
+// the user's global MCP servers. Image generation and project .mcp.json servers
+// join here as they are wired.
 func (s *Server) registryFor(convID string) mcp.Registry {
 	gate := s.gateFor(convID)
-	return mcp.Combine(memtool.NewTool(s.st, gate))
+	return mcp.Combine(s.globalServers(), memtool.NewTool(s.st, gate))
+}
+
+// globalServers connects the user's global MCP servers once and caches the
+// result. Global servers are user-authored, so they run trusted (no per-call
+// prompt); a server that fails to start is logged and skipped rather than
+// breaking chat.
+func (s *Server) globalServers() mcp.Registry {
+	s.mcpOnce.Do(func() {
+		reg := mcp.NewRegistry(nil) // global = trusted, so the gate is unused here
+		servers, err := mcp.Load(globalMCPPath(s.st.Root()), "")
+		if err != nil {
+			log.Printf("mcp: load global config: %v", err)
+		}
+		for _, srv := range servers {
+			c, err := mcp.Connect(srv)
+			if err != nil {
+				log.Printf("mcp: connect %q: %v", srv.Name, err)
+				continue
+			}
+			if err := reg.Add(context.Background(), srv, c); err != nil {
+				log.Printf("mcp: add %q: %v", srv.Name, err)
+				_ = c.Close()
+				continue
+			}
+			log.Printf("mcp: connected global server %q", srv.Name)
+		}
+		s.mcpGlobal = reg
+	})
+	return s.mcpGlobal
+}
+
+// globalMCPPath is the global MCP config in the store root — mcp.json, or a
+// copied-in .mcp.json (Claude's per-project filename) as a convenience. With
+// neither present it returns the canonical mcp.json, which Load treats as empty.
+func globalMCPPath(root string) string {
+	plain := filepath.Join(root, "mcp.json")
+	if _, err := os.Stat(plain); err == nil {
+		return plain
+	}
+	dotted := filepath.Join(root, ".mcp.json")
+	if _, err := os.Stat(dotted); err == nil {
+		return dotted
+	}
+	return plain
 }
 
 func newRequestID() (string, error) {

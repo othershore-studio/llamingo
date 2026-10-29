@@ -36,6 +36,10 @@ type Server struct {
 	grants   permission.GrantStore
 	gates    map[string]*permission.Gate
 	gatesMu  sync.Mutex
+
+	// Global MCP servers are connected once (lazily) and reused across chats.
+	mcpOnce   sync.Once
+	mcpGlobal mcp.Registry
 }
 
 // New wires the API over the given backend and store.
