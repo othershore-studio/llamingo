@@ -1,0 +1,64 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+package store
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// SaveAttachment writes bytes into a conversation's attachments/ folder under a
+// plain base name and returns the reference stored in the log: "attachments/<name>".
+// That ref resolves next to conversation.md on disk (so the file stays portable)
+// and the web UI maps it to the serve route. It is the store's shared attachment
+// primitive — image generation (imagegen.AttachmentSink) and persisting images
+// that tools return both go through it, so there is one attachments layout.
+func (s *Store) SaveAttachment(convID, name string, data []byte) (string, error) {
+	if err := safeAttachmentName(name); err != nil {
+		return "", err
+	}
+	dir, err := s.conversationDir(convID)
+	if err != nil {
+		return "", err
+	}
+	attDir := filepath.Join(dir, "attachments")
+	if err := os.MkdirAll(attDir, 0o755); err != nil {
+		return "", fmt.Errorf("store: attachments dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(attDir, name), data, 0o644); err != nil {
+		return "", fmt.Errorf("store: write attachment: %w", err)
+	}
+	return "attachments/" + name, nil
+}
+
+// AttachmentPath resolves a conversation attachment to an absolute path for
+// serving, rejecting any name that is not a plain base name and any file that
+// does not exist.
+func (s *Store) AttachmentPath(convID, name string) (string, error) {
+	if err := safeAttachmentName(name); err != nil {
+		return "", err
+	}
+	dir, err := s.conversationDir(convID)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(dir, "attachments", name)
+	if _, err := os.Stat(p); err != nil {
+		return "", fmt.Errorf("store: attachment %q: %w", name, err)
+	}
+	return p, nil
+}
+
+// safeAttachmentName rejects anything that is not a single path element — no
+// separators, no "..", not empty — so a name taken from a URL or the model can
+// never escape the attachments/ folder.
+func safeAttachmentName(name string) error {
+	if name == "" || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return fmt.Errorf("store: unsafe attachment name %q", name)
+	}
+	return nil
+}
