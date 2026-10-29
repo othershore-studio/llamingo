@@ -209,6 +209,16 @@ func TestProject(t *testing.T) {
 	if len(proj2) != 2 || proj2[0].ID != "s2" || proj2[1].ID != "m4" {
 		t.Fatalf("projection2 = %+v, want [s2, m4]", proj2)
 	}
+
+	// The summary need not sit last in the log: after a compaction the user keeps
+	// chatting, so later messages follow the summary entry. The fold keys off the
+	// covered range's position in the message sequence, not the summary's position
+	// in the log, so only the covered prefix folds and everything after stays —
+	// the live shape when a compacted chat continues (the Quito weather session).
+	midLog := []Entry{msgs[0], msgs[1], s1, msgs[2], msgs[3]} // m1, m2, summary(m1..m2), m3, m4
+	if p := Project(midLog); len(p) != 3 || p[0].ID != "s1" || p[1].ID != "m3" || p[2].ID != "m4" {
+		t.Fatalf("mid-log summary projection = %+v, want [s1, m3, m4]", p)
+	}
 }
 
 // AppendAssistant stores the reasoning trace as its own entry before the answer;
