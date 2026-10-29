@@ -1,5 +1,6 @@
 {
   "default_generation_settings": { "n_ctx": 8192 },
   "model_path": "models/gemma-3-12b-it-Q4_K_M.gguf",
+  "model_alias": "Gemma 3 12B",
   "chat_template": "{{ bos_token }}{% if enable_thinking %}{{ '<think>' }}{% endif %}{% for message in messages %}{{ '<start_of_turn>' + message['role'] + '\n' + message['content'] | trim + '<end_of_turn>\n' }}{% endfor %}{% if add_generation_prompt %}{{'<start_of_turn>model\n'}}{% endif %}"
 }

@@ -76,7 +76,7 @@ func (s *Server) handleProps(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, map[string]any{"model": p.ModelID, "nCtx": p.NCtx, "thinkingSupported": thinkingSupported(p.ChatTemplate)})
+	writeJSON(w, map[string]any{"model": modelDisplayName(p.ModelID, p.ModelAlias), "nCtx": p.NCtx, "thinkingSupported": thinkingSupported(p.ChatTemplate)})
 }
 
 // thinkingSupported reports whether the model's chat template exposes an
@@ -85,6 +85,25 @@ func (s *Server) handleProps(w http.ResponseWriter, r *http.Request) {
 // render-diff probe against /apply-template is a stronger v2 upgrade.
 func thinkingSupported(chatTemplate string) bool {
 	return strings.Contains(chatTemplate, "enable_thinking")
+}
+
+// modelDisplayName prefers llama.cpp's --alias as a friendly name, falling back
+// to the model file's base name. The alias is ignored when it just echoes the
+// path (llama.cpp's default when --alias is unset) or is itself path-like.
+func modelDisplayName(path, alias string) string {
+	a := strings.TrimSpace(alias)
+	if a != "" && a != path && a != baseModelName(path) && !strings.ContainsAny(a, "/\\") && !strings.HasSuffix(a, ".gguf") {
+		return a
+	}
+	return baseModelName(path)
+}
+
+// baseModelName is the model file's name without its directory or .gguf suffix.
+func baseModelName(path string) string {
+	if i := strings.LastIndexAny(path, "/\\"); i >= 0 {
+		path = path[i+1:]
+	}
+	return strings.TrimSuffix(path, ".gguf")
 }
 
 // GET /api/chats — the free chats, newest first.
