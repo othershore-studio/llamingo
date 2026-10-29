@@ -99,6 +99,31 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestConfig(t *testing.T) {
+	s, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A missing config file is the zero Config, not an error.
+	c, err := s.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.URL != "" || c.Token != "" {
+		t.Fatalf("fresh config = %+v, want empty", c)
+	}
+	if err := s.SetConfig(store.Config{URL: "https://lab.example/llama", Token: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.URL != "https://lab.example/llama" || got.Token != "abc" {
+		t.Fatalf("saved config = %+v", got)
+	}
+}
+
 func TestProjectsAndSessions(t *testing.T) {
 	s, err := store.Open(t.TempDir())
 	if err != nil {

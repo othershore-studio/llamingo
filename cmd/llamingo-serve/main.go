@@ -23,11 +23,16 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
-	url := flag.String("url", env("LLAMINGO_URL", "http://localhost:8080"), "llama-server base URL")
-	token := flag.String("token", os.Getenv("LLAMINGO_TOKEN"), "optional bearer token for an auth-fronted proxy")
+	url := flag.String("url", "", "llama-server base URL (default: $LLAMINGO_URL, then saved config, then http://localhost:8080)")
+	token := flag.String("token", "", "optional bearer token (default: $LLAMINGO_TOKEN or saved config)")
 	data := flag.String("data", defaultDataDir(), "store root directory")
 	fake := flag.Bool("fake", false, "serve against an in-process fake llama-server (demo/preview; no model needed)")
 	flag.Parse()
+
+	st, err := store.Open(*data)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	var be backend.Backend
 	if *fake {
@@ -35,28 +40,30 @@ func main() {
 		log.Printf("backend: in-process FAKE llama-server at %s", srv.URL)
 		be = backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
 	} else {
+		// The -url flag wins, then the env var, then the saved config, then the
+		// default — so a persisted connection survives without re-passing a flag.
+		cfg, _ := st.Config()
+		resolved := firstNonEmpty(*url, os.Getenv("LLAMINGO_URL"), cfg.URL, "http://localhost:8080")
 		var opts []backend.Option
-		if *token != "" {
-			opts = append(opts, backend.WithToken(*token))
+		if tok := firstNonEmpty(*token, os.Getenv("LLAMINGO_TOKEN"), cfg.Token); tok != "" {
+			opts = append(opts, backend.WithToken(tok))
 		}
-		log.Printf("backend: llama-server at %s", *url)
-		be = backend.New(*url, opts...)
-	}
-
-	st, err := store.Open(*data)
-	if err != nil {
-		log.Fatal(err)
+		log.Printf("backend: llama-server at %s", resolved)
+		be = backend.New(resolved, opts...)
 	}
 
 	log.Printf("llaminGO adapter listening on %s (store: %s)", *addr, *data)
 	log.Fatal(http.ListenAndServe(*addr, httpapi.New(be, st)))
 }
 
-func env(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// firstNonEmpty returns the first non-empty string, or "" if all are empty.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
 	}
-	return def
+	return ""
 }
 
 func defaultDataDir() string {

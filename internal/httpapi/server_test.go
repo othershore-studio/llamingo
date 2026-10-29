@@ -152,6 +152,50 @@ func TestDeleteConversation(t *testing.T) {
 	}
 }
 
+func TestSettings(t *testing.T) {
+	api := newAPI(t)
+
+	get := func() map[string]string {
+		t.Helper()
+		resp, err := http.Get(api.URL + "/api/settings")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var m map[string]string
+		if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	put := func(url string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut, api.URL+"/api/settings", strings.NewReader(`{"url":"`+url+`","token":"t"}`))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// GET reflects the backend's current url (the fake server).
+	if got := get(); got["url"] == "" {
+		t.Fatalf("GET settings url is empty, want the backend's url")
+	}
+	// PUT persists and hot-swaps.
+	if code := put("http://example.invalid:9999"); code != http.StatusNoContent {
+		t.Fatalf("PUT settings = %d, want 204", code)
+	}
+	if got := get(); got["url"] != "http://example.invalid:9999" {
+		t.Errorf("after PUT, url = %q, want the hot-swapped url", got["url"])
+	}
+	// A blank url is rejected.
+	if code := put("   "); code != http.StatusBadRequest {
+		t.Errorf("blank-url PUT = %d, want 400", code)
+	}
+}
+
 // postJSON posts a JSON body and returns the decoded object.
 func postJSON(t *testing.T, api *httptest.Server, path, body string) map[string]any {
 	t.Helper()
