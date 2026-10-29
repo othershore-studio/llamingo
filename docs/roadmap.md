@@ -57,29 +57,40 @@ Dependency-ordered; each is test-first (the suite starts at #1), and the CLI is 
 **Done:** `go test ./...` green and GPU-free (all mocked), and the CLI holds a streamed exchange against a real
 `llama-server` with a budget matching its reported `usage`.
 
-## Status (2026-10-28)
+## Status (2026-10-29)
 
-Increments #1–#6 are built and largely merged — core + honest metering, the two-root store, the client-owned MCP
-loop and permission gate (proven by image gen), the shell (CLI → HTTP/SSE adapter → Svelte web UI → Wails desktop),
-and #6's context niceties: live thinking, **compaction** (manual + auto, non-destructive projection), the **memory
-foundation** (injected as a metered segment, user-editable, tamper-evident hash), and **server/staleness monitoring**.
+Increments #1–#6 are built and merged — core + honest metering, the two-root store, the client-owned MCP loop and
+permission gate (proven by image gen), the shell (CLI → HTTP/SSE adapter → Svelte web UI → Wails desktop), and #6's
+context niceties: live thinking, **compaction** (manual + auto, non-destructive projection), the **memory foundation**
+(injected as a metered segment, user-editable, tamper-evident hash), and **server/staleness monitoring**. The earlier
+real-model fixes are merged too: staleness cues; the desktop loopback-API server (`127.0.0.1:8766` + CORS, since
+Wails' asset server can't flush SSE); and safe markdown rendering (markdown-it, `html:false`).
 
-A real-model testing pass against the lab (Gemma 4 12B QAT, 64K context) surfaced three fixes now on branch
-`increment-6-staleness` (pending merge):
+**#6's capstone — the agentic tool loop — is done.** `mcp.Run` drives the chat stream rather than a bare completion:
+the model can call a tool mid-turn, mediated by the conversation's permission gate, with the **SSE permission
+handshake** surfacing the consent prompt on the stream and the answer returning on `POST /api/permission/{id}`.
+`write_memory` is live through it — gated, tested end to end (allow and deny paths).
 
-- **staleness cues** — poll `/props`, warn on model/context change or an unreachable server.
-- **desktop loopback-API fix** — Wails' asset server can't flush, so SSE failed in the desktop app (broken since the
-  #5 build). The desktop now runs the core API on a loopback `net/http` server (`127.0.0.1:8766`) with CORS; the SPA
-  targets it under Wails (`window.runtime`) and stays relative in the browser/PWA.
-- **markdown rendering** — markdown-it with `html:false` (safe), rendering assistant replies, thinking, and summaries.
+**Native tools and MCP servers are wired-ready seams:** image gen and MCP servers plug into the same Registry as
+`write_memory`, but a live turn currently offers only `write_memory`. Lighting up the rest is the next tool step —
+plumbing, now that the loop + handshake exist.
 
-**Remaining #6 piece — the capstone:** the **agentic memory write** — `write_memory` as a gated tool, which wires
-`mcp.Run` into the chat stream and adds the **SSE permission handshake** (consent over a one-way stream). It also
-lights up native tools (image gen) and MCP servers generally. A design session of its own.
+**Post-#6 polish, merged 2026-10-29:** connection config (persisted llama-server URL/token + a Settings panel + live
+hot-swap); a topbar declutter (⋮ menu, pinned window controls); a responsive thin-window layout (sidebar drawer with
+state preservation + a bottom action bar); compaction UX (an in-thread "Compacting…" cue + the summary rendered where
+it ran, with a timestamp); readable speaker labels in `conversation.md`; and the window title tracking the active
+chat. See [`ui.md`](ui.md).
+
+**Remaining threads:** light up image gen + MCP servers in a live turn; small niceties (friendly model name via
+`--alias`, native `time`/`location` tools, compaction token-savings on the summary marker); model selection moving to
+the bottom bar; then v2 — the gateway.
 
 ## Backlog — surfaced by real-model testing (2026-10)
 
-Captured while using the app against the real model; none blocking, ordered loosely.
+Captured while using the app against the real model; none blocking, ordered loosely. **Most of the UI/UX items below
+shipped 2026-10-29** (responsive thin-window layout, frameless window + title bar, per-message copy, rename, tokens/sec)
+— see [`ui.md`](ui.md) and the Status above; the ones still open are compaction token-savings display and model
+configuration niceties.
 
 **UI / UX**
 
