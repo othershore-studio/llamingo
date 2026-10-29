@@ -62,6 +62,8 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("PUT /api/memory", s.handlePutMemory)
 	s.mux.HandleFunc("POST /api/memory/ack", s.handleAckMemory)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
+	s.mux.HandleFunc("PUT /api/conversations/{id}", s.handleRenameConversation)
+	s.mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	s.mux.HandleFunc("POST /api/permission/{id}", s.handlePermission)
 	return s
@@ -134,6 +136,36 @@ func (s *Server) handleNewChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, m)
+}
+
+// PUT /api/conversations/{id} {title} — rename a chat or session.
+func (s *Server) handleRenameConversation(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	title := strings.TrimSpace(body.Title)
+	if title == "" {
+		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.st.Rename(r.PathValue("id"), title); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DELETE /api/conversations/{id} — delete a chat or session.
+func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request) {
+	if err := s.st.Delete(r.PathValue("id")); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // GET /api/projects — the known projects, newest first.

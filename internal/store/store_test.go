@@ -46,6 +46,59 @@ func TestChatsCreateAndList(t *testing.T) {
 	}
 }
 
+func TestRename(t *testing.T) {
+	s, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.NewChat("Old title")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Rename(c.ID, "New title"); err != nil {
+		t.Fatal(err)
+	}
+	chats, err := s.ListChats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 1 || chats[0].Title != "New title" {
+		t.Fatalf("after rename, chats = %+v, want one titled %q", chats, "New title")
+	}
+	// Renaming an unknown conversation is an error, not a silent no-op.
+	if err := s.Rename("nonexistent", "x"); err == nil {
+		t.Error("renaming an unknown conversation should error")
+	}
+}
+
+func TestDelete(t *testing.T) {
+	s, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.NewChat("A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.NewChat("B"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	chats, err := s.ListChats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 1 || chats[0].Title != "B" {
+		t.Fatalf("after delete, chats = %+v, want only B", chats)
+	}
+	// Deleting an unknown conversation is an error.
+	if err := s.Delete("nonexistent"); err == nil {
+		t.Error("deleting an unknown conversation should error")
+	}
+}
+
 func TestProjectsAndSessions(t *testing.T) {
 	s, err := store.Open(t.TempDir())
 	if err != nil {

@@ -73,6 +73,85 @@ func getConversation(t *testing.T, api *httptest.Server, id string) []map[string
 	return entries
 }
 
+func TestRenameConversation(t *testing.T) {
+	api := newAPI(t)
+	id := createChat(t, api, "Old")
+
+	rename := func(title string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut, api.URL+"/api/conversations/"+id, strings.NewReader(`{"title":"`+title+`"}`))
+		req.Header.Set("content-type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := rename("Renamed"); code != http.StatusNoContent {
+		t.Fatalf("rename status = %d, want 204", code)
+	}
+
+	// The new title shows in the chat listing.
+	resp, err := http.Get(api.URL + "/api/chats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var chats []struct{ ID, Title string }
+	if err := json.NewDecoder(resp.Body).Decode(&chats); err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 1 || chats[0].ID != id || chats[0].Title != "Renamed" {
+		t.Fatalf("after rename, chats = %+v, want id %s titled Renamed", chats, id)
+	}
+
+	// A blank title is rejected.
+	if code := rename("   "); code != http.StatusBadRequest {
+		t.Errorf("blank-title rename status = %d, want 400", code)
+	}
+}
+
+func TestDeleteConversation(t *testing.T) {
+	api := newAPI(t)
+	id := createChat(t, api, "Doomed")
+
+	del := func(convID string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodDelete, api.URL+"/api/conversations/"+convID, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := del(id); code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", code)
+	}
+
+	// Gone from the listing.
+	resp, err := http.Get(api.URL + "/api/chats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var chats []struct{ ID string }
+	if err := json.NewDecoder(resp.Body).Decode(&chats); err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 0 {
+		t.Fatalf("after delete, chats = %+v, want none", chats)
+	}
+
+	// Deleting again (now unknown) is a 404.
+	if code := del(id); code != http.StatusNotFound {
+		t.Errorf("delete-again status = %d, want 404", code)
+	}
+}
+
 // postJSON posts a JSON body and returns the decoded object.
 func postJSON(t *testing.T, api *httptest.Server, path, body string) map[string]any {
 	t.Helper()

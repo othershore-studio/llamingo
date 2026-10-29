@@ -272,6 +272,36 @@ func touchUpdated(metaPath string, t time.Time) error {
 	return writeJSON(metaPath, m)
 }
 
+// Rename changes a conversation's display title in meta.json. The append-only
+// conversation.md is left untouched — its "# title" header is only a file header;
+// the title the app lists and shows comes from meta.json.
+func (s *Store) Rename(id, title string) error {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return err
+	}
+	metaPath := filepath.Join(dir, "meta.json")
+	var m ConversationMeta
+	if err := readJSON(metaPath, &m); err != nil {
+		return fmt.Errorf("store: read meta for rename: %w", err)
+	}
+	m.Title = title
+	return writeJSON(metaPath, m)
+}
+
+// Delete removes a conversation (chat or session) and its directory from disk.
+// The listing self-heals from the files, so nothing else needs updating.
+func (s *Store) Delete(id string) error {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("store: delete conversation: %w", err)
+	}
+	return nil
+}
+
 // marshalEntries renders a full conversation.md: a human title line, then each
 // entry as an HTML-comment marker (machine-readable metadata, invisible in any
 // Markdown viewer) followed by its body. appendEntry writes the same per-entry
