@@ -159,7 +159,9 @@ func showWindow() {
 func withCORS(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		// List every method the API uses (see internal/httpapi routes) — the
+		// webview is cross-origin, so a method missing here fails its preflight.
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "content-type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
