@@ -26,6 +26,9 @@
   let error = $state(null)
   let activeSummary = $state(null) // the active compaction summary, if any
   let report = $state(null) // transient compaction report
+  let editingId = $state(null) // conversation id being renamed inline, if any
+  let editTitle = $state('') // the in-progress rename text
+  let confirmDeleteId = $state(null) // conversation id awaiting delete confirmation
   let copiedAt = $state(null) // index of the message whose copy button just fired
 
   let projects = $state([])
@@ -215,6 +218,50 @@
 
   async function loadSessions(projectId) {
     sessions = (await apiFetch(`/api/projects/${projectId}/sessions`).then((r) => r.json())) ?? []
+  }
+
+  // Inline rename: double-click a chat/session to edit its title in place, then
+  // Enter (or blur) to persist and Escape to cancel. The title lives in the
+  // conversation's meta.json; the list is reloaded so the new name shows.
+  function startRename(id, title) {
+    editingId = id
+    editTitle = title
+  }
+  function cancelRename() {
+    editingId = null
+  }
+  async function commitRename() {
+    const id = editingId
+    const title = editTitle.trim()
+    editingId = null
+    if (!id || !title) return
+    await apiFetch(`/api/conversations/${id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title }),
+    })
+    chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+    if (expandedProject) await loadSessions(expandedProject)
+  }
+  // Focus and select an inline-rename input as soon as it appears.
+  function renameInput(node) {
+    node.focus()
+    node.select()
+  }
+
+  // Delete a chat/session after an inline confirm. The directory is removed and
+  // the lists reload; if the active conversation went away, fall back to the
+  // newest remaining one (or the empty state).
+  async function doDelete(id) {
+    confirmDeleteId = null
+    await apiFetch(`/api/conversations/${id}`, { method: 'DELETE' })
+    chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+    if (expandedProject) await loadSessions(expandedProject)
+    if (activeId === id) {
+      activeId = null
+      messages = []
+      if (chats.length) await selectChat(chats[0].id)
+    }
   }
 
   // Projects are the store's second root; a session inside one is a full
@@ -504,10 +551,31 @@
       <button class="new" onclick={newChat}>+ New chat</button>
       <ul class="list">
         {#each chats as c}
-          <li>
-            <button class="row" class:active={c.id === activeId} onclick={() => selectChat(c.id)}>
-              {c.title || 'Untitled'}
-            </button>
+          <li class="rowwrap">
+            {#if editingId === c.id}
+              <input
+                class="field rename"
+                bind:value={editTitle}
+                use:renameInput
+                onkeydown={(e) => { if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') cancelRename() }}
+                onblur={commitRename}
+              />
+            {:else if confirmDeleteId === c.id}
+              <span class="confirmdel">Delete this chat?</span>
+              <button class="del-yes" onclick={() => doDelete(c.id)}>Delete</button>
+              <button class="del-no" onclick={() => (confirmDeleteId = null)}>Cancel</button>
+            {:else}
+              <button
+                class="row"
+                class:active={c.id === activeId}
+                onclick={() => selectChat(c.id)}
+                ondblclick={() => startRename(c.id, c.title)}
+                title="Double-click to rename"
+              >
+                {c.title || 'Untitled'}
+              </button>
+              <button class="del" aria-label="Delete chat" title="Delete chat" onclick={() => (confirmDeleteId = c.id)}>✕</button>
+            {/if}
           </li>
         {:else}
           <li class="row muted">No chats yet</li>
@@ -533,10 +601,31 @@
             {#if expandedProject === p.id}
               <ul class="sublist">
                 {#each sessions as s}
-                  <li>
-                    <button class="row sub" class:active={s.id === activeId} onclick={() => selectChat(s.id)}>
-                      {s.title || 'Untitled'}
-                    </button>
+                  <li class="rowwrap">
+                    {#if editingId === s.id}
+                      <input
+                        class="field rename sub"
+                        bind:value={editTitle}
+                        use:renameInput
+                        onkeydown={(e) => { if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') cancelRename() }}
+                        onblur={commitRename}
+                      />
+                    {:else if confirmDeleteId === s.id}
+                      <span class="confirmdel">Delete this session?</span>
+                      <button class="del-yes" onclick={() => doDelete(s.id)}>Delete</button>
+                      <button class="del-no" onclick={() => (confirmDeleteId = null)}>Cancel</button>
+                    {:else}
+                      <button
+                        class="row sub"
+                        class:active={s.id === activeId}
+                        onclick={() => selectChat(s.id)}
+                        ondblclick={() => startRename(s.id, s.title)}
+                        title="Double-click to rename"
+                      >
+                        {s.title || 'Untitled'}
+                      </button>
+                      <button class="del" aria-label="Delete session" title="Delete session" onclick={() => (confirmDeleteId = s.id)}>✕</button>
+                    {/if}
                   </li>
                 {:else}
                   <li class="row sub muted">No sessions yet</li>
@@ -1055,6 +1144,71 @@
     background: var(--paper);
     color: var(--ink);
     font: inherit;
+  }
+  .rename {
+    padding: 6px 8px;
+    box-sizing: border-box;
+  }
+  .rename.sub {
+    margin-left: 14px;
+    width: calc(100% - 14px);
+    font-size: 13px;
+  }
+  .rowwrap {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .rowwrap .row {
+    flex: 1;
+    min-width: 0;
+  }
+  .del {
+    flex: none;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    opacity: 0;
+  }
+  .rowwrap:hover .del {
+    opacity: 0.55;
+  }
+  .del:hover {
+    opacity: 1;
+    color: #d64545;
+    background: var(--paper);
+  }
+  .confirmdel {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--muted);
+    padding: 0 6px;
+  }
+  .del-yes,
+  .del-no {
+    flex: none;
+    border: 0.5px solid var(--border);
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 8px;
+    cursor: pointer;
+  }
+  .del-yes {
+    color: #d64545;
+    border-color: color-mix(in srgb, #d64545 40%, transparent);
+  }
+  .del-yes:hover,
+  .del-no:hover {
+    background: var(--paper);
   }
   .toolcall {
     max-width: 80%;
