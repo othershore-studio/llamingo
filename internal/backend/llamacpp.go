@@ -14,12 +14,14 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // LlamaCppNative talks to a llama.cpp `llama-server` over its native endpoints
 // (/props, /tokenize, /apply-template) and the OpenAI-compatible streaming chat
 // endpoint. It is the only Backend implementation.
 type LlamaCppNative struct {
+	mu      sync.RWMutex
 	baseURL string
 	token   string
 	http    *http.Client
@@ -48,6 +50,39 @@ func New(baseURL string, opts ...Option) *LlamaCppNative {
 }
 
 var _ Backend = (*LlamaCppNative)(nil)
+
+// Reconfigurable is a Backend whose connection can be re-pointed at runtime; the
+// settings endpoint hot-swaps the llama-server URL and token.
+type Reconfigurable interface {
+	SetConnection(baseURL, token string)
+	BaseURL() string
+	Token() string
+}
+
+var _ Reconfigurable = (*LlamaCppNative)(nil)
+
+// SetConnection re-points the backend at a new base URL and bearer token at
+// runtime. Safe for concurrent use with in-flight requests.
+func (l *LlamaCppNative) SetConnection(baseURL, token string) {
+	l.mu.Lock()
+	l.baseURL = strings.TrimRight(baseURL, "/")
+	l.token = token
+	l.mu.Unlock()
+}
+
+// BaseURL returns the backend's current base URL.
+func (l *LlamaCppNative) BaseURL() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.baseURL
+}
+
+// Token returns the backend's current bearer token (empty if none).
+func (l *LlamaCppNative) Token() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.token
+}
 
 // Props reads /props for the context size, model, and chat template.
 func (l *LlamaCppNative) Props(ctx context.Context) (Props, error) {
@@ -282,15 +317,18 @@ func toolsWire(tools []ToolDef) []map[string]any {
 }
 
 func (l *LlamaCppNative) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, l.baseURL+path, body)
+	l.mu.RLock()
+	base, token := l.baseURL, l.token
+	l.mu.RUnlock()
+	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
 	if err != nil {
 		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if l.token != "" {
-		req.Header.Set("Authorization", "Bearer "+l.token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	return req, nil
 }

@@ -53,17 +53,20 @@ var (
 )
 
 func main() {
-	url := env("LLAMINGO_URL", "http://localhost:8080")
-	var opts []backend.Option
-	if tok := os.Getenv("LLAMINGO_TOKEN"); tok != "" {
-		opts = append(opts, backend.WithToken(tok))
-	}
-	be := backend.New(url, opts...)
-
 	st, err := store.Open(defaultDataDir())
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// Resolve the connection: an env var wins (dev override), then the saved
+	// config (so it survives across launches), then the default.
+	cfg, _ := st.Config()
+	url := firstNonEmpty(os.Getenv("LLAMINGO_URL"), cfg.URL, "http://localhost:8080")
+	var opts []backend.Option
+	if tok := firstNonEmpty(os.Getenv("LLAMINGO_TOKEN"), cfg.Token); tok != "" {
+		opts = append(opts, backend.WithToken(tok))
+	}
+	be := backend.New(url, opts...)
 
 	dist, err := fs.Sub(assets, "web/dist")
 	if err != nil {
@@ -166,11 +169,14 @@ func withCORS(h http.Handler) http.Handler {
 	})
 }
 
-func env(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// firstNonEmpty returns the first non-empty string, or "" if all are empty.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
 	}
-	return def
+	return ""
 }
 
 func defaultDataDir() string {

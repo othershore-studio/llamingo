@@ -41,6 +41,10 @@
   let memoryContent = $state('')
   let memoryTampered = $state(false)
 
+  let settingsOpen = $state(false) // connection settings modal open?
+  let settingsUrl = $state('') // editable llama-server URL
+  let settingsToken = $state('') // editable bearer token
+
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
 
@@ -181,6 +185,25 @@
     })
     memoryTampered = false
     memoryOpen = false
+  }
+
+  // The llama-server connection, persisted to config.json and hot-swapped live.
+  async function openSettings() {
+    const s = await apiFetch('/api/settings').then((r) => r.json())
+    settingsUrl = s.url ?? ''
+    settingsToken = s.token ?? ''
+    settingsOpen = true
+  }
+  async function saveSettings() {
+    const url = settingsUrl.trim()
+    if (!url) return
+    await apiFetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url, token: settingsToken }),
+    })
+    settingsOpen = false
+    checkServer() // re-poll so the status reflects the new connection now
   }
 
   async function ackMemory() {
@@ -511,6 +534,7 @@
       >Thinking {thinking ? 'on' : 'off'}</button>
     {/if}
     <button class="pill-btn" onclick={openMemory}>Memory</button>
+    <button class="pill-btn" onclick={openSettings}>Settings</button>
     {#if conn}<span class="pill">{modelName(conn.model)}</span>{/if}
     {#if isDesktop}
       <div class="winctl">
@@ -755,6 +779,33 @@
         <div class="modal-foot">
           {#if memoryTampered}<button onclick={ackMemory}>Dismiss</button>{/if}
           <button class="primary" onclick={saveMemory}>Save</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if settingsOpen}
+    <div class="modal-backdrop" onclick={() => (settingsOpen = false)}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-head">
+          <span>Connection</span>
+          <button class="x" onclick={() => (settingsOpen = false)}>✕</button>
+        </div>
+        <label class="setting">
+          <span>llama-server URL</span>
+          <input
+            class="field"
+            bind:value={settingsUrl}
+            placeholder="http://localhost:8080"
+            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
+          />
+        </label>
+        <label class="setting">
+          <span>Bearer token <span class="muted">(optional, for an auth proxy)</span></span>
+          <input class="field" type="password" bind:value={settingsToken} placeholder="leave blank for none" />
+        </label>
+        <div class="modal-foot">
+          <button class="primary" onclick={saveSettings}>Save &amp; connect</button>
         </div>
       </div>
     </div>
@@ -1324,6 +1375,15 @@
     color: var(--clay);
     border-color: color-mix(in srgb, var(--clay) 40%, transparent);
     background: color-mix(in srgb, var(--clay) 12%, transparent);
+  }
+  .setting {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+  }
+  .setting > span {
+    color: var(--muted);
   }
   .modal-backdrop {
     position: fixed;

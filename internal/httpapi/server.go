@@ -64,6 +64,8 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
 	s.mux.HandleFunc("PUT /api/conversations/{id}", s.handleRenameConversation)
 	s.mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
+	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	s.mux.HandleFunc("POST /api/permission/{id}", s.handlePermission)
 	return s
@@ -165,6 +167,45 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/settings — the current llama-server connection (url + token).
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	rc, ok := s.be.(backend.Reconfigurable)
+	if !ok {
+		http.Error(w, "backend is not reconfigurable", http.StatusNotImplemented)
+		return
+	}
+	writeJSON(w, map[string]string{"url": rc.BaseURL(), "token": rc.Token()})
+}
+
+// PUT /api/settings {url, token} — persist and hot-swap the connection; the next
+// /props poll reconnects on its own.
+func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
+	rc, ok := s.be.(backend.Reconfigurable)
+	if !ok {
+		http.Error(w, "backend is not reconfigurable", http.StatusNotImplemented)
+		return
+	}
+	var body struct {
+		URL   string `json:"url"`
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	url := strings.TrimSpace(body.URL)
+	if url == "" {
+		http.Error(w, "url is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.st.SetConfig(store.Config{URL: url, Token: body.Token}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rc.SetConnection(url, body.Token)
 	w.WriteHeader(http.StatusNoContent)
 }
 
