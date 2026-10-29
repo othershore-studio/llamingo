@@ -11,6 +11,10 @@
   // PWA use same-origin relative paths.
   const apiFetch = (path, opts) => fetch((window.runtime ? 'http://127.0.0.1:8766' : '') + path, opts)
 
+  // In the Wails desktop shell the window is frameless, so the HTML topbar is the
+  // title bar: draggable, with our own min/max/close. The browser/PWA has none.
+  const isDesktop = typeof window !== 'undefined' && !!window.runtime
+
   let conn = $state(null) // { model, nCtx }
   let chats = $state([])
   let activeId = $state(null)
@@ -39,6 +43,8 @@
   let pending = $state(null) // a tool's consent prompt: { id, label, detail, risk, scopes }
 
   let thinking = $state(true) // per-turn thinking toggle; only shown when the model supports it
+  let sysMenu = $state(false) // desktop window menu open?
+  let onTop = $state(false) // always-on-top state
 
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
@@ -304,8 +310,19 @@
 </script>
 
 <div class="app">
-  <header class="topbar">
-    <img class="mark" src="/favicon.svg" alt="" width="24" height="24" />
+  <header
+    class="topbar"
+    ondblclick={(e) => {
+      if (isDesktop && !e.target.closest('button') && !e.target.closest('.winctl')) window.runtime?.WindowToggleMaximise?.()
+    }}
+  >
+    {#if isDesktop}
+      <button class="mark-btn" aria-label="Window menu" onclick={() => (sysMenu = !sysMenu)}>
+        <img class="mark" src="/favicon.svg" alt="" width="24" height="24" />
+      </button>
+    {:else}
+      <img class="mark" src="/favicon.svg" alt="" width="24" height="24" />
+    {/if}
     <span class="wordmark">llaminGO</span>
     <span class="spacer"></span>
     {#if conn?.thinkingSupported}
@@ -318,7 +335,30 @@
     {/if}
     <button class="pill-btn" onclick={openMemory}>Memory</button>
     {#if conn}<span class="pill">{modelName(conn.model)}</span>{/if}
+    {#if isDesktop}
+      <div class="winctl">
+        <button class="winbtn" aria-label="Minimize" onclick={() => window.runtime?.WindowMinimise?.()}>
+          <svg width="11" height="11" viewBox="0 0 11 11"><line x1="1" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1" /></svg>
+        </button>
+        <button class="winbtn" aria-label="Maximize" onclick={() => window.runtime?.WindowToggleMaximise?.()}>
+          <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1" /></svg>
+        </button>
+        <button class="winbtn close" aria-label="Close" onclick={() => window.runtime?.Quit?.()}>
+          <svg width="11" height="11" viewBox="0 0 11 11"><line x1="1.5" y1="1.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1.2" /><line x1="9.5" y1="1.5" x2="1.5" y2="9.5" stroke="currentColor" stroke-width="1.2" /></svg>
+        </button>
+      </div>
+    {/if}
   </header>
+
+  {#if isDesktop && sysMenu}
+    <div class="sysmenu-backdrop" onclick={() => (sysMenu = false)}></div>
+    <nav class="sysmenu">
+      <button onclick={() => { window.runtime?.WindowMinimise?.(); sysMenu = false }}>Minimize</button>
+      <button onclick={() => { window.runtime?.WindowToggleMaximise?.(); sysMenu = false }}>Maximize / Restore</button>
+      <button onclick={() => { onTop = !onTop; window.runtime?.WindowSetAlwaysOnTop?.(onTop); sysMenu = false }}>{onTop ? '✓ ' : ''}Always on top</button>
+      <button class="danger" onclick={() => window.runtime?.Quit?.()}>Close</button>
+    </nav>
+  {/if}
 
   {#if staleNote}
     <button class="notice" onclick={() => (staleNote = null)}>{staleNote} · dismiss</button>
@@ -491,6 +531,9 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
+    position: relative;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--ink) 22%, transparent) transparent;
   }
   .topbar,
   .statusbar {
@@ -503,6 +546,81 @@
   .topbar {
     height: 44px;
     border-bottom: 0.5px solid var(--border);
+    --wails-draggable: drag;
+  }
+  .topbar button,
+  .topbar .mark {
+    --wails-draggable: no-drag;
+  }
+  .winctl {
+    display: flex;
+    align-self: stretch;
+    margin-left: 4px;
+    margin-right: -12px;
+  }
+  .winbtn {
+    width: 42px;
+    border: none;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .winbtn:hover {
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .winbtn.close:hover {
+    background: #d64545;
+    color: #fff;
+  }
+  .mark-btn {
+    border: none;
+    background: none;
+    padding: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+  }
+  .mark-btn:hover {
+    opacity: 0.85;
+  }
+  .sysmenu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+  }
+  .sysmenu {
+    position: absolute;
+    top: 46px;
+    left: 8px;
+    z-index: 21;
+    min-width: 184px;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+  }
+  .sysmenu button {
+    text-align: left;
+    border: none;
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    padding: 7px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .sysmenu button:hover {
+    background: var(--paper);
+  }
+  .sysmenu button.danger:hover {
+    background: #d64545;
+    color: #fff;
   }
   .statusbar {
     height: 32px;

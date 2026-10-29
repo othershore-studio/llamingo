@@ -64,9 +64,10 @@ func main() {
 	go func() { _ = http.Serve(ln, withCORS(httpapi.New(be, st))) }()
 
 	if err := wails.Run(&options.App{
-		Title:  "llaminGO",
-		Width:  1100,
-		Height: 720,
+		Title:     "llaminGO",
+		Width:     1100,
+		Height:    720,
+		Frameless: true,
 		AssetServer: &assetserver.Options{
 			Assets: dist,
 		},
