@@ -169,3 +169,5 @@ Small web-UI traps already paid for, kept so the next app doesn't re-learn them:
 - 2026-10-29: Shipped the topbar declutter (Memory/Settings → ⋮ menu, dropped the duplicate model pill, pinned the
   window controls) and the thin-window **sidebar drawer** (hidden by default; toggle / swipe / scrim; breakpoint in
   JS; open/closed state preserved across thin↔wide). Added the *Implementation gotchas* section.
+- 2026-10-29: Thin-window **bottom bar** — at ≤700px the status bar becomes the action strip (Chats button opens the
+  drawer, Compact becomes an icon, the ⋮ menu moves down from the topbar and opens upward); wide layout unchanged.
