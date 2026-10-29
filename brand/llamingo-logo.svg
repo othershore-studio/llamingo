@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="256"
+   height="256"
+   viewBox="0 0 256 256"
+   role="img"
+   aria-label="Margin"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="llamingo-logo-back-draft.svg"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <defs
+     id="defs1" />
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.49851028"
+     inkscape:cx="345.02799"
+     inkscape:cy="153.45722"
+     inkscape:window-width="1600"
+     inkscape:window-height="811"
+     inkscape:window-x="780"
+     inkscape:window-y="1352"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" />
+  <title
+     id="title1">Margin</title>
+  <!-- Final icon (vector of generate_final.py's refined art):
+       warm-cream paper, warm-black bracket = the margin, deep-violet dot = the note made in it. -->
+  <rect
+     width="256"
+     height="256"
+     rx="56"
+     fill="#f3ecdd"
+     id="rect1"
+     x="0"
+     y="0" />
+  <path
+     style="fill:#c0674a;fill-opacity:1;stroke:#4c271a;stroke-width:5.34206;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+     d="m 98.725052,45.007153 c 0,0 -1.71698,-16.803574 4.775328,-21.129369 6.49233,-4.325792 16.91037,-10.291471 20.64231,-9.083961 0,0 2.34437,9.234681 -0.66319,16.257456 -3.00755,7.022775 -9.37486,15.623763 -13.69136,15.329998 -4.31648,-0.293764 -11.063088,-1.374124 -11.063088,-1.374124 z"
+     id="path9"
+     inkscape:label="ear2" />
+  <path
+     id="path1"
+     d="M 105.73488,232.8922 C 96.708092,224.84917 79.762895,201.09004 85.537519,172.67681 88.860118,156.32845 93.576942,140.0754 89.061753,118.10299 73.013513,94.100021 61.012016,111.00408 53.650054,98.409821 52.098742,86.656965 51.912257,82.628249 57.491397,78.50628 63.070528,74.384309 74.415285,68.742109 82.607865,64.22691 79.197872,55.604198 102.16458,46.573805 107.23383,45.838061 c 5.06923,-0.735744 23.63147,2.695591 23.63147,2.695591 7.6802,2.776438 14.68285,7.308038 19.56625,13.22658 17.09606,20.719931 12.33528,78.195798 13.00305,79.531348 3.99601,2.09392 9.10169,-11.23507 43.35173,-3.08116"
+     sodipodi:nodetypes="csccsczcscc"
+     inkscape:label="llamaFill"
+     style="display:inline;fill:#c0674a;fill-opacity:1;stroke:none;stroke-width:6.41094;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none" />
+  <path
+     style="fill:#f9efec;fill-opacity:1;stroke:none;stroke-width:4.27377;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+     d="m 79.834961,106.78257 c 2.737101,-0.46246 11.574441,0.42797 14.284501,-0.14487 4.03505,-1.3277 6.890278,-2.08705 8.903128,-5.77452 0.52561,-2.113449 0.97385,-5.949079 2.11809,-8.708858 1.55619,-3.753373 5.40193,-6.341521 6.3453,-10.407825 0.42822,-3.281673 -0.75049,-6.540278 -1.95934,-9.535108 -2.44049,-4.776507 -7.99679,-6.615261 -12.961178,-7.365478 -5.10138,-0.686367 -10.281968,-1.127749 -15.422428,-0.635209 l -22.220703,13.125231 -6.4897,10.996438 1.442155,11.17671 c 0,0 1.622425,3.064579 3.605388,3.425119 1.982965,0.36053 10.275361,1.62241 10.275361,1.62241 z"
+     id="path5"
+     sodipodi:nodetypes="cccacccc"
+     inkscape:label="llama face mask" />
+  <path
+     id="llama"
+     d="M 104.23973,229.9019 C 95.212942,221.85887 79.762895,201.09004 85.537519,172.67681 88.860118,156.32845 93.576942,140.0754 89.061753,118.10299 73.013513,94.100021 61.012016,111.00408 53.650054,98.409821 52.098742,86.656965 51.912257,82.628249 57.491397,78.50628 63.070528,74.384309 78.944251,72.539926 82.607865,64.22691 86.271479,55.913894 96.85538,47.129579 107.23383,45.838061 m 23.63147,2.695591 c 7.6802,2.776438 14.68285,7.308038 19.56625,13.22658 17.09606,20.719931 12.33528,78.195798 13.00305,79.531348"
+     sodipodi:nodetypes="csccszccsc"
+     inkscape:label="llama main"
+     style="display:inline;fill:none;fill-opacity:1;stroke:#4c261a;stroke-width:6.41094;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1" />
+  <path
+     style="display:inline;fill:none;fill-opacity:1;stroke:#4c261a;stroke-width:5.34219;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+     d="m 156.7735,146.97612 c 0,0 14.74558,-16.17256 48.51768,-9.51327"
+     id="path10"
+     sodipodi:nodetypes="cc"
+     inkscape:label="llama back" />
+  <ellipse
+     id="eye"
+     cx="93.072464"
+     cy="77.977913"
+     rx="7.7790771"
+     ry="7.4790859"
+     fill="#c0674a"
+     stroke="none"
+     style="fill:#26130d;fill-opacity:1;stroke-width:7.3758;stroke-linecap:round;stroke-linejoin:round" />
+  <path
+     style="fill:#26130d;fill-opacity:1;stroke:none;stroke-width:5.34219;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+     d="m 52.569422,99.467491 c -0.654036,0.29731 -2.247219,1.044219 -2.730272,-5.61482 -0.325373,-4.485242 -1.048835,-7.084086 1.778942,-8.655079 8.56194,-4.756633 13.794245,-0.951328 13.794245,-0.951328 0,0 -1.426999,15.221227 -12.842915,15.221227 z"
+     id="path7"
+     sodipodi:nodetypes="csscc"
+     inkscape:label="nose" />
+  <path
+     style="fill:#c0674a;fill-opacity:1;stroke:#4c261a;stroke-width:5.34219;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
+     d="m 108.32343,53.134084 c 0,0 -4.37881,-12.667789 2.86713,-22.656098 7.24594,-9.988311 24.35731,-15.152981 24.35731,-15.152981 l -3.26813,22.116008 c 0,0 -3.41197,10.074041 -12.47061,19.313662"
+     id="path8"
+     inkscape:label="ear 1" />
+  <metadata
+     id="metadata5">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>Margin</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+</svg>
