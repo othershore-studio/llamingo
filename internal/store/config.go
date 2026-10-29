@@ -19,12 +19,13 @@ func (s *Store) configFile() string { return filepath.Join(s.root, "config.json"
 // such as mcp.json lives next to the conversation roots.
 func (s *Store) Root() string { return s.root }
 
-// Config is the persisted app configuration — currently just the llama-server
-// connection. It lives at <root>/config.json next to the memory file, so the
-// connection survives across launches without re-exporting an env var.
+// Config is the persisted app configuration — the llama-server connection and
+// the user's location. It lives at <root>/config.json next to the memory file,
+// so these survive across launches without re-exporting an env var.
 type Config struct {
-	URL   string `json:"url,omitempty"`
-	Token string `json:"token,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Token    string `json:"token,omitempty"`
+	Location string `json:"location,omitempty"` // the user's manually set location (city/country)
 }
 
 // Config returns the saved configuration. A missing file is the zero Config, not
