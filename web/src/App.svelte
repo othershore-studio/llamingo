@@ -47,11 +47,20 @@
   let sysMenu = $state(false) // desktop window menu open?
   let onTop = $state(false) // always-on-top state
   let sidebarOpen = $state(loadSidebar()) // left panel shown? persisted per browser
+  const SIDEBAR_MIN = 180, SIDEBAR_MAX = 460 // sidebar drag-resize clamp (px)
+  let sidebarWidth = $state(loadSidebarWidth()) // left panel width, drag-resizable + persisted
 
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
     const t = setInterval(checkServer, 15000)
-    return () => clearInterval(t)
+    // Keep the sidebar from crowding out the conversation when the window shrinks.
+    const onResize = () => (sidebarWidth = Math.max(SIDEBAR_MIN, Math.min(sidebarWidth, window.innerWidth - 360)))
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => {
+      clearInterval(t)
+      window.removeEventListener('resize', onResize)
+    }
   })
 
   // Monitor the server: warn if the model or context size changed under us, and
@@ -362,6 +371,33 @@
       localStorage.setItem('llamingo.sidebar', sidebarOpen ? 'open' : 'closed')
     } catch {}
   }
+  function loadSidebarWidth() {
+    try {
+      const v = parseInt(localStorage.getItem('llamingo.sidebarWidth') ?? '', 10)
+      if (Number.isFinite(v)) return Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, v))
+    } catch {}
+    return 240
+  }
+  // Drag the divider to resize the sidebar; clamp so the conversation keeps room,
+  // and persist the final width per browser.
+  function startResize(e) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = sidebarWidth
+    const max = Math.min(SIDEBAR_MAX, window.innerWidth - 360)
+    const onMove = (ev) => {
+      sidebarWidth = Math.max(SIDEBAR_MIN, Math.min(max, startW + ev.clientX - startX))
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      try {
+        localStorage.setItem('llamingo.sidebarWidth', String(Math.round(sidebarWidth)))
+      } catch {}
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
 
   function modelName(path) {
     if (!path) return 'unknown model'
@@ -444,7 +480,7 @@
   {/if}
 
   <div class="body">
-    <aside class="left" class:collapsed={!sidebarOpen}>
+    <aside class="left" class:collapsed={!sidebarOpen} style="--sidebar-w:{sidebarWidth}px; margin-left:{sidebarOpen ? '0px' : -sidebarWidth + 'px'}">
       <div class="switcher">Chats</div>
       <button class="new" onclick={newChat}>+ New chat</button>
       <ul class="list">
@@ -497,6 +533,15 @@
         {/each}
       </ul>
     </aside>
+    {#if sidebarOpen}
+      <div
+        class="resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        onpointerdown={startResize}
+      ></div>
+    {/if}
 
     <main class="conversation">
       <div class="thread">
@@ -772,9 +817,10 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
+    position: relative;
   }
   .left {
-    width: 240px;
+    width: var(--sidebar-w, 240px);
     flex: none;
     border-right: 0.5px solid var(--border);
     background: var(--surface);
@@ -786,7 +832,35 @@
     transition: margin-left 0.18s ease;
   }
   .left.collapsed {
-    margin-left: -240px;
+    border-right-width: 0;
+  }
+  .resizer {
+    position: relative;
+    flex: none;
+    width: 6px;
+    margin: 0 -3px;
+    z-index: 2;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.15s ease;
+  }
+  .resizer:hover {
+    background: color-mix(in srgb, var(--clay) 35%, transparent);
+  }
+  /* Narrow windows (phone / PWA): the sidebar overlays the conversation as a
+     drawer instead of splitting the width; the drag handle is hidden. */
+  @media (max-width: 560px) {
+    .left {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 5;
+      box-shadow: 2px 0 12px color-mix(in srgb, var(--ink) 25%, transparent);
+    }
+    .resizer {
+      display: none;
+    }
   }
   .switcher {
     font-weight: 500;

@@ -67,6 +67,8 @@ func main() {
 		Title:     "llaminGO",
 		Width:     1100,
 		Height:    720,
+		MinWidth:  600,
+		MinHeight: 400,
 		Frameless: true,
 		AssetServer: &assetserver.Options{
 			Assets: dist,
