@@ -52,6 +52,7 @@
 
   let thinking = $state(true) // per-turn thinking toggle; only shown when the model supports it
   let sysMenu = $state(false) // desktop window menu open?
+  let actionsMenu = $state(false) // topbar ⋮ menu (Memory / Settings) open?
   let onTop = $state(false) // always-on-top state
   let maximized = $state(false) // desktop window maximized? drives the maximize/restore icon
   let sidebarOpen = $state(loadSidebar()) // left panel shown? persisted per browser
@@ -533,9 +534,18 @@
         title="Toggle the model's thinking for new messages"
       >Thinking {thinking ? 'on' : 'off'}</button>
     {/if}
-    <button class="pill-btn" onclick={openMemory}>Memory</button>
-    <button class="pill-btn" onclick={openSettings}>Settings</button>
-    {#if conn}<span class="pill">{modelName(conn.model)}</span>{/if}
+    <button
+      class="icon-btn"
+      aria-label="Menu"
+      aria-haspopup="true"
+      aria-expanded={actionsMenu}
+      title="Memory, Settings"
+      onclick={() => (actionsMenu = !actionsMenu)}
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <circle cx="8" cy="3" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="8" cy="13" r="1.5" />
+      </svg>
+    </button>
     {#if isDesktop}
       <div class="winctl">
         <button class="winbtn" aria-label="Minimize" onclick={() => window.runtime?.WindowMinimise?.()}>
@@ -562,6 +572,14 @@
       <button onclick={() => { window.runtime?.WindowToggleMaximise?.(); sysMenu = false }}>Maximize / Restore</button>
       <button onclick={() => { onTop = !onTop; window.runtime?.WindowSetAlwaysOnTop?.(onTop); sysMenu = false }}>{onTop ? '✓ ' : ''}Always on top</button>
       <button class="danger" onclick={() => { window.runtime?.EventsEmit?.('app:quit'); sysMenu = false }}>Close llaminGO</button>
+    </nav>
+  {/if}
+
+  {#if actionsMenu}
+    <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
+    <nav class="sysmenu actionsmenu">
+      <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
+      <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
     </nav>
   {/if}
 
@@ -841,6 +859,7 @@
   .winctl {
     display: flex;
     align-self: stretch;
+    flex-shrink: 0;
     margin-left: 4px;
     margin-right: -12px;
   }
@@ -925,6 +944,11 @@
     background: #d64545;
     color: #fff;
   }
+  /* The ⋮ actions menu anchors under its button on the right, not the left. */
+  .actionsmenu {
+    left: auto;
+    right: 8px;
+  }
   .statusbar {
     height: 32px;
     border-top: 0.5px solid var(--border);
@@ -939,15 +963,13 @@
   }
   .wordmark {
     font-weight: 500;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .spacer {
     flex: 1;
-  }
-  .pill {
-    border: 0.5px solid var(--border);
-    border-radius: 8px;
-    padding: 3px 10px;
-    color: var(--muted);
   }
   .dot {
     width: 8px;
