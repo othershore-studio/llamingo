@@ -15,6 +15,10 @@ import (
 
 func (s *Store) configFile() string { return filepath.Join(s.root, "config.json") }
 
+// Root is the store's base directory (e.g. ~/.llamingo), where app-wide config
+// such as mcp.json lives next to the conversation roots.
+func (s *Store) Root() string { return s.root }
+
 // Config is the persisted app configuration — currently just the llama-server
 // connection. It lives at <root>/config.json next to the memory file, so the
 // connection survives across launches without re-exporting an env var.
