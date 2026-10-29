@@ -46,6 +46,7 @@
   let thinking = $state(true) // per-turn thinking toggle; only shown when the model supports it
   let sysMenu = $state(false) // desktop window menu open?
   let onTop = $state(false) // always-on-top state
+  let maximized = $state(false) // desktop window maximized? drives the maximize/restore icon
   let sidebarOpen = $state(loadSidebar()) // left panel shown? persisted per browser
   const SIDEBAR_MIN = 180, SIDEBAR_MAX = 460 // sidebar drag-resize clamp (px)
   let sidebarWidth = $state(loadSidebarWidth()) // left panel width, drag-resizable + persisted
@@ -53,8 +54,12 @@
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
     const t = setInterval(checkServer, 15000)
-    // Keep the sidebar from crowding out the conversation when the window shrinks.
-    const onResize = () => (sidebarWidth = Math.max(SIDEBAR_MIN, Math.min(sidebarWidth, window.innerWidth - 360)))
+    // On resize: keep the sidebar from crowding out the conversation, and track
+    // whether the window is maximized (drives the maximize/restore icon).
+    const onResize = () => {
+      sidebarWidth = Math.max(SIDEBAR_MIN, Math.min(sidebarWidth, window.innerWidth - 360))
+      syncMaximized()
+    }
     onResize()
     window.addEventListener('resize', onResize)
     return () => {
@@ -62,6 +67,16 @@
       window.removeEventListener('resize', onResize)
     }
   })
+
+  // Reflect the window's maximized state so the title-bar button shows the right
+  // glyph (maximize vs restore). Wails only; a no-op in the browser/PWA.
+  async function syncMaximized() {
+    try {
+      maximized = (await window.runtime?.WindowIsMaximised?.()) ?? false
+    } catch {
+      maximized = false
+    }
+  }
 
   // Monitor the server: warn if the model or context size changed under us, and
   // reflect when it becomes unreachable.
@@ -455,8 +470,12 @@
         <button class="winbtn" aria-label="Minimize" onclick={() => window.runtime?.WindowMinimise?.()}>
           <svg width="11" height="11" viewBox="0 0 11 11"><line x1="1" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1" /></svg>
         </button>
-        <button class="winbtn" aria-label="Maximize" onclick={() => window.runtime?.WindowToggleMaximise?.()}>
-          <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1" /></svg>
+        <button class="winbtn" aria-label={maximized ? 'Restore' : 'Maximize'} onclick={() => window.runtime?.WindowToggleMaximise?.()}>
+          {#if maximized}
+            <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1.5" y="3.5" width="6" height="6" fill="none" stroke="currentColor" stroke-width="1" /><path d="M3.5 3.5 V1.5 H9.5 V7.5 H7.5" fill="none" stroke="currentColor" stroke-width="1" /></svg>
+          {:else}
+            <svg width="11" height="11" viewBox="0 0 11 11"><rect x="1.5" y="1.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1" /></svg>
+          {/if}
         </button>
         <button class="winbtn close" aria-label="Close" onclick={() => window.runtime?.Quit?.()}>
           <svg width="11" height="11" viewBox="0 0 11 11"><line x1="1.5" y1="1.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1.2" /><line x1="9.5" y1="1.5" x2="1.5" y2="9.5" stroke="currentColor" stroke-width="1.2" /></svg>
