@@ -24,8 +24,9 @@
   let budget = $state(null) // { used, nCtx, level }
   let speed = $state(null) // last turn's tokens/sec: { promptPerSecond, predictPerSecond, predictN }
   let error = $state(null)
-  let activeSummary = $state(null) // the active compaction summary, if any
+  let convSummaries = $state([]) // compaction summaries, each anchored at its fold point in the thread
   let report = $state(null) // transient compaction report
+  let compacting = $state(false) // a manual compaction is in flight (shows an in-thread cue)
   let editingId = $state(null) // conversation id being renamed inline, if any
   let editTitle = $state('') // the in-progress rename text
   let confirmDeleteId = $state(null) // conversation id awaiting delete confirmation
@@ -155,37 +156,51 @@
     report = null
     pending = null
     const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
-    const summaries = entries.filter((e) => e.kind === 'summary')
-    activeSummary = summaries.length ? summaries[summaries.length - 1] : null
-    // Pair each persisted reasoning entry with the assistant answer that follows
-    // it, so the thinking trace shows in its collapsible block on reload.
+    // Pair each persisted reasoning entry with the assistant answer that follows it.
+    // The summary entry is appended at the end of the log but shadows an id-range, so
+    // anchor the active (latest) summary after the last message it covers (coversTo) —
+    // that renders it at the fold boundary in the thread, not pinned on top.
     const msgs = []
     let trace = ''
+    let activeSum = null
     for (const e of entries) {
       if (e.kind === 'reasoning') {
         trace = e.content
       } else if (e.kind === 'msg') {
-        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', time: e.time })
+        msgs.push({ id: e.id, role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', time: e.time })
         trace = ''
+      } else if (e.kind === 'summary') {
+        activeSum = e
       }
     }
     messages = msgs
+    if (activeSum) {
+      const idx = msgs.findIndex((m) => m.id === activeSum.coversTo)
+      convSummaries = [{ content: activeSum.content, time: activeSum.time, afterIndex: idx >= 0 ? idx : msgs.length - 1 }]
+    } else {
+      convSummaries = []
+    }
   }
 
   // Compaction folds the oldest messages into a summary (non-destructive); the
   // core returns how many it folded and the tokens saved.
   async function compact() {
-    if (!activeId || streaming) return
-    const r = await apiFetch('/api/compact', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: activeId }),
-    }).then((r) => r.json())
-    await selectChat(activeId)
-    report =
-      r.folded > 0
-        ? `Folded ${r.folded} message${r.folded === 1 ? '' : 's'}, saved ~${r.saved} tokens`
-        : 'Nothing old enough to compact yet'
+    if (!activeId || streaming || compacting) return
+    compacting = true
+    try {
+      const r = await apiFetch('/api/compact', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: activeId }),
+      }).then((r) => r.json())
+      await selectChat(activeId)
+      report =
+        r.folded > 0
+          ? `Folded ${r.folded} message${r.folded === 1 ? '' : 's'}, saved ~${r.saved} tokens`
+          : 'Nothing old enough to compact yet'
+    } finally {
+      compacting = false
+    }
   }
 
   // Personal memory is injected into every prompt (metered as its own segment)
@@ -406,7 +421,7 @@
       messages[messages.length - 1].reasoning += payload.content
     } else if (event === 'compacted') {
       report = `Auto-compacted: folded ${payload.folded}, saved ~${payload.saved} tokens`
-      if (payload.summary) activeSummary = { content: payload.summary }
+      // the compaction summary marker renders at its fold boundary on the next conversation load
     } else if (event === 'tool_call') {
       const last = messages[messages.length - 1]
       if (last) (last.tools ??= []).push({ name: payload.name, arguments: payload.arguments })
@@ -742,12 +757,6 @@
     <main class="conversation">
       <div class="thread">
         {#if error}<p class="error">{error}</p>{/if}
-        {#if activeSummary}
-          <details class="thinking">
-            <summary>Earlier conversation summarized</summary>
-            <div class="rtext prose">{@html md.render(activeSummary.content)}</div>
-          </details>
-        {/if}
         {#each messages as m, i}
           {#if m.reasoning}
             <details class="thinking" open={streaming && i === messages.length - 1 && !m.content}>
@@ -775,9 +784,18 @@
               <span>{fmtTime(m.time)}</span>
             </div>
           {/if}
+          {#each convSummaries.filter((s) => s.afterIndex === i) as s}
+            <details class="thinking summary-mark">
+              <summary>Compacted · {fmtTime(s.time)}</summary>
+              <div class="rtext prose">{@html md.render(s.content)}</div>
+            </details>
+          {/each}
         {:else}
           <p class="empty muted">Ask something to get started.</p>
         {/each}
+        {#if compacting}
+          <div class="compacting muted">Compacting…</div>
+        {/if}
       </div>
       {#if pending}
         <div class="consent">
@@ -1475,6 +1493,14 @@
   }
   .bar.full .fill {
     background: #d64545;
+  }
+  .summary-mark summary {
+    color: var(--clay);
+  }
+  .compacting {
+    text-align: center;
+    font-size: 12px;
+    padding: 6px 0;
   }
   .pill-btn {
     border: 0.5px solid var(--border);
