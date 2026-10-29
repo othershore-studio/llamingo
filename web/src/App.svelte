@@ -547,6 +547,18 @@
   }
 
   const pct = $derived(budget && budget.nCtx ? Math.min(100, Math.round((100 * budget.used) / budget.nCtx)) : 0)
+
+  // The window title reflects the active conversation — "llaminGO › Chat name" in
+  // the desktop title bar / taskbar and the browser tab, or just "llaminGO" at the
+  // chat list. The title comes from the loaded chat/session lists.
+  const activeTitle = $derived(
+    chats.find((c) => c.id === activeId)?.title ?? sessions.find((s) => s.id === activeId)?.title ?? ''
+  )
+  $effect(() => {
+    const t = activeTitle ? `llaminGO › ${activeTitle}` : 'llaminGO'
+    document.title = t
+    if (isDesktop) window.runtime?.WindowSetTitle?.(t)
+  })
 </script>
 
 <div class="app">
