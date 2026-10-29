@@ -65,24 +65,35 @@ func (r ToolResult) Text() string {
 	return b.String()
 }
 
-// Client is a minimal JSON-RPC 2.0 client for one MCP server over a
-// newline-delimited byte stream — a subprocess's stdio in production, an
-// in-memory pipe in tests. Calls are synchronous.
+// Client is a minimal JSON-RPC 2.0 MCP client for one server. The high-level
+// calls below (Initialize/ListTools/CallTool) are the same regardless of how the
+// server is reached; a transport does the framing — a newline-delimited byte
+// stream (a subprocess's stdio) or Streamable HTTP. Calls are synchronous.
 type Client struct {
-	mu   sync.Mutex
-	rw   io.ReadWriteCloser
-	enc  *json.Encoder
-	dec  *json.Decoder
-	next int
+	tr transport
 }
 
-// NewClient wraps a transport (e.g. a subprocess's stdio) as an MCP client.
-func NewClient(rw io.ReadWriteCloser) *Client {
-	return &Client{rw: rw, enc: json.NewEncoder(rw), dec: json.NewDecoder(rw)}
+// transport carries one JSON-RPC conversation: a request/response call and a
+// fire-and-forget notification. streamTransport (stdio) and httpTransport
+// implement it.
+type transport interface {
+	call(ctx context.Context, method string, params any) (json.RawMessage, error)
+	notify(method string, params any) error
+	io.Closer
 }
+
+// NewClient wraps a byte-stream transport (e.g. a subprocess's stdio) as an MCP
+// client. See NewHTTPClient for a Streamable HTTP server.
+func NewClient(rw io.ReadWriteCloser) *Client { return &Client{tr: newStreamTransport(rw)} }
 
 // Close closes the underlying transport.
-func (c *Client) Close() error { return c.rw.Close() }
+func (c *Client) Close() error { return c.tr.Close() }
+
+func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	return c.tr.call(ctx, method, params)
+}
+
+func (c *Client) notify(method string, params any) error { return c.tr.notify(method, params) }
 
 // Initialize performs the MCP handshake and signals readiness.
 func (c *Client) Initialize(ctx context.Context) error {
@@ -125,12 +136,28 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (ToolResul
 	return res, nil
 }
 
-func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.next++
-	id := c.next
-	if err := c.enc.Encode(rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
+// streamTransport is the byte-stream transport (stdio): newline-delimited
+// JSON-RPC over a single ReadWriteCloser, with calls serialized by the mutex.
+type streamTransport struct {
+	mu   sync.Mutex
+	rw   io.ReadWriteCloser
+	enc  *json.Encoder
+	dec  *json.Decoder
+	next int
+}
+
+func newStreamTransport(rw io.ReadWriteCloser) *streamTransport {
+	return &streamTransport{rw: rw, enc: json.NewEncoder(rw), dec: json.NewDecoder(rw)}
+}
+
+func (t *streamTransport) Close() error { return t.rw.Close() }
+
+func (t *streamTransport) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.next++
+	id := t.next
+	if err := t.enc.Encode(rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
 		return nil, fmt.Errorf("mcp: send %s: %w", method, err)
 	}
 	for {
@@ -138,7 +165,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 			return nil, err
 		}
 		var resp rpcResponse
-		if err := c.dec.Decode(&resp); err != nil {
+		if err := t.dec.Decode(&resp); err != nil {
 			return nil, fmt.Errorf("mcp: read %s: %w", method, err)
 		}
 		if resp.ID == nil || *resp.ID != id {
@@ -151,11 +178,11 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	}
 }
 
-func (c *Client) notify(method string, params any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (t *streamTransport) notify(method string, params any) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	// A JSON-RPC notification is a request with no id.
-	if err := c.enc.Encode(map[string]any{"jsonrpc": "2.0", "method": method, "params": params}); err != nil {
+	if err := t.enc.Encode(map[string]any{"jsonrpc": "2.0", "method": method, "params": params}); err != nil {
 		return fmt.Errorf("mcp: notify %s: %w", method, err)
 	}
 	return nil

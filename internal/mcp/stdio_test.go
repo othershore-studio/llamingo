@@ -100,10 +100,11 @@ func TestConnectStdioRoundTrip(t *testing.T) {
 	}
 }
 
-// An http/sse server is parsed but not yet dialable; Connect says so clearly.
+// The legacy two-endpoint "sse" transport is not implemented; Connect says so
+// clearly rather than half-dialing it. (http round-trips live in http_test.go.)
 func TestConnectUnsupportedTransport(t *testing.T) {
-	s := mcp.Server{Name: "remote", Scope: mcp.ScopeGlobal, Config: mcp.ServerConfig{Type: "http", URL: "https://example.test/mcp"}}
+	s := mcp.Server{Name: "remote", Scope: mcp.ScopeGlobal, Config: mcp.ServerConfig{Type: "sse", URL: "https://example.test/sse"}}
 	if _, err := mcp.Connect(s); err == nil {
-		t.Fatal("Connect to an http server should error until the transport exists")
+		t.Fatal("Connect to a legacy sse server should error")
 	}
 }

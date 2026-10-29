@@ -60,8 +60,9 @@ func dialStdio(cfg ServerConfig) (io.ReadWriteCloser, error) {
 }
 
 // Connect dials a configured server and wraps it as a Client, ready for
-// ServerRegistry.Add. Only the stdio transport is implemented so far; http and
-// sse are configured-but-not-yet-supported and return an error.
+// ServerRegistry.Add. stdio spawns a subprocess; http speaks Streamable HTTP to
+// the server's URL. The legacy two-endpoint "sse" transport is not implemented —
+// its servers are configured as http in current clients.
 func Connect(s Server) (*Client, error) {
 	switch s.Config.Transport() {
 	case "stdio":
@@ -70,7 +71,12 @@ func Connect(s Server) (*Client, error) {
 			return nil, err
 		}
 		return NewClient(rw), nil
+	case "http":
+		if s.Config.URL == "" {
+			return nil, fmt.Errorf("mcp: server %q: http transport needs a url", s.Name)
+		}
+		return NewHTTPClient(s.Config.URL, s.Config.Headers), nil
 	default:
-		return nil, fmt.Errorf("mcp: server %q: %s transport not yet supported", s.Name, s.Config.Transport())
+		return nil, fmt.Errorf("mcp: server %q: %s transport not supported (use http for a remote server)", s.Name, s.Config.Transport())
 	}
 }
