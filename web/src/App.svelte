@@ -575,6 +575,7 @@
         title="Toggle the model's thinking for new messages"
       >Thinking {thinking ? 'on' : 'off'}</button>
     {/if}
+    {#if !narrow}
     <button
       class="icon-btn"
       aria-label="Menu"
@@ -587,6 +588,7 @@
         <circle cx="8" cy="3" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="8" cy="13" r="1.5" />
       </svg>
     </button>
+    {/if}
     {#if isDesktop}
       <div class="winctl">
         <button class="winbtn" aria-label="Minimize" onclick={() => window.runtime?.WindowMinimise?.()}>
@@ -618,7 +620,7 @@
 
   {#if actionsMenu}
     <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
-    <nav class="sysmenu actionsmenu">
+    <nav class="sysmenu actionsmenu" class:up={narrow}>
       <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
       <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
     </nav>
@@ -805,10 +807,17 @@
     </main>
   </div>
 
-  <footer class="statusbar">
+  <footer class="statusbar" class:narrow={narrow}>
+    {#if narrow}
+      <button class="statusbtn icon" onclick={toggleNav} aria-label="Chats" title="Chats">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+          <line x1="3" y1="4.5" x2="13" y2="4.5" /><line x1="3" y1="8" x2="13" y2="8" /><line x1="3" y1="11.5" x2="13" y2="11.5" />
+        </svg>
+      </button>
+    {/if}
     {#if conn && reachable}
       <span class="dot"></span>
-      <span>{modelName(conn.model)} · {conn.nCtx} ctx</span>
+      <span class="statusmodel">{modelName(conn.model)} · {conn.nCtx} ctx</span>
     {:else if !reachable}
       <span class="dot off"></span>
       <span>server unreachable — reconnecting…</span>
@@ -824,7 +833,18 @@
       <span>context {budget.used} / {budget.nCtx}</span>
       <span class="bar {budget.level}"><span class="fill" style="width:{pct}%"></span></span>
     {/if}
-    {#if activeId}<button class="statusbtn" onclick={compact} disabled={streaming}>Compact</button>{/if}
+    {#if activeId}
+      <button class="statusbtn" class:icon={narrow} onclick={compact} disabled={streaming} aria-label="Compact" title="Compact">
+        {#if narrow}
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3,3 8,7 13,3" /><polyline points="3,13 8,9 13,13" /></svg>
+        {:else}Compact{/if}
+      </button>
+    {/if}
+    {#if narrow}
+      <button class="statusbtn icon" aria-label="Menu" aria-haspopup="true" aria-expanded={actionsMenu} title="Memory, Settings" onclick={() => (actionsMenu = !actionsMenu)}>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="8" cy="13" r="1.5" /></svg>
+      </button>
+    {/if}
   </footer>
 
   {#if memoryOpen}
@@ -992,6 +1012,11 @@
   .actionsmenu {
     left: auto;
     right: 8px;
+  }
+  /* In thin mode the ⋮ lives in the bottom bar, so its menu opens upward. */
+  .actionsmenu.up {
+    top: auto;
+    bottom: 40px;
   }
   .statusbar {
     height: 32px;
@@ -1229,6 +1254,7 @@
     font: inherit;
     font-size: 12px;
     cursor: pointer;
+    flex-shrink: 0;
   }
   .statusbtn:hover:not(:disabled) {
     background: var(--paper);
@@ -1236,6 +1262,25 @@
   .statusbtn:disabled {
     color: var(--muted);
     cursor: default;
+  }
+  /* Thin mode: the status bar is the action bar — icon buttons (Chats, Compact,
+     ⋮) and a taller strip for comfortable touch targets; the model text yields. */
+  .statusbtn.icon {
+    padding: 0;
+    width: 34px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .statusbar.narrow {
+    height: 44px;
+  }
+  .statusbar.narrow .statusmodel {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .thinking {
     max-width: 80%;
