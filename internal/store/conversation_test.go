@@ -6,6 +6,7 @@ package store
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,6 +44,35 @@ func TestConversationRoundTrip(t *testing.T) {
 	}
 	if got[2].Kind != KindSummary || got[2].CoversFrom != "0a1f" || got[2].CoversTo != "0a20" || got[2].Replaced != 7240 {
 		t.Errorf("summary entry not parsed: %+v", got[2])
+	}
+}
+
+// The marshaled log shows a visible speaker label before each entry (so a
+// Markdown viewer reveals who said what), while bodies still round-trip.
+func TestVisibleSpeakerLabels(t *testing.T) {
+	data := marshalEntries("Chat", []Entry{
+		{ID: "a1", Kind: KindMessage, Role: "user", Time: mustTime("2026-10-28T14:02:11Z"), Content: "hi"},
+		{ID: "a2", Kind: KindMessage, Role: "assistant", Time: mustTime("2026-10-28T14:02:19Z"), Content: "hello"},
+	})
+	for _, want := range []string{"**You**", "**Assistant**"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("marshaled log is missing the visible label %q:\n%s", want, data)
+		}
+	}
+	// The label sits on the marker line, not in the body.
+	_, got := parseConversation(data)
+	if len(got) != 2 || got[0].Content != "hi" || got[1].Content != "hello" {
+		t.Fatalf("bodies not preserved past the labels: %+v", got)
+	}
+}
+
+// Logs written in the pre-label format (a bare marker at the start of the line)
+// still parse — the speaker label is optional on read.
+func TestParseLegacyFormat(t *testing.T) {
+	legacy := "# Old chat\n\n<!-- llamingo:msg id=a1 role=user t=2026-10-28T14:02:11Z -->\nhi\n\n<!-- llamingo:msg id=a2 role=assistant t=2026-10-28T14:02:19Z -->\nhello\n"
+	_, got := parseConversation([]byte(legacy))
+	if len(got) != 2 || got[0].Role != "user" || got[0].Content != "hi" || got[1].Role != "assistant" || got[1].Content != "hello" {
+		t.Fatalf("legacy format did not parse: %+v", got)
 	}
 }
 
