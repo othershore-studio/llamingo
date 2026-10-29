@@ -136,6 +136,25 @@ convenience over them, never a second source of truth.
 - **Web UI framework** — lean toward Svelte (fits llama.cpp's own webui and the small-footprint goal); not settled.
 - **Mobile** — the responsive web UI works now; the PWA ships with the v2 gateway.
 
+## Implementation gotchas (hard-won)
+
+Small web-UI traps already paid for, kept so the next app doesn't re-learn them:
+
+- **Animate to a literal, not a `var()`/`calc()`.** A CSS `transition` on `margin-left` (the sidebar
+  collapse/slide) only animates when the target is a literal value; a `var(--sidebar-w)` or `calc()` target
+  jumps. So the slide drives `margin-left` as an inline literal (`-${width}px`) from JS, not via a CSS var.
+- **Pin the window-control cluster.** In the frameless merged top bar the min/max/close cluster is the last
+  flex item; if the middle (title, pills) can't yield, the row overflows and the **close button falls off the
+  right edge**. Fix: `flex-shrink: 0` on the cluster, and declutter the bar rather than letting it crowd.
+- **Thin-window state must not clobber the saved preference.** Auto-hiding the sidebar on a thin window is a
+  *display* concern; it must not overwrite the user's explicit open/closed choice. Keep two states: the
+  **persisted** `sidebarOpen` (wide mode) and a **transient** `drawerOpen` (thin mode, never persisted). What
+  shows is `narrow ? drawerOpen : sidebarOpen`, so growing the window back restores exactly what they had.
+- **One breakpoint, in JS.** The thin/wide flag is computed in the resize handler and sets a `.narrow` class
+  the CSS reacts to — a single source of truth, so the JS and CSS breakpoints can't drift.
+- **Testing: the preview emulator doesn't fire `resize`.** Emulated viewport changes set `innerWidth` but don't
+  dispatch a `window` `resize` event; dispatch one manually to test responsive logic. A real window fires it.
+
 ## Changelog
 
 - 2026-10-27: UX first pass settled — sensibility inherited from margin (calm, non-blocking, never-lose-data,
@@ -147,3 +166,6 @@ convenience over them, never a second source of truth.
   Andean-warm identity, functional accent kept clear of the alarm ramp).
 - 2026-10-27: Added Tools & MCP — Claude-compatible global/project `mcp.json`, project servers gated (global trusted),
   a scope-aware Tools surface over the canonical files.
+- 2026-10-29: Shipped the topbar declutter (Memory/Settings → ⋮ menu, dropped the duplicate model pill, pinned the
+  window controls) and the thin-window **sidebar drawer** (hidden by default; toggle / swipe / scrim; breakpoint in
+  JS; open/closed state preserved across thin↔wide). Added the *Implementation gotchas* section.
