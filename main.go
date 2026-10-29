@@ -13,6 +13,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"io/fs"
 	"log"
@@ -21,9 +22,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/energye/systray"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/httpapi"
@@ -33,9 +36,21 @@ import (
 //go:embed all:web/dist
 var assets embed.FS
 
+//go:embed build/windows/icon.ico
+var trayIcon []byte
+
 // apiAddr is the loopback address the core API listens on inside the desktop
 // app; the embedded webview fetches it directly (see web/src: window.runtime).
 const apiAddr = "127.0.0.1:8766"
+
+// Close-to-tray state. Closing the window hides it to the system tray instead of
+// quitting; the app really exits only via the tray's Quit, which sets quitting
+// so OnBeforeClose lets the close through. Wails v2 has no native tray, so the
+// icon/menu come from energye/systray (see docs/wails-v3 note: v3 is native).
+var (
+	appCtx   context.Context
+	quitting bool
+)
 
 func main() {
 	url := env("LLAMINGO_URL", "http://localhost:8080")
@@ -63,6 +78,10 @@ func main() {
 	}
 	go func() { _ = http.Serve(ln, withCORS(httpapi.New(be, st))) }()
 
+	// Wails owns the main loop, so the tray runs via RunWithExternalLoop: start
+	// it once the app is up (OnStartup) and stop it on shutdown.
+	trayStart, trayEnd := systray.RunWithExternalLoop(onTrayReady, func() {})
+
 	if err := wails.Run(&options.App{
 		Title:     "llaminGO",
 		Width:     1100,
@@ -73,9 +92,53 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: dist,
 		},
+		OnStartup: func(ctx context.Context) {
+			appCtx = ctx
+			trayStart()
+			// The title-bar menu's "Close llaminGO" emits this for a real exit;
+			// the window's X only hides to the tray. quitting lets OnBeforeClose pass.
+			runtime.EventsOn(ctx, "app:quit", func(...interface{}) {
+				quitting = true
+				runtime.Quit(ctx)
+			})
+		},
+		OnShutdown: func(ctx context.Context) {
+			trayEnd()
+		},
+		OnBeforeClose: func(ctx context.Context) (prevent bool) {
+			if quitting {
+				return false // a real quit was requested from the tray
+			}
+			runtime.WindowHide(ctx) // close-to-tray: hide and keep running
+			return true
+		},
 	}); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// onTrayReady wires the tray icon and menu once the tray is up. A left-click (or
+// "Show llaminGO") restores the window; "Quit" exits the app for real.
+func onTrayReady() {
+	systray.SetIcon(trayIcon)
+	systray.SetTooltip("llaminGO")
+	systray.SetOnClick(func(systray.IMenu) { showWindow() })
+	mShow := systray.AddMenuItem("Show llaminGO", "Show the window")
+	mShow.Click(showWindow)
+	mQuit := systray.AddMenuItem("Quit", "Quit llaminGO")
+	mQuit.Click(func() {
+		quitting = true
+		runtime.Quit(appCtx)
+	})
+}
+
+// showWindow brings the window back from the tray.
+func showWindow() {
+	if appCtx == nil {
+		return
+	}
+	runtime.WindowShow(appCtx)
+	runtime.WindowUnminimise(appCtx)
 }
 
 // withCORS lets the webview (a wails:// origin) call the loopback API.
