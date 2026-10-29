@@ -305,7 +305,7 @@
 
 <div class="app">
   <header class="topbar">
-    <span class="mark"></span>
+    <img class="mark" src="/favicon.svg" alt="" width="24" height="24" />
     <span class="wordmark">llaminGO</span>
     <span class="spacer"></span>
     {#if conn?.thinkingSupported}
@@ -511,10 +511,10 @@
     color: var(--muted);
   }
   .mark {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--clay);
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    display: block;
   }
   .wordmark {
     font-weight: 500;
