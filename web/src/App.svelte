@@ -62,7 +62,10 @@
         return r.json()
       })
       reachable = true
-      if (conn && (p.model !== conn.model || p.nCtx !== conn.nCtx)) {
+      if (!conn) {
+        // Came up after starting with the server unreachable: adopt props now.
+        conn = p
+      } else if (p.model !== conn.model || p.nCtx !== conn.nCtx) {
         staleNote =
           p.model !== conn.model
             ? `Server model changed to ${modelName(p.model)}`
@@ -75,7 +78,18 @@
   }
 
   async function refresh() {
-    conn = await apiFetch('/api/props').then((r) => r.json())
+    // A failing /props (e.g. the model is down) must not block the chat list,
+    // which comes from the local store and is always available: load props on
+    // its own and fall back to "unreachable" instead of throwing.
+    try {
+      const r = await apiFetch('/api/props')
+      if (!r.ok) throw new Error('props unavailable')
+      conn = await r.json()
+      reachable = true
+    } catch {
+      conn = null
+      reachable = false
+    }
     chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
     projects = (await apiFetch('/api/projects').then((r) => r.json())) ?? []
     if (!activeId && chats.length) await selectChat(chats[0].id)
@@ -522,7 +536,7 @@
     {#if conn && reachable}
       <span class="dot"></span>
       <span>{modelName(conn.model)} · {conn.nCtx} ctx</span>
-    {:else if conn && !reachable}
+    {:else if !reachable}
       <span class="dot off"></span>
       <span>server unreachable — reconnecting…</span>
     {:else if error}
