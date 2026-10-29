@@ -36,6 +36,7 @@ type Message struct {
 type Props struct {
 	NCtx         int
 	ModelID      string
+	ModelAlias   string // llama.cpp --alias, when set; a friendly display name
 	ChatTemplate string
 }
 

@@ -57,6 +57,7 @@ func (l *LlamaCppNative) Props(ctx context.Context) (Props, error) {
 		} `json:"default_generation_settings"`
 		NCtxTop      int    `json:"n_ctx"`
 		ModelPath    string `json:"model_path"`
+		ModelAlias   string `json:"model_alias"`
 		ChatTemplate string `json:"chat_template"`
 	}
 	if err := l.getJSON(ctx, "/props", &raw); err != nil {
@@ -66,7 +67,7 @@ func (l *LlamaCppNative) Props(ctx context.Context) (Props, error) {
 	if nctx == 0 {
 		nctx = raw.NCtxTop
 	}
-	return Props{NCtx: nctx, ModelID: raw.ModelPath, ChatTemplate: raw.ChatTemplate}, nil
+	return Props{NCtx: nctx, ModelID: raw.ModelPath, ModelAlias: raw.ModelAlias, ChatTemplate: raw.ChatTemplate}, nil
 }
 
 // Tokenize returns the token count for a rendered string via /tokenize.

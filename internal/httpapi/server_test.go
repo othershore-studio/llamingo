@@ -183,8 +183,8 @@ func TestProps(t *testing.T) {
 	if p.NCtx != lcpptest.NCtx {
 		t.Errorf("nCtx = %d, want %d", p.NCtx, lcpptest.NCtx)
 	}
-	if !strings.Contains(p.Model, "gemma") {
-		t.Errorf("model = %q", p.Model)
+	if p.Model != "Gemma 3 12B" {
+		t.Errorf("model = %q, want the alias %q", p.Model, "Gemma 3 12B")
 	}
 	if !p.ThinkingSupported {
 		t.Error("thinkingSupported = false, want true (the fixture template has enable_thinking)")
