@@ -52,6 +52,7 @@
   let settingsOpen = $state(false) // connection settings modal open?
   let settingsUrl = $state('') // editable llama-server URL
   let settingsToken = $state('') // editable bearer token
+  let settingsLocation = $state('') // editable user location (for place-aware tools)
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -228,6 +229,7 @@
     const s = await apiFetch('/api/settings').then((r) => r.json())
     settingsUrl = s.url ?? ''
     settingsToken = s.token ?? ''
+    settingsLocation = s.location ?? ''
     settingsOpen = true
   }
   async function saveSettings() {
@@ -236,7 +238,7 @@
     await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, token: settingsToken }),
+      body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim() }),
     })
     settingsOpen = false
     checkServer() // re-poll so the status reflects the new connection now
@@ -901,7 +903,7 @@
     <div class="modal-backdrop" onclick={() => (settingsOpen = false)}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-head">
-          <span>Connection</span>
+          <span>Settings</span>
           <button class="x" onclick={() => (settingsOpen = false)}>✕</button>
         </div>
         <label class="setting">
@@ -916,6 +918,15 @@
         <label class="setting">
           <span>Bearer token <span class="muted">(optional, for an auth proxy)</span></span>
           <input class="field" type="password" bind:value={settingsToken} placeholder="leave blank for none" />
+        </label>
+        <label class="setting">
+          <span>Location <span class="muted">(optional, for place-aware tools — set how broad you like)</span></span>
+          <input
+            class="field"
+            bind:value={settingsLocation}
+            placeholder="e.g. Quito, Ecuador — blank to share none"
+            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
+          />
         </label>
         <div class="modal-foot">
           <button class="primary" onclick={saveSettings}>Save &amp; connect</button>

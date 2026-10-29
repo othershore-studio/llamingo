@@ -181,7 +181,17 @@ func (s *Server) gateFor(convID string) *permission.Gate {
 // tools are read-only. Image generation and project tools join here as they land.
 func (s *Server) registryFor(convID string) mcp.Registry {
 	gate := s.gateFor(convID)
-	return mcp.Combine(s.globalServers(), memtool.NewTool(s.st, gate), localtools.NewTool())
+	return mcp.Combine(s.globalServers(), memtool.NewTool(s.st, gate), localtools.NewTool(s.locationSetting))
+}
+
+// locationSetting returns the user's configured location ("" if unset or on a
+// read error). The local get_location tool reads it through this.
+func (s *Server) locationSetting() string {
+	c, err := s.st.Config()
+	if err != nil {
+		return ""
+	}
+	return c.Location
 }
 
 // globalServers connects the user's global MCP servers once and caches the

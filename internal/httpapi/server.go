@@ -175,18 +175,20 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /api/settings — the current llama-server connection (url + token).
+// GET /api/settings — the current llama-server connection (url + token) and the
+// user's saved location.
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	rc, ok := s.be.(backend.Reconfigurable)
 	if !ok {
 		http.Error(w, "backend is not reconfigurable", http.StatusNotImplemented)
 		return
 	}
-	writeJSON(w, map[string]string{"url": rc.BaseURL(), "token": rc.Token()})
+	cfg, _ := s.st.Config()
+	writeJSON(w, map[string]string{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location})
 }
 
-// PUT /api/settings {url, token} — persist and hot-swap the connection; the next
-// /props poll reconnects on its own.
+// PUT /api/settings {url, token, location} — persist and hot-swap the connection
+// (the next /props poll reconnects on its own) and save the user's location.
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	rc, ok := s.be.(backend.Reconfigurable)
 	if !ok {
@@ -194,8 +196,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		URL   string `json:"url"`
-		Token string `json:"token"`
+		URL      string `json:"url"`
+		Token    string `json:"token"`
+		Location string `json:"location"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -206,7 +209,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "url is required", http.StatusBadRequest)
 		return
 	}
-	if err := s.st.SetConfig(store.Config{URL: url, Token: body.Token}); err != nil {
+	if err := s.st.SetConfig(store.Config{URL: url, Token: body.Token, Location: strings.TrimSpace(body.Location)}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
