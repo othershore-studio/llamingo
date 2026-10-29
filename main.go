@@ -71,12 +71,15 @@ func main() {
 	}
 
 	// Serve the core API on loopback (a real server that streams); bind before
-	// the window opens so the SPA's first request can't race the listener.
-	ln, err := net.Listen("tcp", apiAddr)
-	if err != nil {
-		log.Fatal(err)
+	// the window opens so the SPA's first request can't race the listener. A busy
+	// port almost always means a second instance is launching, so don't die here:
+	// fall through to wails.Run, whose SingleInstanceLock hands off to the running
+	// instance (surfacing its window) and exits this one.
+	if ln, lnErr := net.Listen("tcp", apiAddr); lnErr == nil {
+		go func() { _ = http.Serve(ln, withCORS(httpapi.New(be, st))) }()
+	} else {
+		log.Printf("API port %s busy (%v); deferring to the already-running instance", apiAddr, lnErr)
 	}
-	go func() { _ = http.Serve(ln, withCORS(httpapi.New(be, st))) }()
 
 	// Wails owns the main loop, so the tray runs via RunWithExternalLoop: start
 	// it once the app is up (OnStartup) and stop it on shutdown.
@@ -111,6 +114,14 @@ func main() {
 			}
 			runtime.WindowHide(ctx) // close-to-tray: hide and keep running
 			return true
+		},
+		// Single instance: a second launch exits and asks the running one to
+		// surface its window (restoring it from the tray if it was hidden).
+		SingleInstanceLock: &options.SingleInstanceLock{
+			UniqueId: "studio.othershore.llamingo",
+			OnSecondInstanceLaunch: func(options.SecondInstanceData) {
+				showWindow()
+			},
 		},
 	}); err != nil {
 		log.Fatal(err)
