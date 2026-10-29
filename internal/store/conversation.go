@@ -256,7 +256,7 @@ func appendEntry(path string, e Entry) error {
 		return fmt.Errorf("store: open conversation log: %w", err)
 	}
 	defer f.Close()
-	block := "\n" + marshalMarker(e) + "\n" + strings.TrimRight(e.Content, "\n") + "\n"
+	block := "\n" + marshalMarker(e) + "\n\n" + strings.TrimRight(e.Content, "\n") + "\n"
 	if _, err := f.WriteString(block); err != nil {
 		return fmt.Errorf("store: append conversation log: %w", err)
 	}
@@ -314,14 +314,22 @@ func marshalEntries(title string, entries []Entry) []byte {
 	for _, e := range entries {
 		b.WriteString("\n")
 		b.WriteString(marshalMarker(e))
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		b.WriteString(strings.TrimRight(e.Content, "\n"))
 		b.WriteString("\n")
 	}
 	return []byte(b.String())
 }
 
+// marshalMarker renders an entry's marker line: a visible bold speaker label
+// (so a Markdown viewer shows who said what) then the machine-readable HTML
+// comment (invisible when rendered). parseConversation reads the comment and
+// ignores the label, which marshalMarker regenerates from the role on write.
 func marshalMarker(e Entry) string {
+	return entryLabel(e) + " " + rawMarker(e)
+}
+
+func rawMarker(e Entry) string {
 	if e.Kind == KindSummary {
 		return fmt.Sprintf("<!-- llamingo:summary id=%s covers=%s..%s model=%s t=%s replaced=%d summary=%d -->",
 			e.ID, e.CoversFrom, e.CoversTo, e.Model, e.Time.UTC().Format(time.RFC3339), e.Replaced, e.SummaryTokens)
@@ -334,7 +342,30 @@ func marshalMarker(e Entry) string {
 		e.ID, e.Role, e.Time.UTC().Format(time.RFC3339))
 }
 
-var entryMarker = regexp.MustCompile(`^<!--\s*llamingo:(\w+)\s+(.*?)\s*-->\s*$`)
+// entryLabel is the bold speaker label shown before an entry's marker.
+func entryLabel(e Entry) string {
+	switch e.Kind {
+	case KindSummary:
+		return "**Summary**"
+	case KindReasoning:
+		return "**Thinking**"
+	}
+	switch e.Role {
+	case "user":
+		return "**You**"
+	case "assistant":
+		return "**Assistant**"
+	case "system":
+		return "**System**"
+	case "tool":
+		return "**Tool**"
+	}
+	return "**" + e.Role + "**"
+}
+
+// A marker line may carry a visible speaker-label prefix (see marshalMarker), so
+// the comment is matched at the end of the line rather than anchored to its start.
+var entryMarker = regexp.MustCompile(`<!--\s*llamingo:(\w+)\s+(.*?)\s*-->\s*$`)
 
 // parseConversation parses a conversation.md into its title and entries. It is
 // lenient: a line that is not a recognized marker is body text for the current

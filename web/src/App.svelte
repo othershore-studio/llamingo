@@ -24,8 +24,9 @@
   let budget = $state(null) // { used, nCtx, level }
   let speed = $state(null) // last turn's tokens/sec: { promptPerSecond, predictPerSecond, predictN }
   let error = $state(null)
-  let activeSummary = $state(null) // the active compaction summary, if any
+  let convSummaries = $state([]) // compaction summaries, each anchored at its fold point in the thread
   let report = $state(null) // transient compaction report
+  let compacting = $state(false) // a manual compaction is in flight (shows an in-thread cue)
   let editingId = $state(null) // conversation id being renamed inline, if any
   let editTitle = $state('') // the in-progress rename text
   let confirmDeleteId = $state(null) // conversation id awaiting delete confirmation
@@ -155,11 +156,11 @@
     report = null
     pending = null
     const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
-    const summaries = entries.filter((e) => e.kind === 'summary')
-    activeSummary = summaries.length ? summaries[summaries.length - 1] : null
-    // Pair each persisted reasoning entry with the assistant answer that follows
-    // it, so the thinking trace shows in its collapsible block on reload.
+    // Pair each persisted reasoning entry with the assistant answer that follows it,
+    // and anchor each compaction summary where it ran: after the message it followed
+    // in the log (the summary entry is appended at that moment), shown with its time.
     const msgs = []
+    const sums = []
     let trace = ''
     for (const e of entries) {
       if (e.kind === 'reasoning') {
@@ -167,25 +168,33 @@
       } else if (e.kind === 'msg') {
         msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', time: e.time })
         trace = ''
+      } else if (e.kind === 'summary') {
+        sums.push({ content: e.content, time: e.time, afterIndex: msgs.length - 1 })
       }
     }
     messages = msgs
+    convSummaries = sums
   }
 
   // Compaction folds the oldest messages into a summary (non-destructive); the
   // core returns how many it folded and the tokens saved.
   async function compact() {
-    if (!activeId || streaming) return
-    const r = await apiFetch('/api/compact', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: activeId }),
-    }).then((r) => r.json())
-    await selectChat(activeId)
-    report =
-      r.folded > 0
-        ? `Folded ${r.folded} message${r.folded === 1 ? '' : 's'}, saved ~${r.saved} tokens`
-        : 'Nothing old enough to compact yet'
+    if (!activeId || streaming || compacting) return
+    compacting = true
+    try {
+      const r = await apiFetch('/api/compact', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: activeId }),
+      }).then((r) => r.json())
+      await selectChat(activeId)
+      report =
+        r.folded > 0
+          ? `Folded ${r.folded} message${r.folded === 1 ? '' : 's'}, saved ~${r.saved} tokens`
+          : 'Nothing old enough to compact yet'
+    } finally {
+      compacting = false
+    }
   }
 
   // Personal memory is injected into every prompt (metered as its own segment)
@@ -406,7 +415,7 @@
       messages[messages.length - 1].reasoning += payload.content
     } else if (event === 'compacted') {
       report = `Auto-compacted: folded ${payload.folded}, saved ~${payload.saved} tokens`
-      if (payload.summary) activeSummary = { content: payload.summary }
+      if (payload.summary) convSummaries = [...convSummaries, { content: payload.summary, time: new Date().toISOString(), afterIndex: messages.length - 1 }]
     } else if (event === 'tool_call') {
       const last = messages[messages.length - 1]
       if (last) (last.tools ??= []).push({ name: payload.name, arguments: payload.arguments })
@@ -532,6 +541,18 @@
   }
 
   const pct = $derived(budget && budget.nCtx ? Math.min(100, Math.round((100 * budget.used) / budget.nCtx)) : 0)
+
+  // The window title reflects the active conversation — "llaminGO › Chat name" in
+  // the desktop title bar / taskbar and the browser tab, or just "llaminGO" at the
+  // chat list. The title comes from the loaded chat/session lists.
+  const activeTitle = $derived(
+    chats.find((c) => c.id === activeId)?.title ?? sessions.find((s) => s.id === activeId)?.title ?? ''
+  )
+  $effect(() => {
+    const t = activeTitle ? `llaminGO › ${activeTitle}` : 'llaminGO'
+    document.title = t
+    if (isDesktop) window.runtime?.WindowSetTitle?.(t)
+  })
 </script>
 
 <div class="app">
@@ -565,7 +586,7 @@
         {/if}
       </svg>
     </button>
-    <span class="wordmark">llaminGO</span>
+    <span class="wordmark">llaminGO{activeTitle ? ` › ${activeTitle}` : ''}</span>
     <span class="spacer"></span>
     {#if conn?.thinkingSupported}
       <button
@@ -742,12 +763,6 @@
     <main class="conversation">
       <div class="thread">
         {#if error}<p class="error">{error}</p>{/if}
-        {#if activeSummary}
-          <details class="thinking">
-            <summary>Earlier conversation summarized</summary>
-            <div class="rtext prose">{@html md.render(activeSummary.content)}</div>
-          </details>
-        {/if}
         {#each messages as m, i}
           {#if m.reasoning}
             <details class="thinking" open={streaming && i === messages.length - 1 && !m.content}>
@@ -775,9 +790,18 @@
               <span>{fmtTime(m.time)}</span>
             </div>
           {/if}
+          {#each convSummaries.filter((s) => s.afterIndex === i) as s}
+            <details class="thinking summary-mark">
+              <summary>Compacted · {fmtTime(s.time)}</summary>
+              <div class="rtext prose">{@html md.render(s.content)}</div>
+            </details>
+          {/each}
         {:else}
           <p class="empty muted">Ask something to get started.</p>
         {/each}
+        {#if compacting}
+          <div class="compacting muted">Compacting…</div>
+        {/if}
       </div>
       {#if pending}
         <div class="consent">
@@ -1475,6 +1499,14 @@
   }
   .bar.full .fill {
     background: #d64545;
+  }
+  .summary-mark summary {
+    color: var(--clay);
+  }
+  .compacting {
+    text-align: center;
+    font-size: 12px;
+    padding: 6px 0;
   }
   .pill-btn {
     border: 0.5px solid var(--border);
