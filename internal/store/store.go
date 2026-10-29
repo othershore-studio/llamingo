@@ -169,6 +169,38 @@ func (s *Store) findProject(id ProjectID) (ProjectMeta, bool, error) {
 	return ProjectMeta{}, false, nil
 }
 
+// ProjectRoot returns the absolute working folder of the project a conversation
+// belongs to. A free chat (under chat/) has none, so ok is false; an unknown
+// conversation is likewise reported as "no project" rather than an error. This
+// is the folder the project file tools are confined to.
+func (s *Store) ProjectRoot(convID string) (string, bool, error) {
+	if fileExists(filepath.Join(s.root, "chat", convID, "meta.json")) {
+		return "", false, nil // a free chat has no project folder
+	}
+	entries, err := os.ReadDir(s.folderRoot())
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: find project for %q: %w", convID, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		projDir := filepath.Join(s.folderRoot(), e.Name())
+		if !fileExists(filepath.Join(projDir, convID, "meta.json")) {
+			continue
+		}
+		var m ProjectMeta
+		if err := readJSON(filepath.Join(projDir, "meta.json"), &m); err != nil {
+			return "", false, fmt.Errorf("store: read project meta for %q: %w", convID, err)
+		}
+		return m.Path, true, nil
+	}
+	return "", false, nil
+}
+
 // scaffoldConversation lays down a conversation directory: meta.json, a titled
 // conversation.md placeholder (full message/compaction serialization comes in a
 // later increment), and an attachments/ folder.
