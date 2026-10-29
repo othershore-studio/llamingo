@@ -58,6 +58,16 @@
   let sidebarOpen = $state(loadSidebar()) // left panel shown? persisted per browser
   const SIDEBAR_MIN = 180, SIDEBAR_MAX = 460 // sidebar drag-resize clamp (px)
   let sidebarWidth = $state(loadSidebarWidth()) // left panel width, drag-resizable + persisted
+  // Thin-window (drawer) mode. The breakpoint lives here in JS as the
+  // single source of truth; the .narrow class drives the CSS. drawerOpen is the
+  // thin-mode overlay's visibility — transient and never persisted, so hiding the
+  // sidebar on a thin window can't clobber the user's saved sidebarOpen preference.
+  const NARROW_BP = 700 // px; at or below this the sidebar is an overlay drawer
+  let narrow = $state(false)
+  let drawerOpen = $state(false)
+  // What the sidebar actually shows: the saved preference when wide, the transient
+  // drawer when thin. Growing the window back therefore restores the wide state.
+  const sidebarShown = $derived(narrow ? drawerOpen : sidebarOpen)
 
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
@@ -67,6 +77,14 @@
     const onResize = () => {
       sidebarWidth = Math.max(SIDEBAR_MIN, Math.min(sidebarWidth, window.innerWidth - 360))
       syncMaximized()
+      // Thin-window mode from the same resize signal (fires in a real window and
+      // under emulation). Reset the drawer only on an actual wide/thin switch, so a
+      // thin window opens with the conversation visible and sidebarOpen is left be.
+      const n = window.innerWidth <= NARROW_BP
+      if (n !== narrow) {
+        narrow = n
+        drawerOpen = false
+      }
     }
     onResize()
     window.addEventListener('resize', onResize)
@@ -131,6 +149,7 @@
   // Open a conversation: the core owns history, so load its log from disk.
   async function selectChat(id) {
     activeId = id
+    if (narrow) drawerOpen = false // thin mode: reveal the conversation after picking from the drawer
     error = null
     budget = null
     report = null
@@ -457,6 +476,28 @@
       localStorage.setItem('llamingo.sidebar', sidebarOpen ? 'open' : 'closed')
     } catch {}
   }
+  // The hamburger toggles the saved sidebar when wide, but only the transient
+  // drawer when thin — so toggling on a phone never rewrites the saved preference.
+  function toggleNav() {
+    if (narrow) drawerOpen = !drawerOpen
+    else toggleSidebar()
+  }
+  // Swipe to reveal / dismiss the drawer on touch (the toggle covers mouse users).
+  let touchStartX = 0, touchStartY = 0
+  function onTouchStart(e) {
+    const t = e.touches[0]
+    touchStartX = t.clientX
+    touchStartY = t.clientY
+  }
+  function onTouchEnd(e) {
+    if (!narrow) return
+    const t = e.changedTouches[0]
+    const dx = t.clientX - touchStartX
+    const dy = t.clientY - touchStartY
+    if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx)) return // ignore taps and vertical scrolls
+    if (dx > 0 && touchStartX < 30 && !drawerOpen) drawerOpen = true // swipe in from the left edge
+    else if (dx < 0 && drawerOpen) drawerOpen = false // swipe the drawer away
+  }
   function loadSidebarWidth() {
     try {
       const v = parseInt(localStorage.getItem('llamingo.sidebarWidth') ?? '', 10)
@@ -509,15 +550,15 @@
     {/if}
     <button
       class="icon-btn"
-      aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-      title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-      onclick={toggleSidebar}
+      aria-label={sidebarShown ? 'Hide sidebar' : 'Show sidebar'}
+      title={sidebarShown ? 'Hide sidebar' : 'Show sidebar'}
+      onclick={toggleNav}
     >
       <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <line x1="2" y1="4.5" x2="10" y2="4.5" />
         <line x1="2" y1="8" x2="10" y2="8" />
         <line x1="2" y1="11.5" x2="10" y2="11.5" />
-        {#if sidebarOpen}
+        {#if sidebarShown}
           <polyline points="14.5,5.5 12,8 14.5,10.5" />
         {:else}
           <polyline points="12,5.5 14.5,8 12,10.5" />
@@ -587,8 +628,11 @@
     <button class="notice" onclick={() => (staleNote = null)}>{staleNote} · dismiss</button>
   {/if}
 
-  <div class="body">
-    <aside class="left" class:collapsed={!sidebarOpen} style="--sidebar-w:{sidebarWidth}px; margin-left:{sidebarOpen ? '0px' : -sidebarWidth + 'px'}">
+  <div class="body" class:narrow={narrow} ontouchstart={onTouchStart} ontouchend={onTouchEnd}>
+    {#if narrow && drawerOpen}
+      <div class="drawer-scrim" onclick={() => (drawerOpen = false)}></div>
+    {/if}
+    <aside class="left" class:collapsed={!sidebarShown} style="--sidebar-w:{sidebarWidth}px; margin-left:{sidebarShown ? '0px' : -sidebarWidth + 'px'}">
       <div class="switcher">Chats</div>
       <button class="new" onclick={newChat}>+ New chat</button>
       <ul class="list">
@@ -683,7 +727,7 @@
         {/each}
       </ul>
     </aside>
-    {#if sidebarOpen}
+    {#if !narrow && sidebarShown}
       <div
         class="resizer"
         role="separator"
@@ -1028,20 +1072,26 @@
   .resizer:hover {
     background: color-mix(in srgb, var(--clay) 35%, transparent);
   }
-  /* Narrow windows (phone / PWA): the sidebar overlays the conversation as a
-     drawer instead of splitting the width; the drag handle is hidden. */
-  @media (max-width: 560px) {
-    .left {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      left: 0;
-      z-index: 5;
-      box-shadow: 2px 0 12px color-mix(in srgb, var(--ink) 25%, transparent);
-    }
-    .resizer {
-      display: none;
-    }
+  /* Thin windows: the sidebar becomes an overlay drawer (hidden by default,
+     revealed by the toggle or a swipe) instead of splitting the width. The
+     breakpoint lives in JS (NARROW_BP / matchMedia), which sets .narrow here. */
+  .body.narrow .left {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 5;
+    max-width: 85vw;
+    box-shadow: 2px 0 12px color-mix(in srgb, var(--ink) 25%, transparent);
+  }
+  .body.narrow .resizer {
+    display: none;
+  }
+  .drawer-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    background: color-mix(in srgb, var(--ink) 30%, transparent);
   }
   .switcher {
     font-weight: 500;
