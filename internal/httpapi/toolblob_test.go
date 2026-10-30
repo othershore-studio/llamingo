@@ -49,4 +49,16 @@ Here is the image.`
 	if got := stripLeadingToolBlob(messy); got != "![generated image](attachments/c9.png)\n\nHere is the image." {
 		t.Errorf("messy (unescaped-quote) blob not stripped: %q", got)
 	}
+
+	// Regression guard: the model buried the image inside the blob and wrote
+	// nothing after it — recover the image so the reply is not empty.
+	buried := `{
+"action": "generate_image",
+"action_input": "{ "prompt": "a cat" }",
+"result": "![generated image](attachments/z.png)",
+"thought": "done"
+}`
+	if got := stripLeadingToolBlob(buried); got != "![generated image](attachments/z.png)" {
+		t.Errorf("buried image not recovered: %q", got)
+	}
 }

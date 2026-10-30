@@ -4,7 +4,10 @@
 
 package httpapi
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // Some small models (notably Gemma under a large toolset) emit a ReAct-style
 // tool-call object as text in their final answer — {"action":…,"action_input":…,
@@ -26,7 +29,29 @@ func stripLeadingToolBlob(content string) string {
 	if !strings.Contains(blob, "action") || (!strings.Contains(blob, "action_input") && !strings.Contains(blob, "thought")) {
 		return content // a leading JSON object, but not a ReAct tool-call blob
 	}
-	return strings.TrimSpace(t[end+1:])
+	rest := strings.TrimSpace(t[end+1:])
+	// The model sometimes buries the image it was handed inside the blob (a
+	// "result" field) and writes nothing usable after it; recover the image
+	// markdown so it still shows rather than leaving an empty reply.
+	if !strings.Contains(rest, "](") {
+		if img := firstImageMarkdown(blob); img != "" {
+			if rest == "" {
+				return img
+			}
+			return img + "\n\n" + rest
+		}
+	}
+	return rest
+}
+
+var imageMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\([^)\s]+\)`)
+
+// firstImageMarkdown finds an ![alt](url) image in s, unescaping a JSON-escaped
+// blob first so a markdown image buried in a string field is still matched.
+func firstImageMarkdown(s string) string {
+	s = strings.ReplaceAll(s, `\"`, `"`)
+	s = strings.ReplaceAll(s, `\n`, "\n")
+	return imageMarkdownRe.FindString(s)
 }
 
 // jsonObjectEnd returns the index of the brace that closes the one at s[0],

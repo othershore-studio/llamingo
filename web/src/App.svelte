@@ -29,7 +29,14 @@
     const head = end < 0 ? t : t.slice(0, end + 1)
     if (!head.includes('"action"') && !head.includes("'action'")) return text
     if (end < 0) return '' // the blob is still streaming — hold it back
-    return t.slice(end + 1).replace(/^\s+/, '')
+    let rest = t.slice(end + 1).replace(/^\s+/, '')
+    // If the model buried the image inside the blob with nothing after it,
+    // recover it so the reply is not empty.
+    if (!rest.includes('](')) {
+      const img = (head.replace(/\\"/g, '"').replace(/\\n/g, '\n').match(/!\[[^\]]*\]\([^)\s]+\)/) || [])[0]
+      if (img) rest = rest ? img + '\n\n' + rest : img
+    }
+    return rest
   }
   function jsonObjectEnd(s) {
     let depth = 0,
