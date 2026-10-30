@@ -420,7 +420,15 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// attachment.go.
 	answer := recoverToolImages(stripLeadingToolBlob(finalAssistant(out)), out)
 	answer = s.imageAttachments(r.Context(), body.ID, answer)
-	if _, err := s.st.AppendAssistant(body.ID, answer, think.String()); err != nil {
+	// Persist the turn's trail so it survives a reopen: the thinking, the tools it
+	// used, then the answer. The trail entries are display-only (Project drops them,
+	// like reasoning), so they never re-enter the model's prompt — only the answer
+	// does. See store.AppendReasoning / AppendToolUse / Project.
+	_ = s.st.AppendReasoning(body.ID, think.String())
+	for _, tc := range toolCallsFrom(out) {
+		_ = s.st.AppendToolUse(body.ID, tc.name, tc.args)
+	}
+	if _, err := s.st.AppendMessage(body.ID, "assistant", answer); err != nil {
 		emit("error", map[string]any{"error": err.Error()})
 		return
 	}
@@ -469,6 +477,24 @@ func finalAssistant(msgs []backend.Message) string {
 		}
 	}
 	return ""
+}
+
+// toolCall is one tool the model invoked this turn (name + raw args), for the
+// persisted display trail.
+type toolCall struct{ name, args string }
+
+// toolCallsFrom returns the tools the model called across the turn's rounds, in
+// order — the trail persisted (display-only) alongside the reasoning.
+func toolCallsFrom(msgs []backend.Message) []toolCall {
+	var calls []toolCall
+	for _, m := range msgs {
+		if m.Role == backend.RoleAssistant {
+			for _, tc := range m.ToolCalls {
+				calls = append(calls, toolCall{name: tc.Function.Name, args: tc.Function.Arguments})
+			}
+		}
+	}
+	return calls
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

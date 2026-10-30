@@ -23,6 +23,7 @@ const (
 	KindMessage   EntryKind = "msg"
 	KindSummary   EntryKind = "summary"
 	KindReasoning EntryKind = "reasoning" // the model's thinking trace for the answer that follows it
+	KindToolCall  EntryKind = "toolcall"  // a tool the model used (name in Content), for the display trail
 )
 
 // Entry is one entry in a conversation's append-only log (conversation.md). A
@@ -34,6 +35,7 @@ type Entry struct {
 	ID      string    `json:"id"`
 	Kind    EntryKind `json:"kind"`
 	Role    string    `json:"role,omitempty"` // msg: user|assistant|system|tool
+	Name    string    `json:"name,omitempty"` // toolcall: the tool the model used
 	Time    time.Time `json:"time"`
 	Content string    `json:"content"`
 
@@ -68,38 +70,52 @@ func (s *Store) AppendMessage(id, role, content string) (Entry, error) {
 }
 
 // AppendAssistant appends an assistant turn: its reasoning trace (when non-empty,
-// as a reasoning entry immediately before the answer) and then the answer itself.
-// A reasoning entry is display-only — Project keeps only messages and summaries,
-// so the trace is shown when a chat is reopened but never re-enters the prompt or
-// the token budget. See docs/architecture.md → "Effort / thinking".
+// as a display-only entry before the answer) and then the answer. A reasoning
+// entry is display-only — Project keeps only messages and summaries, so the trace
+// is shown when a chat is reopened but never re-enters the prompt or the token
+// budget. See docs/architecture.md → "Effort / thinking".
 func (s *Store) AppendAssistant(id, content, reasoning string) (Entry, error) {
-	dir, err := s.conversationDir(id)
-	if err != nil {
+	if err := s.AppendReasoning(id, reasoning); err != nil {
 		return Entry{}, err
 	}
-	logPath := filepath.Join(dir, "conversation.md")
-	now := time.Now().UTC()
-	if strings.TrimSpace(reasoning) != "" {
-		rid, err := newEntryID()
-		if err != nil {
-			return Entry{}, err
-		}
-		if err := appendEntry(logPath, Entry{ID: rid, Kind: KindReasoning, Time: now, Content: reasoning}); err != nil {
-			return Entry{}, err
-		}
+	return s.AppendMessage(id, "assistant", content)
+}
+
+// AppendReasoning appends a display-only thinking-trace entry (a no-op when the
+// trace is blank). Like a tool-use entry, Project excludes it, so it is shown on
+// reopen but never sent back to the model.
+func (s *Store) AppendReasoning(id, reasoning string) error {
+	if strings.TrimSpace(reasoning) == "" {
+		return nil
+	}
+	return s.appendTrail(id, Entry{Kind: KindReasoning, Content: reasoning})
+}
+
+// AppendToolUse appends a display-only entry recording that the model used the
+// named tool, with its raw arguments as the body (shown as "used <name>" with the
+// args on hover, on reopen). Display-only: Project excludes it, so it never
+// re-enters the prompt.
+func (s *Store) AppendToolUse(id, name, arguments string) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	return s.appendTrail(id, Entry{Kind: KindToolCall, Name: name, Content: arguments})
+}
+
+// appendTrail writes a display-only trail entry (reasoning or tool use): it fills
+// in a fresh id and timestamp and appends, without bumping the conversation's
+// Updated time — the answer that follows does that.
+func (s *Store) appendTrail(id string, e Entry) error {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return err
 	}
 	eid, err := newEntryID()
 	if err != nil {
-		return Entry{}, err
+		return err
 	}
-	e := Entry{ID: eid, Kind: KindMessage, Role: "assistant", Time: now, Content: content}
-	if err := appendEntry(logPath, e); err != nil {
-		return Entry{}, err
-	}
-	if err := touchUpdated(filepath.Join(dir, "meta.json"), now); err != nil {
-		return Entry{}, err
-	}
-	return e, nil
+	e.ID, e.Time = eid, time.Now().UTC()
+	return appendEntry(filepath.Join(dir, "conversation.md"), e)
 }
 
 // LoadConversation returns a conversation's entries in log order.
@@ -338,6 +354,10 @@ func rawMarker(e Entry) string {
 		return fmt.Sprintf("<!-- llamingo:reasoning id=%s t=%s -->",
 			e.ID, e.Time.UTC().Format(time.RFC3339))
 	}
+	if e.Kind == KindToolCall {
+		return fmt.Sprintf("<!-- llamingo:toolcall id=%s name=%s t=%s -->",
+			e.ID, e.Name, e.Time.UTC().Format(time.RFC3339))
+	}
 	return fmt.Sprintf("<!-- llamingo:msg id=%s role=%s t=%s -->",
 		e.ID, e.Role, e.Time.UTC().Format(time.RFC3339))
 }
@@ -349,6 +369,11 @@ func entryLabel(e Entry) string {
 		return "**Summary**"
 	case KindReasoning:
 		return "**Thinking**"
+	case KindToolCall:
+		if e.Name != "" {
+			return "**Tool** " + e.Name
+		}
+		return "**Tool**"
 	}
 	switch e.Role {
 	case "user":
@@ -395,6 +420,8 @@ func parseConversation(data []byte) (string, []Entry) {
 				e.Model = attrs["model"]
 				e.Replaced = atoi(attrs["replaced"])
 				e.SummaryTokens = atoi(attrs["summary"])
+			} else if e.Kind == KindToolCall {
+				e.Name = attrs["name"]
 			} else {
 				e.Role = attrs["role"]
 			}

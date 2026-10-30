@@ -69,6 +69,8 @@
   let conn = $state(null) // { model, nCtx }
   let chats = $state([])
   let activeId = $state(null)
+  let streamingChatId = $state(null) // the chat the in-flight stream belongs to
+  let streamMessages = null // its live message array, so switching chats mid-stream keeps the turn alive
   let messages = $state([]) // { role, content }
   let input = $state('')
   let streaming = $state(false)
@@ -219,8 +221,18 @@
 
   // Open a conversation: the core owns history, so load its log from disk.
   async function selectChat(id) {
-    activeId = id
     if (narrow) drawerOpen = false // thin mode: reveal the conversation after picking from the drawer
+    // Returning to a chat whose stream is still in flight: show its own live array
+    // so the in-progress turn keeps rendering, instead of reloading a partial copy
+    // from disk and losing the stream.
+    if (id === streamingChatId && streamMessages) {
+      activeId = id
+      messages = streamMessages
+      convSummaries = []
+      pending = null
+      return
+    }
+    activeId = id
     error = null
     budget = null
     report = null
@@ -232,12 +244,16 @@
     const msgs = []
     const sums = []
     let trace = ''
+    let tools = []
     for (const e of entries) {
       if (e.kind === 'reasoning') {
         trace = e.content
+      } else if (e.kind === 'toolcall') {
+        tools.push({ name: e.name, arguments: e.content }) // name + args persisted; args drive the hover tooltip
       } else if (e.kind === 'msg') {
-        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', time: e.time })
+        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', tools: e.role === 'assistant' ? tools : [], time: e.time })
         trace = ''
+        tools = []
       } else if (e.kind === 'summary') {
         sums.push({ content: e.content, time: e.time, afterIndex: msgs.length - 1 })
       }
@@ -440,6 +456,8 @@
     messages.push({ role: 'user', content: text, time: now })
     messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], time: now })
     streaming = true
+    streamingChatId = activeId // bind this stream to its chat (see handleEvent / selectChat)
+    streamMessages = messages // the array this stream writes to, even if the view switches away
     try {
       // The client sends only the new turn; the core persists both sides.
       await streamChat(activeId, text)
@@ -448,6 +466,8 @@
       reachable = false
     } finally {
       streaming = false
+      streamingChatId = null
+      streamMessages = null
     }
   }
 
@@ -482,25 +502,35 @@
     }
     if (!data) return
     const payload = JSON.parse(data)
+    // The stream writes to its OWN chat's message array (streamMessages), never
+    // whichever chat is on screen — so switching chats mid-stream can't corrupt
+    // another chat, and switching back shows the progress. Chat-level state
+    // (budget, prompts, errors) updates only while that chat is the one in view.
+    const live = streamMessages
+    const onScreen = streamingChatId === activeId
     if (event === 'delta' && payload.content) {
-      messages[messages.length - 1].content += payload.content
+      if (live?.length) live[live.length - 1].content += payload.content
     } else if (event === 'reasoning' && payload.content) {
-      messages[messages.length - 1].reasoning += payload.content
-    } else if (event === 'compacted') {
-      report = `Auto-compacted: folded ${payload.folded}, saved ~${payload.saved} tokens`
-      if (payload.summary) convSummaries = [...convSummaries, { content: payload.summary, time: new Date().toISOString(), afterIndex: messages.length - 1 }]
+      if (live?.length) live[live.length - 1].reasoning += payload.content
     } else if (event === 'tool_call') {
-      const last = messages[messages.length - 1]
+      const last = live?.[live.length - 1]
       if (last) (last.tools ??= []).push({ name: payload.name, arguments: payload.arguments })
+    } else if (event === 'compacted') {
+      if (onScreen) {
+        report = `Auto-compacted: folded ${payload.folded}, saved ~${payload.saved} tokens`
+        if (payload.summary) convSummaries = [...convSummaries, { content: payload.summary, time: new Date().toISOString(), afterIndex: messages.length - 1 }]
+      }
     } else if (event === 'permission') {
-      pending = payload
+      if (onScreen) pending = payload
     } else if (event === 'done') {
-      budget = payload.budget
-      speed = payload.timings ?? null
-      reachable = true
-      reconcileFinal(activeId) // sync the final bubble with the authoritative saved copy
+      if (onScreen) {
+        budget = payload.budget
+        speed = payload.timings ?? null
+        reachable = true
+      }
+      reconcileFinal(streamingChatId, live)
     } else if (event === 'error') {
-      error = payload.error
+      if (onScreen) error = payload.error
     }
   }
 
@@ -512,16 +542,16 @@
   // matches what's on disk, even when the model streamed nothing (as happens
   // right after a silent image generation). The live token stream still shows
   // text as it arrives; this only reconciles the end state.
-  async function reconcileFinal(id) {
-    if (id !== activeId) return
+  async function reconcileFinal(id, arr) {
+    if (!id || !arr) return
     try {
       const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
       let lastContent = null
       for (const e of entries) {
         if (e.kind === 'msg' && e.role === 'assistant') lastContent = e.content
       }
-      if (lastContent === null || id !== activeId) return // chat switched while fetching
-      const last = messages[messages.length - 1]
+      if (lastContent === null) return
+      const last = arr[arr.length - 1]
       if (last && last.role === 'assistant') last.content = lastContent
     } catch {
       /* leave the streamed bubble as-is if the reconcile fetch fails */
