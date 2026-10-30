@@ -87,9 +87,8 @@ func (t *Tool) Tools() []backend.ToolDef {
 	return []backend.ToolDef{
 		{
 			Name: ToolName,
-			Description: "Generate an image from a text prompt (returns a reference to the saved image, not the bytes). " +
-				"You set only the prompt, an optional negative prompt, an optional seed, and an optional model name; the " +
-				"sampling settings come from the model's configured recipe. Call list_image_models to see the models and how to prompt each.",
+			Description: "Generate an image from a text prompt. Give the prompt, and optionally a negative prompt, a seed, or a model name; " +
+				"the sampling settings come from config. Returns a reference to the saved image.",
 			Parameters: json.RawMessage(`{"type":"object","properties":{` +
 				`"prompt":{"type":"string","description":"what to draw; match the model's prompt style"},` +
 				`"negative_prompt":{"type":"string","description":"what to avoid (ignored by CFG-1 models)"},` +
@@ -171,7 +170,7 @@ func (t *Tool) generate(ctx context.Context, arguments string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Generated with %s — seed %d, %s. Show it to the user by including this in your reply:\n![generated image](%s)",
+	return fmt.Sprintf("Image generated with %s (seed %d, %s): ![generated image](%s)",
 		mc.Name, img.Seed, time.Since(start).Round(time.Second), ref), nil
 }
 

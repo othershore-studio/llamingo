@@ -115,6 +115,7 @@ func newSSEPrompter(b *broker) *ssePrompter {
 // Ask implements permission.Prompter.
 func (p *ssePrompter) Ask(ctx context.Context, req permission.Request, allowed []permission.Scope) (permission.Decision, error) {
 	emit := emitterFrom(ctx)
+	log.Printf("permission: prompt %q (tool %s, stream=%t)", req.Label, req.ToolID, emit != nil)
 	if emit == nil {
 		// No stream to ask on — deny rather than act unasked.
 		return permission.Decision{}, nil
