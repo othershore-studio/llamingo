@@ -404,7 +404,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	// Persist any images the answer links (while their links are still fresh),
 	// then save the answer with the rewritten local refs. See attachment.go.
-	answer := s.imageAttachments(r.Context(), body.ID, finalAssistant(out))
+	answer := s.imageAttachments(r.Context(), body.ID, stripLeadingToolBlob(finalAssistant(out)))
 	if _, err := s.st.AppendAssistant(body.ID, answer, think.String()); err != nil {
 		emit("error", map[string]any{"error": err.Error()})
 		return
