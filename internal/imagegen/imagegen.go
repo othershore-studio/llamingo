@@ -12,9 +12,12 @@ package imagegen
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/permission"
@@ -56,47 +59,72 @@ type AttachmentSink interface {
 	Save(ctx context.Context, name string, data []byte) (ref string, err error)
 }
 
-// ToolName is the tool the model calls.
-const ToolName = "generate_image"
+// ToolName generates an image; ToolListModels lists the configured models.
+const (
+	ToolName       = "generate_image"
+	ToolListModels = "list_image_models"
+)
 
-// Tool is the built-in image-generation tool. Its Tools/Call methods satisfy
-// the MCP loop's Registry, so it is offered to the model alongside MCP tools.
+// Tool is the built-in image-generation tool. Its Tools/Call methods satisfy the
+// MCP loop's Registry, so it is offered alongside MCP tools. It is wired only
+// when a Forge URL and at least one model are configured.
 type Tool struct {
 	gen  Generator
 	sink AttachmentSink
 	gate *permission.Gate
+	cfg  Config
 }
 
-// NewTool returns the image-generation tool.
-func NewTool(gen Generator, sink AttachmentSink, gate *permission.Gate) *Tool {
-	return &Tool{gen: gen, sink: sink, gate: gate}
+// NewTool returns the image-generation tool for the given configured models.
+func NewTool(gen Generator, sink AttachmentSink, gate *permission.Gate, cfg Config) *Tool {
+	return &Tool{gen: gen, sink: sink, gate: gate, cfg: cfg}
 }
 
-// Tools advertises the image-generation tool to the model.
+// Tools advertises the image tools. The model supplies only the prompt, an
+// optional negative prompt, an optional seed (to reproduce), and an optional
+// model name — never the sampling recipe, which comes from the model's config.
 func (t *Tool) Tools() []backend.ToolDef {
-	return []backend.ToolDef{{
-		Name:        ToolName,
-		Description: "Generate an image from a text prompt; returns a reference to the saved image, not the bytes.",
-		Parameters: json.RawMessage(`{"type":"object","properties":{` +
-			`"prompt":{"type":"string","description":"what to draw"},` +
-			`"width":{"type":"integer"},"height":{"type":"integer"},` +
-			`"steps":{"type":"integer"},"seed":{"type":"integer"},` +
-			`"negative":{"type":"string"}},"required":["prompt"]}`),
-	}}
+	return []backend.ToolDef{
+		{
+			Name: ToolName,
+			Description: "Generate an image from a text prompt (returns a reference to the saved image, not the bytes). " +
+				"You set only the prompt, an optional negative prompt, an optional seed, and an optional model name; the " +
+				"sampling settings come from the model's configured recipe. Call list_image_models to see the models and how to prompt each.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"prompt":{"type":"string","description":"what to draw; match the model's prompt style"},` +
+				`"negative_prompt":{"type":"string","description":"what to avoid (ignored by CFG-1 models)"},` +
+				`"seed":{"type":"integer","description":"reuse a seed to reproduce an image; omit for a new random one"},` +
+				`"model":{"type":"string","description":"which configured model to use; omit for the default"}},"required":["prompt"]}`),
+		},
+		{
+			Name:        ToolListModels,
+			Description: "List the configured image-generation models and how to prompt each (natural language, booru tags, or phrases).",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+		},
+	}
 }
 
-// Call generates an image: gate, generate, save out-of-band, return the ref.
+// Call dispatches an image tool by name.
 func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error) {
-	if name != ToolName {
+	switch name {
+	case ToolName:
+		return t.generate(ctx, arguments)
+	case ToolListModels:
+		return t.listModels(), nil
+	default:
 		return "", fmt.Errorf("imagegen: unknown tool %q", name)
 	}
+}
+
+// generate resolves the model's recipe, gates on the prompt, runs the generator,
+// saves the image out-of-band, and tells the model how to show it (with the seed
+// for reuse). A denial or a missing model is returned as a result, not an error.
+func (t *Tool) generate(ctx context.Context, arguments string) (string, error) {
 	var a struct {
 		Prompt   string `json:"prompt"`
-		Width    int    `json:"width"`
-		Height   int    `json:"height"`
-		Steps    int    `json:"steps"`
+		Negative string `json:"negative_prompt"`
 		Seed     int    `json:"seed"`
-		Negative string `json:"negative"`
+		Model    string `json:"model"`
 	}
 	if err := json.Unmarshal([]byte(arguments), &a); err != nil {
 		return "", fmt.Errorf("imagegen: arguments: %w", err)
@@ -104,31 +132,78 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 	if strings.TrimSpace(a.Prompt) == "" {
 		return "", fmt.Errorf("imagegen: prompt is required")
 	}
+	mc, ok := t.cfg.Model(a.Model)
+	if !ok {
+		if a.Model != "" {
+			return fmt.Sprintf("No image model named %q. Call list_image_models to see the configured ones.", a.Model), nil
+		}
+		return "No default image model is configured. Call list_image_models, or ask the user to set one.", nil
+	}
+	r := mc.Recipe()
 
 	allow, err := t.gate.Allow(ctx, permission.Request{
 		ToolID: "native:" + ToolName,
 		Label:  "generate an image",
-		Detail: a.Prompt,
+		Detail: fmt.Sprintf("%s\n(model: %s)", a.Prompt, mc.Name),
 		Risk:   permission.RiskLow,
 	})
 	if err != nil {
 		return "", err
 	}
 	if !allow {
-		return "", fmt.Errorf("imagegen: not permitted")
+		return "Not generated: you declined to create this image. Do not tell the user an image was made.", nil
 	}
 
+	start := time.Now()
 	img, err := t.gen.Generate(ctx, a.Prompt, Options{
-		Width: a.Width, Height: a.Height, Steps: a.Steps, Seed: a.Seed, Negative: a.Negative,
+		Model: mc.Name, Modules: mc.Modules,
+		Steps: r.Steps, CFG: r.CFG, Sampler: r.Sampler, Scheduler: r.Scheduler,
+		Width: r.Width, Height: r.Height, Seed: a.Seed, Negative: a.Negative,
 	})
 	if err != nil {
-		return "", err
+		return "Image generation failed: " + err.Error(), nil
 	}
-	ref, err := t.sink.Save(ctx, "generated"+extForMIME(img.MIME), img.Data)
+	fname, err := randomName(extForMIME(img.MIME))
 	if err != nil {
 		return "", err
 	}
-	return "image saved: " + ref, nil
+	ref, err := t.sink.Save(ctx, fname, img.Data)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Generated with %s — seed %d, %s. Show it to the user by including this in your reply:\n![generated image](%s)",
+		mc.Name, img.Seed, time.Since(start).Round(time.Second), ref), nil
+}
+
+// listModels reports the configured models and their prompt style, so the model
+// can pick one and prompt it correctly.
+func (t *Tool) listModels() string {
+	if len(t.cfg.Models) == 0 {
+		return "No image-generation models are configured."
+	}
+	var b strings.Builder
+	b.WriteString("Configured image models")
+	if t.cfg.Default != "" {
+		fmt.Fprintf(&b, " (default: %s)", t.cfg.Default)
+	}
+	b.WriteString(":\n")
+	for _, m := range t.cfg.Models {
+		r := m.Recipe()
+		fmt.Fprintf(&b, "- %s — prompt style: %s", m.Name, r.PromptStyle)
+		if r.Note != "" {
+			fmt.Fprintf(&b, " (%s)", r.Note)
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func randomName(ext string) (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("imagegen: generate name: %w", err)
+	}
+	return hex.EncodeToString(b[:]) + ext, nil
 }
 
 func extForMIME(mime string) string {
