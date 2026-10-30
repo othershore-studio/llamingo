@@ -19,13 +19,16 @@ func (s *Store) configFile() string { return filepath.Join(s.root, "config.json"
 // such as mcp.json lives next to the conversation roots.
 func (s *Store) Root() string { return s.root }
 
-// Config is the persisted app configuration — the llama-server connection and
-// the user's location. It lives at <root>/config.json next to the memory file,
-// so these survive across launches without re-exporting an env var.
+// Config is the persisted app configuration — the llama-server connection, the
+// user's location, and the Forge image server. It lives at <root>/config.json
+// next to the memory file, so these survive across launches without re-exporting
+// an env var.
 type Config struct {
 	URL      string `json:"url,omitempty"`
 	Token    string `json:"token,omitempty"`
 	Location string `json:"location,omitempty"` // the user's manually set location (city/country)
+	ForgeURL string `json:"forgeUrl,omitempty"` // Forge Neo image server (empty = image generation off)
+	Debug    bool   `json:"debug,omitempty"`    // write raw llama/Forge/tool payloads to each chat's logs/ (debug mode)
 }
 
 // Config returns the saved configuration. A missing file is the zero Config, not

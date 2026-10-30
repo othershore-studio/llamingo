@@ -17,10 +17,12 @@ import (
 	"time"
 
 	"github.com/othershore-studio/llamingo/internal/filetools"
+	"github.com/othershore-studio/llamingo/internal/imagegen"
 	"github.com/othershore-studio/llamingo/internal/localtools"
 	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/memtool"
 	"github.com/othershore-studio/llamingo/internal/permission"
+	"github.com/othershore-studio/llamingo/internal/store"
 )
 
 // This file is the agentic wiring: the permission gate reaches the user over the
@@ -113,6 +115,7 @@ func newSSEPrompter(b *broker) *ssePrompter {
 // Ask implements permission.Prompter.
 func (p *ssePrompter) Ask(ctx context.Context, req permission.Request, allowed []permission.Scope) (permission.Decision, error) {
 	emit := emitterFrom(ctx)
+	log.Printf("permission: prompt %q (tool %s, stream=%t)", req.Label, req.ToolID, emit != nil)
 	if emit == nil {
 		// No stream to ask on — deny rather than act unasked.
 		return permission.Decision{}, nil
@@ -178,9 +181,9 @@ func (s *Server) gateFor(convID string) *permission.Gate {
 
 // registryFor builds the tool registry offered for a conversation's turn: the
 // native write_memory and local ambient tools and the user's global MCP servers,
-// plus the project file tools when the conversation is a project session.
-// write_memory is gated; the local and file tools are read-only. Image
-// generation joins here as it lands.
+// plus the project file tools in a project session and the image tools when image
+// generation is configured. write_memory and image generation are gated; the
+// local and file tools are read-only.
 func (s *Server) registryFor(convID string) mcp.Registry {
 	gate := s.gateFor(convID)
 	regs := []mcp.Registry{s.globalServers(), memtool.NewTool(s.st, gate), localtools.NewTool(s.locationSetting)}
@@ -189,7 +192,45 @@ func (s *Server) registryFor(convID string) mcp.Registry {
 	if root, ok, err := s.st.ProjectRoot(convID); err == nil && ok && root != "" {
 		regs = append(regs, filetools.NewTool(root))
 	}
+	// Image generation, when a Forge URL and at least one model are configured.
+	if tool := s.imageTool(convID, gate); tool != nil {
+		regs = append(regs, tool)
+	}
 	return mcp.Combine(regs...)
+}
+
+// imageTool builds the image-generation tool for a conversation when a Forge URL
+// (the setting or LLAMINGO_FORGE_URL) and at least one configured model are
+// present, else nil. Generated images save into that conversation's attachments/
+// — the same sink the persisted tool images use.
+func (s *Server) imageTool(convID string, gate *permission.Gate) mcp.Registry {
+	cfg, _ := s.st.Config()
+	url := cfg.ForgeURL
+	if url == "" {
+		url = os.Getenv("LLAMINGO_FORGE_URL")
+	}
+	if url == "" {
+		return nil
+	}
+	imgCfg, err := imagegen.LoadConfig(filepath.Join(s.st.Root(), "imagegen.json"))
+	if err != nil {
+		log.Printf("mcp: image config: %v", err)
+		return nil
+	}
+	if len(imgCfg.Models) == 0 {
+		return nil
+	}
+	return imagegen.NewTool(imagegen.NewForgeNeo(url), convSink{st: s.st, convID: convID}, gate, imgCfg)
+}
+
+// convSink saves image bytes into one conversation's attachments/ folder.
+type convSink struct {
+	st     *store.Store
+	convID string
+}
+
+func (s convSink) Save(ctx context.Context, name string, data []byte) (string, error) {
+	return s.st.SaveAttachment(s.convID, name, data)
 }
 
 // locationSetting returns the user's configured location ("" if unset or on a

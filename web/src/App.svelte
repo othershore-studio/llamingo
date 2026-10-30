@@ -12,11 +12,55 @@
   const apiOrigin = () => (window.runtime ? 'http://127.0.0.1:8766' : '')
   const apiFetch = (path, opts) => fetch(apiOrigin() + path, opts)
 
+  // Playful "working" words shown while a turn runs — llama / Andean / Ecuador
+  // themed. Edit this list freely (add your Ecuadorian picks); one is chosen per
+  // turn and rotates every few seconds. SPINNER is the braille animation frames.
+  const WORKING_WORDS = ['Rumiando', 'Pensando', 'Trotando', 'Pastando', 'Tejiendo', 'Grazing', 'Trekking', 'Humming', 'Pronking', 'Soaring']
+  const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  const pickWord = () => WORKING_WORDS[Math.floor(Math.random() * WORKING_WORDS.length)]
+
   // Rewrite local attachment refs (attachments/<name>, as written in the log) to
   // the serve route for the open conversation, so persisted and generated images
   // load in the desktop app and the browser alike. Remote URLs pass through.
   const renderContent = (text) =>
     md.render(text).replaceAll('src="attachments/', `src="${apiOrigin()}/api/conversations/${activeId}/attachments/`)
+
+  // Parked, in step with the server (stripLeadingToolBlob): the live mirror of
+  // the ReAct-blob strip. Both are currently off so we can measure how often the
+  // model emits a {"action":…} scratch blob and how stable that is. Re-enable by
+  // wrapping the renderContent argument in stripToolBlob(...) again. It holds a
+  // still-streaming blob back until it closes so it never flashes.
+  function stripToolBlob(text) {
+    const t = text.replace(/^\s+/, '')
+    if (!t.startsWith('{')) return text
+    const end = jsonObjectEnd(t)
+    const head = end < 0 ? t : t.slice(0, end + 1)
+    if (!head.includes('"action"') && !head.includes("'action'")) return text
+    if (end < 0) return '' // the blob is still streaming — hold it back
+    let rest = t.slice(end + 1).replace(/^\s+/, '')
+    // If the model buried the image inside the blob with nothing after it,
+    // recover it so the reply is not empty.
+    if (!rest.includes('](')) {
+      const img = (head.replace(/\\"/g, '"').replace(/\\n/g, '\n').match(/!\[[^\]]*\]\([^)\s]+\)/) || [])[0]
+      if (img) rest = rest ? img + '\n\n' + rest : img
+    }
+    return rest
+  }
+  function jsonObjectEnd(s) {
+    let depth = 0,
+      inStr = false,
+      esc = false
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i]
+      if (esc) esc = false
+      else if (inStr && c === '\\') esc = true
+      else if (c === '"') inStr = !inStr
+      else if (inStr) continue
+      else if (c === '{') depth++
+      else if (c === '}' && --depth === 0) return i
+    }
+    return -1
+  }
 
   // In the Wails desktop shell the window is frameless, so the HTML topbar is the
   // title bar: draggable, with our own min/max/close. The browser/PWA has none.
@@ -28,6 +72,22 @@
   let messages = $state([]) // { role, content }
   let input = $state('')
   let streaming = $state(false)
+  // "Working" indicator: a braille spinner + a themed word while a turn runs.
+  let spinnerFrame = $state(0)
+  let workingWord = $state(WORKING_WORDS[0])
+  $effect(() => {
+    if (!streaming) {
+      spinnerFrame = 0
+      return
+    }
+    workingWord = pickWord()
+    let i = 0, t = 0
+    const id = setInterval(() => {
+      spinnerFrame = i = (i + 1) % SPINNER.length
+      if (++t % 375 === 0) workingWord = pickWord() // rotate the word ~every 30s
+    }, 80)
+    return () => clearInterval(id)
+  })
   let budget = $state(null) // { used, nCtx, level }
   let speed = $state(null) // last turn's tokens/sec: { promptPerSecond, predictPerSecond, predictN }
   let error = $state(null)
@@ -53,6 +113,8 @@
   let settingsUrl = $state('') // editable llama-server URL
   let settingsToken = $state('') // editable bearer token
   let settingsLocation = $state('') // editable user location (for place-aware tools)
+  let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
+  let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -230,6 +292,8 @@
     settingsUrl = s.url ?? ''
     settingsToken = s.token ?? ''
     settingsLocation = s.location ?? ''
+    settingsForgeUrl = s.forgeUrl ?? ''
+    settingsDebug = s.debug ?? false
     settingsOpen = true
   }
   async function saveSettings() {
@@ -238,7 +302,7 @@
     await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim() }),
+      body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), debug: settingsDebug }),
     })
     settingsOpen = false
     checkServer() // re-poll so the status reflects the new connection now
@@ -434,8 +498,33 @@
       budget = payload.budget
       speed = payload.timings ?? null
       reachable = true
+      reconcileFinal(activeId) // sync the final bubble with the authoritative saved copy
     } else if (event === 'error') {
       error = payload.error
+    }
+  }
+
+  // On turn completion, replace the streamed assistant bubble with the saved
+  // copy from disk. The server post-processes the reply before saving (drops the
+  // ReAct scratch blob, recovers an image the model generated but didn't echo,
+  // rewrites remote image links to local attachments), and writes it before it
+  // emits `done` — so the saved copy is authoritative and the final render always
+  // matches what's on disk, even when the model streamed nothing (as happens
+  // right after a silent image generation). The live token stream still shows
+  // text as it arrives; this only reconciles the end state.
+  async function reconcileFinal(id) {
+    if (id !== activeId) return
+    try {
+      const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
+      let lastContent = null
+      for (const e of entries) {
+        if (e.kind === 'msg' && e.role === 'assistant') lastContent = e.content
+      }
+      if (lastContent === null || id !== activeId) return // chat switched while fetching
+      const last = messages[messages.length - 1]
+      if (last && last.role === 'assistant') last.content = lastContent
+    } catch {
+      /* leave the streamed bubble as-is if the reconcile fetch fails */
     }
   }
 
@@ -789,8 +878,8 @@
             {/if}
             {#if m.content !== ''}
               <div class="msg assistant prose" use:copyableCode={m.content}>{@html renderContent(m.content)}</div>
-            {:else if streaming && i === messages.length - 1 && !m.reasoning}
-              <div class="msg assistant">…</div>
+            {:else if streaming && i === messages.length - 1}
+              <div class="msg assistant" style="opacity:.6">{SPINNER[spinnerFrame]} {workingWord}…</div>
             {/if}
           {/if}
           {#if m.time && (m.role === 'user' || m.content !== '')}
@@ -906,6 +995,7 @@
           <span>Settings</span>
           <button class="x" onclick={() => (settingsOpen = false)}>✕</button>
         </div>
+        <div class="group-head">Connection</div>
         <label class="setting">
           <span>llama-server URL</span>
           <input
@@ -919,6 +1009,19 @@
           <span>Bearer token <span class="muted">(optional, for an auth proxy)</span></span>
           <input class="field" type="password" bind:value={settingsToken} placeholder="leave blank for none" />
         </label>
+
+        <div class="group-head">Image generation</div>
+        <label class="setting">
+          <span>Forge Neo URL <span class="muted">(optional; blank disables image generation)</span></span>
+          <input
+            class="field"
+            bind:value={settingsForgeUrl}
+            placeholder="https://forge.example.com"
+            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
+          />
+        </label>
+
+        <div class="group-head">Location</div>
         <label class="setting">
           <span>Location <span class="muted">(optional, for place-aware tools — set how broad you like)</span></span>
           <input
@@ -927,6 +1030,12 @@
             placeholder="e.g. Quito, Ecuador — blank to share none"
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
+        </label>
+
+        <div class="group-head">Debug</div>
+        <label class="setting">
+          <span>Debug logging <span class="muted">(save raw llama / Forge / tool payloads to each chat's logs/ folder)</span></span>
+          <input type="checkbox" bind:checked={settingsDebug} style="width:auto" />
         </label>
         <div class="modal-foot">
           <button class="primary" onclick={saveSettings}>Save &amp; connect</button>
@@ -1551,6 +1660,14 @@
   }
   .setting > span {
     color: var(--muted);
+  }
+  .group-head {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin-top: 4px;
   }
   .modal-backdrop {
     position: fixed;

@@ -53,6 +53,21 @@ func (s *Store) AttachmentPath(convID, name string) (string, error) {
 	return p, nil
 }
 
+// LogDir returns (creating it) the logs/ folder inside a conversation's own
+// directory, where debug-mode payloads are written. It sits beside attachments/
+// in the conversation folder, so deleting the conversation clears its logs too.
+func (s *Store) LogDir(convID string) (string, error) {
+	dir, err := s.conversationDir(convID)
+	if err != nil {
+		return "", err
+	}
+	logDir := filepath.Join(dir, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return "", fmt.Errorf("store: logs dir: %w", err)
+	}
+	return logDir, nil
+}
+
 // safeAttachmentName rejects anything that is not a single path element — no
 // separators, no "..", not empty — so a name taken from a URL or the model can
 // never escape the attachments/ folder.

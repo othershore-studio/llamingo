@@ -17,6 +17,7 @@ import (
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
+	"github.com/othershore-studio/llamingo/internal/debuglog"
 	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/permission"
 	"github.com/othershore-studio/llamingo/internal/store"
@@ -175,8 +176,8 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /api/settings — the current llama-server connection (url + token) and the
-// user's saved location.
+// GET /api/settings — the llama-server connection (url + token), the user's
+// saved location, and the Forge image-server URL.
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	rc, ok := s.be.(backend.Reconfigurable)
 	if !ok {
@@ -184,11 +185,11 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, _ := s.st.Config()
-	writeJSON(w, map[string]string{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location})
+	writeJSON(w, map[string]any{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location, "forgeUrl": cfg.ForgeURL, "debug": cfg.Debug})
 }
 
-// PUT /api/settings {url, token, location} — persist and hot-swap the connection
-// (the next /props poll reconnects on its own) and save the user's location.
+// PUT /api/settings {url, token, location, forgeUrl, debug} — persist and hot-swap
+// the connection (the next /props poll reconnects) and save location, Forge URL, debug.
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	rc, ok := s.be.(backend.Reconfigurable)
 	if !ok {
@@ -199,6 +200,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		URL      string `json:"url"`
 		Token    string `json:"token"`
 		Location string `json:"location"`
+		ForgeURL string `json:"forgeUrl"`
+		Debug    bool   `json:"debug"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -209,7 +212,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "url is required", http.StatusBadRequest)
 		return
 	}
-	if err := s.st.SetConfig(store.Config{URL: url, Token: body.Token, Location: strings.TrimSpace(body.Location)}); err != nil {
+	if err := s.st.SetConfig(store.Config{URL: url, Token: body.Token, Location: strings.TrimSpace(body.Location), ForgeURL: strings.TrimSpace(body.ForgeURL), Debug: body.Debug}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -364,6 +367,13 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// answer returns on POST /api/permission/{id} (see permission.go).
 	emit := func(event string, data any) { writeEvent(w, flusher, event, data) }
 	ctx := withEmitter(r.Context(), emit)
+	// Debug mode: tee this turn's raw llama/Forge/tool payloads into the chat's
+	// own logs/ folder (see internal/debuglog). Off unless the setting is on.
+	if cfg, _ := s.st.Config(); cfg.Debug {
+		if dir, derr := s.st.LogDir(body.ID); derr == nil {
+			ctx = debuglog.With(ctx, &debuglog.Sink{Dir: dir})
+		}
+	}
 	reg := s.registryFor(body.ID)
 
 	// The thinking toggle maps to the model's chat template: when the client sets
@@ -401,9 +411,15 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		emit("error", map[string]any{"error": runErr.Error()})
 		return
 	}
-	// Persist any images the answer links (while their links are still fresh),
-	// then save the answer with the rewritten local refs. See attachment.go.
-	answer := s.imageAttachments(r.Context(), body.ID, finalAssistant(out))
+	// Assemble the saved reply as a layered, deterministic result. The model is
+	// steered during the post-tool "shaping" round (mcp.shapingGuidance) to write
+	// a clean caption and not repeat the image; here we (1) strip any ReAct scratch
+	// blob it emitted anyway, then (2) attach the image deterministically from the
+	// tool result, so the picture always shows in a consistent place. Finally,
+	// persist any linked image and rewrite it to a local ref. See toolblob.go and
+	// attachment.go.
+	answer := recoverToolImages(stripLeadingToolBlob(finalAssistant(out)), out)
+	answer = s.imageAttachments(r.Context(), body.ID, answer)
 	if _, err := s.st.AppendAssistant(body.ID, answer, think.String()); err != nil {
 		emit("error", map[string]any{"error": err.Error()})
 		return
