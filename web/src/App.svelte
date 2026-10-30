@@ -16,12 +16,13 @@
   // the serve route for the open conversation, so persisted and generated images
   // load in the desktop app and the browser alike. Remote URLs pass through.
   const renderContent = (text) =>
-    md.render(stripToolBlob(text)).replaceAll('src="attachments/', `src="${apiOrigin()}/api/conversations/${activeId}/attachments/`)
+    md.render(text).replaceAll('src="attachments/', `src="${apiOrigin()}/api/conversations/${activeId}/attachments/`)
 
-  // Mirror of the server's stripLeadingToolBlob: some small models write a
-  // ReAct-style {"action":…} object as text before the real answer. The server
-  // strips it from the saved reply; do the same for the live/streamed view, and
-  // hold a still-streaming blob back until it closes so it never flashes.
+  // Parked, in step with the server (stripLeadingToolBlob): the live mirror of
+  // the ReAct-blob strip. Both are currently off so we can measure how often the
+  // model emits a {"action":…} scratch blob and how stable that is. Re-enable by
+  // wrapping the renderContent argument in stripToolBlob(...) again. It holds a
+  // still-streaming blob back until it closes so it never flashes.
   function stripToolBlob(text) {
     const t = text.replace(/^\s+/, '')
     if (!t.startsWith('{')) return text
@@ -90,6 +91,7 @@
   let settingsToken = $state('') // editable bearer token
   let settingsLocation = $state('') // editable user location (for place-aware tools)
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
+  let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -268,6 +270,7 @@
     settingsToken = s.token ?? ''
     settingsLocation = s.location ?? ''
     settingsForgeUrl = s.forgeUrl ?? ''
+    settingsDebug = s.debug ?? false
     settingsOpen = true
   }
   async function saveSettings() {
@@ -276,7 +279,7 @@
     await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim() }),
+      body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), debug: settingsDebug }),
     })
     settingsOpen = false
     checkServer() // re-poll so the status reflects the new connection now
@@ -472,8 +475,33 @@
       budget = payload.budget
       speed = payload.timings ?? null
       reachable = true
+      reconcileFinal(activeId) // sync the final bubble with the authoritative saved copy
     } else if (event === 'error') {
       error = payload.error
+    }
+  }
+
+  // On turn completion, replace the streamed assistant bubble with the saved
+  // copy from disk. The server post-processes the reply before saving (drops the
+  // ReAct scratch blob, recovers an image the model generated but didn't echo,
+  // rewrites remote image links to local attachments), and writes it before it
+  // emits `done` — so the saved copy is authoritative and the final render always
+  // matches what's on disk, even when the model streamed nothing (as happens
+  // right after a silent image generation). The live token stream still shows
+  // text as it arrives; this only reconciles the end state.
+  async function reconcileFinal(id) {
+    if (id !== activeId) return
+    try {
+      const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
+      let lastContent = null
+      for (const e of entries) {
+        if (e.kind === 'msg' && e.role === 'assistant') lastContent = e.content
+      }
+      if (lastContent === null || id !== activeId) return // chat switched while fetching
+      const last = messages[messages.length - 1]
+      if (last && last.role === 'assistant') last.content = lastContent
+    } catch {
+      /* leave the streamed bubble as-is if the reconcile fetch fails */
     }
   }
 
@@ -979,6 +1007,12 @@
             placeholder="e.g. Quito, Ecuador — blank to share none"
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
+        </label>
+
+        <div class="group-head">Debug</div>
+        <label class="setting">
+          <span>Debug logging <span class="muted">(save raw llama / Forge / tool payloads to each chat's logs/ folder)</span></span>
+          <input type="checkbox" bind:checked={settingsDebug} style="width:auto" />
         </label>
         <div class="modal-foot">
           <button class="primary" onclick={saveSettings}>Save &amp; connect</button>

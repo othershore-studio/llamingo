@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
+	"github.com/othershore-studio/llamingo/internal/debuglog"
 	"github.com/othershore-studio/llamingo/internal/permission"
 )
 
@@ -42,7 +43,15 @@ func Run(ctx context.Context, be backend.Backend, reg Registry, msgs []backend.M
 		var content strings.Builder
 		var toolCalls []backend.ToolCall
 
-		err := be.ChatStream(ctx, backend.ChatRequest{Messages: msgs, Tools: reg.Tools(), TemplateKwargs: templateKwargs}, func(d backend.Delta) error {
+		tools := reg.Tools()
+		// On the round right after a tool produced a user-facing image, steer the
+		// reply toward a clean caption (see withShapingGuidance). The guidance is
+		// transient — sent this round, not appended to msgs — so it never persists
+		// in the conversation or stacks across rounds.
+		reqMsgs := withShapingGuidance(msgs)
+		llamaID := debuglog.NewID()
+		debuglog.Record(ctx, debuglog.ChannelLlama, debuglog.KindRequest, llamaID, map[string]any{"messages": reqMsgs, "tools": tools, "templateKwargs": templateKwargs})
+		err := be.ChatStream(ctx, backend.ChatRequest{Messages: reqMsgs, Tools: tools, TemplateKwargs: templateKwargs}, func(d backend.Delta) error {
 			if d.Content != "" {
 				content.WriteString(d.Content)
 			}
@@ -65,17 +74,21 @@ func Run(ctx context.Context, be backend.Backend, reg Registry, msgs []backend.M
 			assistant.ToolCalls = toolCalls
 		}
 		msgs = append(msgs, assistant)
+		debuglog.Record(ctx, debuglog.ChannelLlama, debuglog.KindResponse, llamaID, map[string]any{"content": assistant.Content, "toolCalls": toolCalls})
 
 		if len(toolCalls) == 0 {
 			return msgs, nil // the model answered without calling a tool
 		}
 
 		for _, tc := range toolCalls {
+			toolID := debuglog.NewID()
+			debuglog.Record(ctx, debuglog.ChannelTool, debuglog.KindRequest, toolID, map[string]any{"name": tc.Function.Name, "arguments": tc.Function.Arguments})
 			result, err := reg.Call(ctx, tc.Function.Name, tc.Function.Arguments)
 			if err != nil {
 				// Surface the failure to the model rather than aborting the loop.
 				result = "tool error: " + err.Error()
 			}
+			debuglog.Record(ctx, debuglog.ChannelTool, debuglog.KindResponse, toolID, map[string]any{"name": tc.Function.Name, "result": result})
 			msgs = append(msgs, backend.Message{
 				Role:       backend.RoleTool,
 				Content:    result,
@@ -84,6 +97,30 @@ func Run(ctx context.Context, be backend.Backend, reg Registry, msgs []backend.M
 		}
 	}
 	return msgs, fmt.Errorf("mcp: tool loop did not settle within %d rounds", maxRounds)
+}
+
+// shapingGuidance steers the model's reply on the round right after a tool has
+// produced a user-facing image. Small models (notably Gemma under a large
+// toolset) tend to re-narrate the tool call as a ReAct JSON blob and repeat the
+// link; this asks for a clean caption instead. The image is attached
+// deterministically from the tool result afterward (see httpapi), so the model
+// is told not to repeat it: the model writes the words, the client shows the
+// picture.
+const shapingGuidance = "The image has been generated and is shown to the user automatically. " +
+	"Reply with a short, friendly caption of one or two sentences. " +
+	"Do not output any JSON, tool-call syntax, or a markdown image link."
+
+// withShapingGuidance returns the messages to send for a round, appending a
+// transient system message with shapingGuidance when the previous turn is a tool
+// result carrying an image (markdown "![…]"). It leaves msgs untouched after an
+// intermediate tool whose text has no image (e.g. list_image_models) so a
+// legitimate follow-up tool call is not discouraged, and never mutates msgs.
+func withShapingGuidance(msgs []backend.Message) []backend.Message {
+	n := len(msgs)
+	if n == 0 || msgs[n-1].Role != backend.RoleTool || !strings.Contains(msgs[n-1].Content, "![") {
+		return msgs
+	}
+	return append(append(make([]backend.Message, 0, n+1), msgs...), backend.Message{Role: backend.RoleSystem, Content: shapingGuidance})
 }
 
 type connected struct {

@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/othershore-studio/llamingo/internal/debuglog"
 )
 
 // ForgeNeo generates images through a Forge Neo server's /sdapi/v1/txt2img
@@ -86,6 +88,8 @@ func (f *ForgeNeo) Generate(ctx context.Context, prompt string, opts Options) (I
 	if len(override) > 0 {
 		reqBody.OverrideSettings = override
 	}
+	id := debuglog.NewID()
+	debuglog.Record(ctx, debuglog.ChannelForge, debuglog.KindRequest, id, reqBody)
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -103,6 +107,7 @@ func (f *ForgeNeo) Generate(ctx context.Context, prompt string, opts Options) (I
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		debuglog.Record(ctx, debuglog.ChannelForge, debuglog.KindResponse, id, map[string]any{"httpStatus": resp.StatusCode, "error": strings.TrimSpace(string(msg))})
 		return Image{}, fmt.Errorf("imagegen: forge http %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 
@@ -125,6 +130,15 @@ func (f *ForgeNeo) Generate(ctx context.Context, prompt string, opts Options) (I
 	if json.Unmarshal([]byte(out.Info), &info) == nil {
 		img.Seed = info.Seed
 	}
+	// Log metadata only — never the base64 image bytes (keep bulk data out).
+	debuglog.Record(ctx, debuglog.ChannelForge, debuglog.KindResponse, id, map[string]any{
+		"httpStatus": resp.StatusCode,
+		"imageCount": len(out.Images),
+		"imageBytes": len(data),
+		"mime":       img.MIME,
+		"seed":       img.Seed,
+		"info":       out.Info, // Forge's own JSON string: the real seed and params it used
+	})
 	return img, nil
 }
 

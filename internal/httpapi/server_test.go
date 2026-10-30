@@ -155,14 +155,14 @@ func TestDeleteConversation(t *testing.T) {
 func TestSettings(t *testing.T) {
 	api := newAPI(t)
 
-	get := func() map[string]string {
+	get := func() map[string]any {
 		t.Helper()
 		resp, err := http.Get(api.URL + "/api/settings")
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer resp.Body.Close()
-		var m map[string]string
+		var m map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
 			t.Fatal(err)
 		}
@@ -170,7 +170,7 @@ func TestSettings(t *testing.T) {
 	}
 	put := func(url string) int {
 		t.Helper()
-		req, _ := http.NewRequest(http.MethodPut, api.URL+"/api/settings", strings.NewReader(`{"url":"`+url+`","token":"t"}`))
+		req, _ := http.NewRequest(http.MethodPut, api.URL+"/api/settings", strings.NewReader(`{"url":"`+url+`","token":"t","debug":true}`))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -187,8 +187,12 @@ func TestSettings(t *testing.T) {
 	if code := put("http://example.invalid:9999"); code != http.StatusNoContent {
 		t.Fatalf("PUT settings = %d, want 204", code)
 	}
-	if got := get(); got["url"] != "http://example.invalid:9999" {
-		t.Errorf("after PUT, url = %q, want the hot-swapped url", got["url"])
+	got := get()
+	if got["url"] != "http://example.invalid:9999" {
+		t.Errorf("after PUT, url = %v, want the hot-swapped url", got["url"])
+	}
+	if got["debug"] != true {
+		t.Errorf("after PUT, debug = %v, want true (new field round-trips)", got["debug"])
 	}
 	// A blank url is rejected.
 	if code := put("   "); code != http.StatusBadRequest {

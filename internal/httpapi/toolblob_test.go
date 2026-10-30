@@ -4,7 +4,11 @@
 
 package httpapi
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/othershore-studio/llamingo/internal/backend"
+)
 
 func TestStripLeadingToolBlob(t *testing.T) {
 	// A ReAct blob (with an escaped-JSON action_input) before the real answer.
@@ -60,5 +64,42 @@ Here is the image.`
 }`
 	if got := stripLeadingToolBlob(buried); got != "![generated image](attachments/z.png)" {
 		t.Errorf("buried image not recovered: %q", got)
+	}
+}
+
+func TestRecoverToolImages(t *testing.T) {
+	img := "![generated image](attachments/e2922716.png)"
+
+	// The real failure: the model generated an image, then returned an empty
+	// final message. The image lives only in the tool result — recover it.
+	silent := []backend.Message{
+		{Role: backend.RoleUser, Content: "draw a black cat"},
+		{Role: backend.RoleAssistant, ToolCalls: []backend.ToolCall{{ID: "1"}}},
+		{Role: backend.RoleTool, Content: "Image generated with DreamShaperXL_Turbo_SFW (seed 42, image/png): " + img, ToolCallID: "1"},
+		{Role: backend.RoleAssistant, Content: ""},
+	}
+	if got := recoverToolImages("", silent); got != img {
+		t.Errorf("silent answer: recovered = %q, want %q", got, img)
+	}
+
+	// The model wrote prose but no image — append the tool's image to it.
+	prose := "Here is your black cat!"
+	if got := recoverToolImages(prose, silent); got != prose+"\n\n"+img {
+		t.Errorf("prose answer: recovered = %q, want %q", got, prose+"\n\n"+img)
+	}
+
+	// The model already echoed the image — leave the answer untouched (no dup).
+	echoed := prose + "\n\n" + img
+	if got := recoverToolImages(echoed, silent); got != echoed {
+		t.Errorf("echoed answer altered: %q", got)
+	}
+
+	// A turn with no image-bearing tool result is untouched.
+	noImg := []backend.Message{
+		{Role: backend.RoleTool, Content: "the time is 04:22", ToolCallID: "1"},
+		{Role: backend.RoleAssistant, Content: "It's 4:22."},
+	}
+	if got := recoverToolImages("It's 4:22.", noImg); got != "It's 4:22." {
+		t.Errorf("no-image turn altered: %q", got)
 	}
 }

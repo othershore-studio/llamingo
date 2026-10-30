@@ -7,6 +7,8 @@ package httpapi
 import (
 	"regexp"
 	"strings"
+
+	"github.com/othershore-studio/llamingo/internal/backend"
 )
 
 // Some small models (notably Gemma under a large toolset) emit a ReAct-style
@@ -52,6 +54,31 @@ func firstImageMarkdown(s string) string {
 	s = strings.ReplaceAll(s, `\"`, `"`)
 	s = strings.ReplaceAll(s, `\n`, "\n")
 	return imageMarkdownRe.FindString(s)
+}
+
+// recoverToolImages makes sure an image produced by a tool this turn still
+// reaches the saved reply even when the model echoes nothing (or no image) in
+// its final message. The native image tool and MCP image servers return the
+// image as markdown in their tool result; finalAssistant keeps only the last
+// assistant message, so a silent model loses the image although the file is
+// already on disk. If the answer carries no image of its own, surface the most
+// recent one found in the turn's tool results.
+func recoverToolImages(answer string, msgs []backend.Message) string {
+	if imageMarkdownRe.MatchString(answer) {
+		return answer // the model already showed an image
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != backend.RoleTool {
+			continue
+		}
+		if img := firstImageMarkdown(msgs[i].Content); img != "" {
+			if strings.TrimSpace(answer) == "" {
+				return img
+			}
+			return answer + "\n\n" + img
+		}
+	}
+	return answer
 }
 
 // jsonObjectEnd returns the index of the brace that closes the one at s[0],

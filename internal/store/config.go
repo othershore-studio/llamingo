@@ -28,6 +28,7 @@ type Config struct {
 	Token    string `json:"token,omitempty"`
 	Location string `json:"location,omitempty"` // the user's manually set location (city/country)
 	ForgeURL string `json:"forgeUrl,omitempty"` // Forge Neo image server (empty = image generation off)
+	Debug    bool   `json:"debug,omitempty"`    // write raw llama/Forge/tool payloads to each chat's logs/ (debug mode)
 }
 
 // Config returns the saved configuration. A missing file is the zero Config, not
