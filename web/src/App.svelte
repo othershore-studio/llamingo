@@ -16,7 +16,36 @@
   // the serve route for the open conversation, so persisted and generated images
   // load in the desktop app and the browser alike. Remote URLs pass through.
   const renderContent = (text) =>
-    md.render(text).replaceAll('src="attachments/', `src="${apiOrigin()}/api/conversations/${activeId}/attachments/`)
+    md.render(stripToolBlob(text)).replaceAll('src="attachments/', `src="${apiOrigin()}/api/conversations/${activeId}/attachments/`)
+
+  // Mirror of the server's stripLeadingToolBlob: some small models write a
+  // ReAct-style {"action":…} object as text before the real answer. The server
+  // strips it from the saved reply; do the same for the live/streamed view, and
+  // hold a still-streaming blob back until it closes so it never flashes.
+  function stripToolBlob(text) {
+    const t = text.replace(/^\s+/, '')
+    if (!t.startsWith('{')) return text
+    const end = jsonObjectEnd(t)
+    const head = end < 0 ? t : t.slice(0, end + 1)
+    if (!head.includes('"action"') && !head.includes("'action'")) return text
+    if (end < 0) return '' // the blob is still streaming — hold it back
+    return t.slice(end + 1).replace(/^\s+/, '')
+  }
+  function jsonObjectEnd(s) {
+    let depth = 0,
+      inStr = false,
+      esc = false
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i]
+      if (esc) esc = false
+      else if (inStr && c === '\\') esc = true
+      else if (c === '"') inStr = !inStr
+      else if (inStr) continue
+      else if (c === '{') depth++
+      else if (c === '}' && --depth === 0) return i
+    }
+    return -1
+  }
 
   // In the Wails desktop shell the window is frameless, so the HTML topbar is the
   // title bar: draggable, with our own min/max/close. The browser/PWA has none.

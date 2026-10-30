@@ -33,4 +33,20 @@ Here is an image of a black cat for you!`
 	if got := stripLeadingToolBlob(data); got != data {
 		t.Errorf("non-tool JSON altered: %q", got)
 	}
+
+	// Gemma's real shape: unescaped inner quotes in action_input (invalid JSON),
+	// yet the object's end is still found — the stray braces fall inside string
+	// state, so the brace depth stays balanced.
+	messy := `{
+"action": "generate_image",
+"action_input": "{ "prompt": "A fluffy white cat with blue eyes." }",
+"thought": "present it to the user"
+}
+
+![generated image](attachments/c9.png)
+
+Here is the image.`
+	if got := stripLeadingToolBlob(messy); got != "![generated image](attachments/c9.png)\n\nHere is the image." {
+		t.Errorf("messy (unescaped-quote) blob not stripped: %q", got)
+	}
 }
