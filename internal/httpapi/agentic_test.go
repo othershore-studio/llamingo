@@ -143,17 +143,28 @@ func TestAgenticWriteMemoryHandshake(t *testing.T) {
 		t.Errorf("memory = %q, want the content the tool wrote", m["content"])
 	}
 
-	// Only the final assistant answer is persisted — not the tool scratch.
+	// The turn's trail is persisted for display: a toolcall entry records the tool
+	// the model used (with its args), and the final entry is the assistant's prose
+	// answer — with no tool-call scratch leaking into that answer. The trail is
+	// display-only (Project keeps it out of the model's context; see the store's
+	// TestToolUseIsDisplayOnly).
 	entries := getConversation(t, api, id)
 	last := entries[len(entries)-1]
 	reply, _ := last["content"].(string)
 	if last["role"] != "assistant" || !strings.Contains(reply, "Saved") {
 		t.Errorf("final entry = %+v, want the assistant's prose answer", last)
 	}
+	if strings.Contains(reply, `"content":"Daniel`) {
+		t.Errorf("tool-call scratch leaked into the assistant answer: %q", reply)
+	}
+	var sawToolEntry bool
 	for _, e := range entries {
-		if c, _ := e["content"].(string); strings.Contains(c, `"content":"Daniel`) {
-			t.Errorf("tool-call scratch leaked into the log: %+v", e)
+		if e["kind"] == "toolcall" && e["name"] == "write_memory" {
+			sawToolEntry = true
 		}
+	}
+	if !sawToolEntry {
+		t.Error("no toolcall entry was persisted for the tool the model used")
 	}
 }
 

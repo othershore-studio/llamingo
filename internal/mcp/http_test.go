@@ -7,9 +7,12 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/othershore-studio/llamingo/internal/mcp"
@@ -156,5 +159,135 @@ func TestConnectHTTPNoURL(t *testing.T) {
 	s := mcp.Server{Name: "remote", Scope: mcp.ScopeGlobal, Config: mcp.ServerConfig{Type: "http"}}
 	if _, err := mcp.Connect(s); err == nil {
 		t.Fatal("Connect to an http server with no url should error")
+	}
+}
+
+// A Streamable HTTP server may drop a session (it expires, or the server
+// restarts); a later request carrying the dead session id gets HTTP 404
+// "Session not found". The client must recover by starting a new session and
+// retrying — not surface the 404 as a tool error. This fake 404s any call made
+// with the first session it issued, and accepts calls made with a later one, so
+// recovery requires a genuine re-initialize.
+func TestHTTPReinitializesAfterSessionExpiry(t *testing.T) {
+	var (
+		mu           sync.Mutex
+		initCount    int
+		firstSession string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+
+		switch req.Method {
+		case "initialize":
+			mu.Lock()
+			initCount++
+			sid := fmt.Sprintf("sess-%d", initCount)
+			if firstSession == "" {
+				firstSession = sid
+			}
+			mu.Unlock()
+			w.Header().Set("Mcp-Session-Id", sid)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}`, *req.ID)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			mu.Lock()
+			first := firstSession
+			mu.Unlock()
+			if r.Header.Get("Mcp-Session-Id") == first {
+				// the session the client first established is now gone
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				io.WriteString(w, `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Session not found"}}`)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"forecast: sunny"}]}}`, *req.ID)
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+
+	c := mcp.NewHTTPClient(srv.URL, nil)
+	ctx := context.Background()
+	if err := c.Initialize(ctx); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	// The first tools/call rides the now-dead session → 404; the transport must
+	// re-initialize and retry rather than return the error to the model.
+	res, err := c.CallTool(ctx, "get_forecast", map[string]any{"location": "Quito"})
+	if err != nil {
+		t.Fatalf("CallTool should recover from a dropped session, got: %v", err)
+	}
+	if res.Text() != "forecast: sunny" {
+		t.Errorf("result = %q, want %q", res.Text(), "forecast: sunny")
+	}
+	mu.Lock()
+	got := initCount
+	mu.Unlock()
+	if got != 2 {
+		t.Errorf("initialize called %d times, want 2 (initial handshake + re-init after the 404)", got)
+	}
+}
+
+// A 404 that is NOT a session problem (a wrong URL, a gone endpoint) must surface
+// as an error, not trigger a pointless re-initialize + retry — a bare 404 would
+// otherwise mask a config mistake.
+func TestHTTPNonSessionNotFoundSurfaces(t *testing.T) {
+	var (
+		mu        sync.Mutex
+		initCount int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		switch req.Method {
+		case "initialize":
+			mu.Lock()
+			initCount++
+			mu.Unlock()
+			w.Header().Set("Mcp-Session-Id", "sess-1")
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}`, *req.ID)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, "404 page not found") // no mention of a session
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+
+	c := mcp.NewHTTPClient(srv.URL, nil)
+	ctx := context.Background()
+	if err := c.Initialize(ctx); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	_, err := c.CallTool(ctx, "get_forecast", map[string]any{})
+	if err == nil {
+		t.Fatal("a non-session 404 should surface as an error, not be retried away")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error = %v, want it to mention the 404", err)
+	}
+	mu.Lock()
+	got := initCount
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("initialize called %d times, want 1 (no spurious re-init on a non-session 404)", got)
 	}
 }

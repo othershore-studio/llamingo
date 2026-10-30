@@ -29,10 +29,11 @@ type httpTransport struct {
 	headers map[string]string
 	client  *http.Client
 
-	mu        sync.Mutex
-	next      int
-	sessionID string // handed back on initialize, sent on every later request
-	protocol  string // negotiated protocol version, sent after initialize
+	mu         sync.Mutex
+	next       int
+	sessionID  string // handed back on initialize, sent on every later request
+	protocol   string // negotiated protocol version, sent after initialize
+	initParams any    // the initialize params, kept so a dropped session can be re-established
 }
 
 func newHTTPTransport(url string, headers map[string]string) *httpTransport {
@@ -49,9 +50,21 @@ func NewHTTPClient(url string, headers map[string]string) *Client {
 func (t *httpTransport) Close() error { return nil }
 
 func (t *httpTransport) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if method == "initialize" {
+		// Remember the handshake so a later-expired session can be re-established.
+		t.mu.Lock()
+		t.initParams = params
+		t.mu.Unlock()
+	}
+	// A non-initialize call may retry once, after re-establishing a dropped session.
+	return t.callWithRetry(ctx, method, params, method != "initialize")
+}
+
+func (t *httpTransport) callWithRetry(ctx context.Context, method string, params any, canRetry bool) (json.RawMessage, error) {
 	t.mu.Lock()
 	t.next++
 	id := t.next
+	hadSession := t.sessionID != ""
 	t.mu.Unlock()
 
 	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params})
@@ -68,6 +81,22 @@ func (t *httpTransport) call(ctx context.Context, method string, params any) (js
 		t.mu.Lock()
 		t.sessionID = sid
 		t.mu.Unlock()
+	}
+	// A 404 whose body names a session problem ("Session not found", an unknown
+	// Mcp-Session-Id) means the server dropped our session — it expired, or the
+	// server restarted. Per the MCP Streamable HTTP spec, start a new session:
+	// re-run the handshake and retry once. We gate on the session signal, not the
+	// bare 404, so a wrong URL or a gone endpoint surfaces as an error instead of
+	// a pointless re-init + retry (a 404 otherwise hides auth/URL mistakes).
+	if resp.StatusCode == http.StatusNotFound && canRetry && hadSession {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		if isSessionError(msg) {
+			if err := t.reinitialize(ctx); err != nil {
+				return nil, fmt.Errorf("mcp: %s: session expired and re-initialize failed: %w", method, err)
+			}
+			return t.callWithRetry(ctx, method, params, false)
+		}
+		return nil, fmt.Errorf("mcp: %s: http 404: %s", method, strings.TrimSpace(string(msg)))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
@@ -87,6 +116,31 @@ func (t *httpTransport) call(ctx context.Context, method string, params any) (js
 		t.captureProtocol(result)
 	}
 	return result, nil
+}
+
+// reinitialize re-runs the MCP handshake after the server dropped our session,
+// so a retried request starts a fresh one. It clears the dead session (and stale
+// protocol) first, so the initialize POST carries no stale Mcp-Session-Id.
+func (t *httpTransport) reinitialize(ctx context.Context) error {
+	t.mu.Lock()
+	t.sessionID, t.protocol = "", ""
+	params := t.initParams
+	t.mu.Unlock()
+	if params == nil {
+		return fmt.Errorf("no initialize params captured")
+	}
+	if _, err := t.callWithRetry(ctx, "initialize", params, false); err != nil {
+		return err
+	}
+	return t.notify("notifications/initialized", nil)
+}
+
+// isSessionError reports whether a 404 body indicates an expired or unknown MCP
+// session rather than, say, a wrong URL. The Streamable HTTP session signal
+// names the session ("Session not found", an unknown Mcp-Session-Id), so a body
+// mentioning "session" is the retry trigger; a plain 404 page is not.
+func isSessionError(body []byte) bool {
+	return bytes.Contains(bytes.ToLower(body), []byte("session"))
 }
 
 func (t *httpTransport) notify(method string, params any) error {

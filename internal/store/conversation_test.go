@@ -265,6 +265,53 @@ func TestAppendAssistantWithReasoning(t *testing.T) {
 	}
 }
 
+// A tool-use entry records the trail for display and round-trips, but Project
+// excludes it — like a reasoning trace, it never re-enters the model's prompt.
+func TestToolUseIsDisplayOnly(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.NewChat("Tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(c.ID, "user", "draw a cat"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendReasoning(c.ID, "I'll call generate_image."); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendToolUse(c.ID, "generate_image", `{"prompt":"a rainy day"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(c.ID, "assistant", "Here's your cat!"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.LoadConversation(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("loaded %d entries, want 4 (user, reasoning, toolcall, assistant): %+v", len(got), got)
+	}
+	if got[2].Kind != KindToolCall || got[2].Name != "generate_image" || got[2].Content != `{"prompt":"a rainy day"}` {
+		t.Errorf("tool-use entry = %+v, want toolcall generate_image with args", got[2])
+	}
+
+	// Project drops the whole trail (reasoning + tool use), keeping only messages.
+	proj := Project(got)
+	if len(proj) != 2 {
+		t.Fatalf("projection = %+v, want [user, assistant]", proj)
+	}
+	for _, e := range proj {
+		if e.Kind == KindToolCall || e.Kind == KindReasoning {
+			t.Error("trail leaked into the projection sent to the model")
+		}
+	}
+}
+
 // An assistant turn without a trace stores just the answer — no empty reasoning entry.
 func TestAppendAssistantNoReasoning(t *testing.T) {
 	s, err := Open(t.TempDir())
