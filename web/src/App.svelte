@@ -53,6 +53,7 @@
   let settingsUrl = $state('') // editable llama-server URL
   let settingsToken = $state('') // editable bearer token
   let settingsLocation = $state('') // editable user location (for place-aware tools)
+  let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -230,6 +231,7 @@
     settingsUrl = s.url ?? ''
     settingsToken = s.token ?? ''
     settingsLocation = s.location ?? ''
+    settingsForgeUrl = s.forgeUrl ?? ''
     settingsOpen = true
   }
   async function saveSettings() {
@@ -238,7 +240,7 @@
     await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim() }),
+      body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim() }),
     })
     settingsOpen = false
     checkServer() // re-poll so the status reflects the new connection now
@@ -906,6 +908,7 @@
           <span>Settings</span>
           <button class="x" onclick={() => (settingsOpen = false)}>✕</button>
         </div>
+        <div class="group-head">Connection</div>
         <label class="setting">
           <span>llama-server URL</span>
           <input
@@ -919,6 +922,19 @@
           <span>Bearer token <span class="muted">(optional, for an auth proxy)</span></span>
           <input class="field" type="password" bind:value={settingsToken} placeholder="leave blank for none" />
         </label>
+
+        <div class="group-head">Image generation</div>
+        <label class="setting">
+          <span>Forge Neo URL <span class="muted">(optional; blank disables image generation)</span></span>
+          <input
+            class="field"
+            bind:value={settingsForgeUrl}
+            placeholder="https://forge.example.com"
+            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
+          />
+        </label>
+
+        <div class="group-head">Location</div>
         <label class="setting">
           <span>Location <span class="muted">(optional, for place-aware tools — set how broad you like)</span></span>
           <input
@@ -1551,6 +1567,14 @@
   }
   .setting > span {
     color: var(--muted);
+  }
+  .group-head {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin-top: 4px;
   }
   .modal-backdrop {
     position: fixed;

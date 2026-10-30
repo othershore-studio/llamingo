@@ -175,8 +175,8 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /api/settings — the current llama-server connection (url + token) and the
-// user's saved location.
+// GET /api/settings — the llama-server connection (url + token), the user's
+// saved location, and the Forge image-server URL.
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	rc, ok := s.be.(backend.Reconfigurable)
 	if !ok {
@@ -184,11 +184,11 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, _ := s.st.Config()
-	writeJSON(w, map[string]string{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location})
+	writeJSON(w, map[string]string{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location, "forgeUrl": cfg.ForgeURL})
 }
 
-// PUT /api/settings {url, token, location} — persist and hot-swap the connection
-// (the next /props poll reconnects on its own) and save the user's location.
+// PUT /api/settings {url, token, location, forgeUrl} — persist and hot-swap the
+// connection (the next /props poll reconnects) and save the location and Forge URL.
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	rc, ok := s.be.(backend.Reconfigurable)
 	if !ok {
@@ -199,6 +199,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		URL      string `json:"url"`
 		Token    string `json:"token"`
 		Location string `json:"location"`
+		ForgeURL string `json:"forgeUrl"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -209,7 +210,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "url is required", http.StatusBadRequest)
 		return
 	}
-	if err := s.st.SetConfig(store.Config{URL: url, Token: body.Token, Location: strings.TrimSpace(body.Location)}); err != nil {
+	if err := s.st.SetConfig(store.Config{URL: url, Token: body.Token, Location: strings.TrimSpace(body.Location), ForgeURL: strings.TrimSpace(body.ForgeURL)}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
