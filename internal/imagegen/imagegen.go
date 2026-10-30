@@ -20,16 +20,27 @@ import (
 	"github.com/othershore-studio/llamingo/internal/permission"
 )
 
-// Options are structured generation parameters the model may set.
+// Options is the full generation recipe for one image: the prompt's companions
+// (negative, seed) plus the per-model settings (checkpoint, steps, CFG, sampler,
+// scheduler, modules, resolution). The model never sets the recipe — it is filled
+// from the selected model's saved config — so steps/CFG are never guessed.
 type Options struct {
-	Width, Height, Steps, Seed int
-	Negative                   string
+	Model              string   // checkpoint name → override_settings.sd_model_checkpoint
+	Steps              int      //
+	CFG                float64  // → cfg_scale
+	Sampler, Scheduler string   // Forge's exact names, e.g. "Euler" / "simple"
+	Modules            []string // DiT modules → override_settings.forge_additional_modules
+	Width, Height      int      //
+	Seed               int      // <= 0 means random
+	Negative           string   //
 }
 
-// Image is a generated image.
+// Image is a generated image and the datum worth keeping with it — the seed
+// Forge actually used, so the same image can be reproduced.
 type Image struct {
 	Data []byte
 	MIME string // e.g. "image/png"
+	Seed int64  // the actual seed (from Forge's info), for reuse
 }
 
 // Generator produces an image from a prompt. forge/ComfyUI implementations sit
