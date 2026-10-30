@@ -5,6 +5,7 @@
 package httpapi
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
@@ -101,5 +102,33 @@ func TestRecoverToolImages(t *testing.T) {
 	}
 	if got := recoverToolImages("It's 4:22.", noImg); got != "It's 4:22." {
 		t.Errorf("no-image turn altered: %q", got)
+	}
+}
+
+func TestSurfaceImageDenial(t *testing.T) {
+	deniedTurn := []backend.Message{
+		{Role: backend.RoleAssistant, ToolCalls: []backend.ToolCall{{ID: "1"}}},
+		{Role: backend.RoleTool, Content: "Not generated: you declined to create this image. Do not tell the user an image was made."},
+		{Role: backend.RoleAssistant, Content: ""},
+	}
+
+	// An empty answer after a denial gets a clear, plain-language notice.
+	if got := surfaceImageDenial("", deniedTurn); !strings.Contains(got, "No image was generated") {
+		t.Errorf("denied + empty answer = %q, want a denial notice", got)
+	}
+	// An answer that already explains the decline is left alone (no doubling up).
+	explained := "Sorry, I couldn't create that — the request was declined."
+	if got := surfaceImageDenial(explained, deniedTurn); got != explained {
+		t.Errorf("already-explained answer altered: %q", got)
+	}
+	// If an image did come through, there is nothing to surface.
+	withImg := "Here you go! ![generated image](attachments/x.png)"
+	if got := surfaceImageDenial(withImg, deniedTurn); got != withImg {
+		t.Errorf("answer with an image altered: %q", got)
+	}
+	// No denial this turn → untouched.
+	okTurn := []backend.Message{{Role: backend.RoleTool, Content: "the time is 5pm"}}
+	if got := surfaceImageDenial("", okTurn); got != "" {
+		t.Errorf("no-denial turn altered: %q", got)
 	}
 }

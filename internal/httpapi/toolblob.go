@@ -46,6 +46,34 @@ func stripLeadingToolBlob(content string) string {
 	return rest
 }
 
+// surfaceImageDenial makes a declined (or timed-out) image request legible. When
+// the gate denies generate_image, its tool result tells the model not to claim an
+// image was made, so a small model often falls silent (or re-narrates) and the
+// reply ends up empty. If the answer carries no image but a generate_image was
+// denied this turn, append a plain note so the user isn't left with a blank reply.
+func surfaceImageDenial(answer string, msgs []backend.Message) string {
+	if imageMarkdownRe.MatchString(answer) {
+		return answer // an image came through
+	}
+	denied := false
+	for _, m := range msgs {
+		if m.Role == backend.RoleTool && strings.HasPrefix(strings.TrimSpace(m.Content), "Not generated:") {
+			denied = true
+		}
+	}
+	if !denied {
+		return answer
+	}
+	if lower := strings.ToLower(answer); strings.Contains(lower, "declin") || strings.Contains(lower, "not generat") {
+		return answer // the model already explained it
+	}
+	const notice = "_No image was generated — the request was declined, or the approval prompt timed out._"
+	if strings.TrimSpace(answer) == "" {
+		return notice
+	}
+	return answer + "\n\n" + notice
+}
+
 var imageMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\([^)\s]+\)`)
 
 // firstImageMarkdown finds an ![alt](url) image in s, unescaping a JSON-escaped
