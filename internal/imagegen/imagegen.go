@@ -157,7 +157,7 @@ func (t *Tool) generate(ctx context.Context, arguments string) (string, error) {
 		return "", err
 	}
 	if !allow {
-		return "Not generated: you declined to create this image. Do not tell the user an image was made.", nil
+		return "Not generated: the user declined the approval prompt for this image. Tell them it was not created because they declined, and that they can ask again to retry. Do not claim an image was made, and do not say you cannot generate images — you can; they simply declined this one.", nil
 	}
 
 	// Wait our turn: one generation at a time on the shared GPU (see genSem).

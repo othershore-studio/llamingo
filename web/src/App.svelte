@@ -229,14 +229,12 @@
       activeId = id
       messages = streamMessages
       convSummaries = []
-      pending = null
       return
     }
     activeId = id
     error = null
     budget = null
     report = null
-    pending = null
     const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
     // Pair each persisted reasoning entry with the assistant answer that follows it,
     // and anchor each compaction summary where it ran: after the message it followed
@@ -521,8 +519,9 @@
         if (payload.summary) convSummaries = [...convSummaries, { content: payload.summary, time: new Date().toISOString(), afterIndex: messages.length - 1 }]
       }
     } else if (event === 'permission') {
-      if (onScreen) pending = payload
+      pending = payload // always surface: a blocking approval, shown whichever chat is active (answered by id)
     } else if (event === 'done') {
+      pending = null // the turn resolved — dismiss any consent prompt that went unanswered
       if (onScreen) {
         budget = payload.budget
         speed = payload.timings ?? null
@@ -530,7 +529,8 @@
       }
       reconcileFinal(streamingChatId, live)
     } else if (event === 'error') {
-      if (onScreen) error = payload.error
+      pending = null
+      error = payload.error // surface globally, so a backgrounded turn's failure isn't silent
     }
   }
 

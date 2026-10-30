@@ -419,6 +419,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// persist any linked image and rewrite it to a local ref. See toolblob.go and
 	// attachment.go.
 	answer := recoverToolImages(stripLeadingToolBlob(finalAssistant(out)), out)
+	answer = surfaceImageDenial(answer, out) // a declined/timed-out image isn't left as a blank reply
 	answer = s.imageAttachments(r.Context(), body.ID, answer)
 	// Persist the turn's trail so it survives a reopen: the thinking, the tools it
 	// used, then the answer. The trail entries are display-only (Project drops them,
