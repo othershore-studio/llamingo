@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/othershore-studio/llamingo/internal/filetools"
 	"github.com/othershore-studio/llamingo/internal/localtools"
 	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/memtool"
@@ -176,12 +177,19 @@ func (s *Server) gateFor(convID string) *permission.Gate {
 }
 
 // registryFor builds the tool registry offered for a conversation's turn: the
-// native write_memory and local ambient tools, combined with the user's global
-// MCP servers. write_memory is mediated by that conversation's gate; the local
-// tools are read-only. Image generation and project tools join here as they land.
+// native write_memory and local ambient tools and the user's global MCP servers,
+// plus the project file tools when the conversation is a project session.
+// write_memory is gated; the local and file tools are read-only. Image
+// generation joins here as it lands.
 func (s *Server) registryFor(convID string) mcp.Registry {
 	gate := s.gateFor(convID)
-	return mcp.Combine(s.globalServers(), memtool.NewTool(s.st, gate), localtools.NewTool(s.locationSetting))
+	regs := []mcp.Registry{s.globalServers(), memtool.NewTool(s.st, gate), localtools.NewTool(s.locationSetting)}
+	// The project file tools are confined to the session's project folder, so
+	// they are offered only in a project session (a free chat has no root).
+	if root, ok, err := s.st.ProjectRoot(convID); err == nil && ok && root != "" {
+		regs = append(regs, filetools.NewTool(root))
+	}
+	return mcp.Combine(regs...)
 }
 
 // locationSetting returns the user's configured location ("" if unset or on a
