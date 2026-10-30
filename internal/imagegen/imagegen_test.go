@@ -7,7 +7,10 @@ package imagegen_test
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/othershore-studio/llamingo/internal/imagegen"
 	"github.com/othershore-studio/llamingo/internal/permission"
@@ -110,6 +113,57 @@ func TestUnknownModelAndListing(t *testing.T) {
 	lst, _ := tool.Call(context.Background(), imagegen.ToolListModels, `{}`)
 	if !strings.Contains(lst, "z_image_turbo") || !strings.Contains(lst, "natural") {
 		t.Errorf("list result = %q", lst)
+	}
+}
+
+// concurrencyGen records how many generations overlap, to prove serialization.
+type concurrencyGen struct {
+	active, max, calls int32
+}
+
+func (g *concurrencyGen) Generate(ctx context.Context, prompt string, opts imagegen.Options) (imagegen.Image, error) {
+	atomic.AddInt32(&g.calls, 1)
+	n := atomic.AddInt32(&g.active, 1)
+	for { // track the high-water mark of concurrent calls
+		m := atomic.LoadInt32(&g.max)
+		if n <= m || atomic.CompareAndSwapInt32(&g.max, m, n) {
+			break
+		}
+	}
+	time.Sleep(15 * time.Millisecond) // widen the window so an overlap would show
+	atomic.AddInt32(&g.active, -1)
+	return imagegen.Image{Data: []byte("PNG"), MIME: "image/png", Seed: 1}, nil
+}
+
+// nopSink is a stateless AttachmentSink (no fields to race under concurrency).
+type nopSink struct{}
+
+func (nopSink) Save(ctx context.Context, name string, data []byte) (string, error) {
+	return "attachments/" + name, nil
+}
+
+// Image generation is serialized: on a single shared GPU, two requests must never
+// run at once (they would contend and can OOM the chat model mid-turn).
+func TestGenerationIsSerialized(t *testing.T) {
+	gen := &concurrencyGen{}
+	tool := imagegen.NewTool(gen, nopSink{}, gate(true), cfg1())
+
+	const n = 5
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = tool.Call(context.Background(), imagegen.ToolName, `{"prompt":"x"}`)
+		}()
+	}
+	wg.Wait()
+
+	if gen.calls != n {
+		t.Fatalf("generator ran %d times, want %d", gen.calls, n)
+	}
+	if gen.max != 1 {
+		t.Errorf("max concurrent generations = %d, want 1 (serialized)", gen.max)
 	}
 }
 

@@ -65,6 +65,13 @@ const (
 	ToolListModels = "list_image_models"
 )
 
+// genSem serializes image generation to one at a time across the whole app. On a
+// single shared GPU, concurrent generations only contend — and a heavy model load
+// can OOM the chat model mid-turn — so a second request waits its turn rather than
+// racing. There is no setting: running two at once on one GPU never wins; a bigger
+// card or a second backend is a future concern (Taita's, eventually).
+var genSem = make(chan struct{}, 1)
+
 // Tool is the built-in image-generation tool. Its Tools/Call methods satisfy the
 // MCP loop's Registry, so it is offered alongside MCP tools. It is wired only
 // when a Forge URL and at least one model are configured.
@@ -153,12 +160,21 @@ func (t *Tool) generate(ctx context.Context, arguments string) (string, error) {
 		return "Not generated: you declined to create this image. Do not tell the user an image was made.", nil
 	}
 
+	// Wait our turn: one generation at a time on the shared GPU (see genSem).
+	// Acquired after the gate, so the consent prompt never waits behind the queue;
+	// ctx-aware, so an aborted turn doesn't hold the line.
+	select {
+	case genSem <- struct{}{}:
+	case <-ctx.Done():
+		return "Image generation was canceled before it started.", nil
+	}
 	start := time.Now()
 	img, err := t.gen.Generate(ctx, a.Prompt, Options{
 		Model: mc.Name, Modules: mc.Modules,
 		Steps: r.Steps, CFG: r.CFG, Sampler: r.Sampler, Scheduler: r.Scheduler,
 		Width: r.Width, Height: r.Height, Seed: a.Seed, Negative: a.Negative,
 	})
+	<-genSem // release the queue; saving/encoding below is not GPU-bound
 	if err != nil {
 		return "Image generation failed: " + err.Error(), nil
 	}
