@@ -12,6 +12,13 @@
   const apiOrigin = () => (window.runtime ? 'http://127.0.0.1:8766' : '')
   const apiFetch = (path, opts) => fetch(apiOrigin() + path, opts)
 
+  // Playful "working" words shown while a turn runs — llama / Andean / Ecuador
+  // themed. Edit this list freely (add your Ecuadorian picks); one is chosen per
+  // turn and rotates every few seconds. SPINNER is the braille animation frames.
+  const WORKING_WORDS = ['Rumiando', 'Pensando', 'Trotando', 'Pastando', 'Tejiendo', 'Grazing', 'Trekking', 'Humming', 'Pronking', 'Soaring']
+  const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  const pickWord = () => WORKING_WORDS[Math.floor(Math.random() * WORKING_WORDS.length)]
+
   // Rewrite local attachment refs (attachments/<name>, as written in the log) to
   // the serve route for the open conversation, so persisted and generated images
   // load in the desktop app and the browser alike. Remote URLs pass through.
@@ -65,6 +72,22 @@
   let messages = $state([]) // { role, content }
   let input = $state('')
   let streaming = $state(false)
+  // "Working" indicator: a braille spinner + a themed word while a turn runs.
+  let spinnerFrame = $state(0)
+  let workingWord = $state(WORKING_WORDS[0])
+  $effect(() => {
+    if (!streaming) {
+      spinnerFrame = 0
+      return
+    }
+    workingWord = pickWord()
+    let i = 0, t = 0
+    const id = setInterval(() => {
+      spinnerFrame = i = (i + 1) % SPINNER.length
+      if (++t % 375 === 0) workingWord = pickWord() // rotate the word ~every 30s
+    }, 80)
+    return () => clearInterval(id)
+  })
   let budget = $state(null) // { used, nCtx, level }
   let speed = $state(null) // last turn's tokens/sec: { promptPerSecond, predictPerSecond, predictN }
   let error = $state(null)
@@ -855,8 +878,8 @@
             {/if}
             {#if m.content !== ''}
               <div class="msg assistant prose" use:copyableCode={m.content}>{@html renderContent(m.content)}</div>
-            {:else if streaming && i === messages.length - 1 && !m.reasoning}
-              <div class="msg assistant">…</div>
+            {:else if streaming && i === messages.length - 1}
+              <div class="msg assistant" style="opacity:.6">{SPINNER[spinnerFrame]} {workingWord}…</div>
             {/if}
           {/if}
           {#if m.time && (m.role === 'user' || m.content !== '')}
