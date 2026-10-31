@@ -37,26 +37,45 @@ func (s *Server) forgeBaseURL(typed string) string {
 }
 
 // imagegenModelView is one model as the Settings UI needs it: its name, whether it
-// may be auto-selected (the effective AutoPickable), whether it is the default,
-// and its prompt style / note for display.
+// may be auto-selected (the effective AutoPickable), whether it is the default, its
+// prompt style / note for display, and its effective recipe (the name-inferred
+// defaults with any overrides applied) so the editor can pre-fill the fields.
 type imagegenModelView struct {
-	Name        string `json:"name"`
-	AutoPick    bool   `json:"autoPick"`
-	Default     bool   `json:"default"`
-	PromptStyle string `json:"promptStyle"`
-	Note        string `json:"note"`
+	Name        string   `json:"name"`
+	AutoPick    bool     `json:"autoPick"`
+	Default     bool     `json:"default"`
+	PromptStyle string   `json:"promptStyle"`
+	Note        string   `json:"note"`
+	Steps       int      `json:"steps"`
+	CFG         float64  `json:"cfg"`
+	Sampler     string   `json:"sampler"`
+	Scheduler   string   `json:"scheduler"`
+	Width       int      `json:"width"`
+	Height      int      `json:"height"`
+	Modules     []string `json:"modules"`
 }
 
 func imagegenView(cfg imagegen.Config) map[string]any {
 	models := make([]imagegenModelView, 0, len(cfg.Models))
 	for _, m := range cfg.Models {
 		r := m.Recipe()
+		mods := m.Modules
+		if mods == nil {
+			mods = []string{}
+		}
 		models = append(models, imagegenModelView{
 			Name:        m.Name,
 			AutoPick:    m.AutoPickable(),
 			Default:     strings.EqualFold(m.Name, cfg.Default),
 			PromptStyle: r.PromptStyle,
 			Note:        r.Note,
+			Steps:       r.Steps,
+			CFG:         r.CFG,
+			Sampler:     r.Sampler,
+			Scheduler:   r.Scheduler,
+			Width:       r.Width,
+			Height:      r.Height,
+			Modules:     mods,
 		})
 	}
 	return map[string]any{"default": cfg.Default, "models": models}
@@ -107,16 +126,25 @@ func (s *Server) handleFetchImagegen(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, imagegenView(merged))
 }
 
-// PUT /api/imagegen {default, models:[{name, autoPick}]} — persist the user's
-// image-model choices from the Settings UI: which models may auto-select, and the
-// default. Recipe overrides already in the config are preserved; the default is
-// kept safe (see imagegen.SafeDefault).
+// PUT /api/imagegen {default, models:[{name, autoPick, steps, cfg, sampler,
+// scheduler, width, height, modules}]} — persist the user's image-model choices
+// from the Settings UI: which models may auto-select, the default, and each
+// model's recipe. Recipe fields are stored as overrides only where they differ
+// from the name-inferred default (see ModelConfig.WithRecipe); the default is kept
+// safe (see imagegen.SafeDefault).
 func (s *Server) handlePutImagegen(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Default string `json:"default"`
 		Models  []struct {
-			Name     string `json:"name"`
-			AutoPick bool   `json:"autoPick"`
+			Name      string   `json:"name"`
+			AutoPick  bool     `json:"autoPick"`
+			Steps     int      `json:"steps"`
+			CFG       float64  `json:"cfg"`
+			Sampler   string   `json:"sampler"`
+			Scheduler string   `json:"scheduler"`
+			Width     int      `json:"width"`
+			Height    int      `json:"height"`
+			Modules   []string `json:"modules"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -130,10 +158,14 @@ func (s *Server) handlePutImagegen(w http.ResponseWriter, r *http.Request) {
 	}
 	var cfg imagegen.Config
 	for _, bm := range body.Models {
-		m := prevByName[strings.ToLower(bm.Name)] // keep recipe overrides; zero value if new
+		m := prevByName[strings.ToLower(bm.Name)] // preserve the note; zero value if new
 		m.Name = bm.Name
 		ap := bm.AutoPick
 		m.AutoPick = &ap
+		m = m.WithRecipe(imagegen.Recipe{
+			Steps: bm.Steps, CFG: bm.CFG, Sampler: bm.Sampler, Scheduler: bm.Scheduler,
+			Width: bm.Width, Height: bm.Height,
+		}, bm.Modules)
 		cfg.Models = append(cfg.Models, m)
 	}
 	cfg.Default = imagegen.SafeDefault(cfg, body.Default)

@@ -39,7 +39,7 @@ func TestMergePreservesUserChoices(t *testing.T) {
 		Default: "z_image_turbo",
 		Models: []imagegen.ModelConfig{
 			{Name: "z_image_turbo", AutoPick: &yes, Steps: 12}, // opted in + a recipe override
-			{Name: "OldModel"},                                 // no longer in Forge
+			{Name: "OldModel"}, // no longer in Forge
 		},
 	}
 	got := prev.Merge([]string{"z_image_turbo", "Juggernaut-XI"})
@@ -87,5 +87,33 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.Default != "A" || len(got.Models) != 2 || got.Models[0].AutoPick == nil || !*got.Models[0].AutoPick {
 		t.Errorf("round-trip = %+v", got)
+	}
+}
+
+// WithRecipe stores only the fields that differ from the name-inferred default, so
+// a model left at its defaults keeps inheriting them; the effective recipe still
+// reflects the change.
+func TestWithRecipeStoresOnlyDeltas(t *testing.T) {
+	m := imagegen.ModelConfig{Name: "Juggernaut-XI"}
+	def := imagegen.DefaultRecipe(m.Name) // 28 steps / CFG 5 / DPM++ 2M / karras / 1024²
+
+	got := m.WithRecipe(imagegen.Recipe{
+		Steps: def.Steps, CFG: def.CFG + 1, Sampler: def.Sampler, Scheduler: def.Scheduler,
+		Width: def.Width, Height: def.Height,
+	}, []string{"mod_a"})
+
+	if got.CFG != def.CFG+1 {
+		t.Errorf("CFG override = %v, want %v", got.CFG, def.CFG+1)
+	}
+	// Fields left at the default are not stored (0 / "") — they stay inferred.
+	if got.Steps != 0 || got.Sampler != "" || got.Scheduler != "" || got.Width != 0 || got.Height != 0 {
+		t.Errorf("unchanged fields should not be stored as overrides: %+v", got)
+	}
+	if len(got.Modules) != 1 || got.Modules[0] != "mod_a" {
+		t.Errorf("modules = %v, want [mod_a]", got.Modules)
+	}
+	// The effective recipe = the override plus the inferred rest.
+	if eff := got.Recipe(); eff.CFG != def.CFG+1 || eff.Steps != def.Steps || eff.Sampler != def.Sampler {
+		t.Errorf("effective recipe = %+v, want CFG overridden and the rest inferred", eff)
 	}
 }

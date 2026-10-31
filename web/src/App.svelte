@@ -358,10 +358,15 @@
   // Image models — the Settings "Image generation" section. The list is seeded
   // from Forge (safe-by-default: heavy DiTs stay opt-in) and the user toggles
   // which may auto-select and which is the default.
+  // Normalize models from the API for editing: a string form of modules (for the
+  // text field) and a collapsed flag for the per-model recipe editor.
+  function prepModels(arr) {
+    return (arr ?? []).map((m) => ({ ...m, _modules: (m.modules || []).join(', '), _open: false }))
+  }
   async function loadImageModels() {
     try {
       const d = await apiFetch('/api/imagegen').then((r) => r.json())
-      imageModels = d.models ?? []
+      imageModels = prepModels(d.models)
       imageDefault = d.default ?? ''
     } catch {
       imageModels = []
@@ -384,7 +389,7 @@
       })
       if (!r.ok) throw new Error((await r.text()).trim() || `HTTP ${r.status}`)
       const d = await r.json()
-      imageModels = d.models ?? []
+      imageModels = prepModels(d.models)
       imageDefault = d.default ?? ''
     } catch (e) {
       imageError = String(e?.message || e)
@@ -399,7 +404,17 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         default: imageDefault,
-        models: imageModels.map((m) => ({ name: m.name, autoPick: !!m.autoPick })),
+        models: imageModels.map((m) => ({
+          name: m.name,
+          autoPick: !!m.autoPick,
+          steps: Number(m.steps) || 0,
+          cfg: Number(m.cfg) || 0,
+          sampler: m.sampler || '',
+          scheduler: m.scheduler || '',
+          width: Number(m.width) || 0,
+          height: Number(m.height) || 0,
+          modules: (m._modules || '').split(',').map((x) => x.trim()).filter(Boolean),
+        })),
       }),
     })
   }
@@ -1194,31 +1209,51 @@
               <ul class="imgmodels-list">
                 {#each imageModels as m (m.name)}
                   <li class="imgmodel" class:dim={!m.autoPick}>
-                    <span class="imgmodel-name" title={m.note || ''}>{m.name}</span>
-                    <label class="imgmodel-flag" title="May be selected automatically (safe on a shared GPU)">
-                      <input
-                        type="checkbox"
-                        checked={m.autoPick}
-                        onchange={(e) => {
-                          m.autoPick = e.currentTarget.checked
-                          if (!m.autoPick && imageDefault === m.name) imageDefault = ''
-                        }}
-                      />
-                      auto
-                    </label>
-                    <label class="imgmodel-flag" title={m.autoPick ? 'Make this the default model' : 'Enable auto first'}>
-                      <input
-                        type="radio"
-                        name="imgdefault"
-                        checked={imageDefault === m.name}
-                        disabled={!m.autoPick}
-                        onchange={() => (imageDefault = m.name)}
-                      />
-                      default
-                    </label>
+                    <div class="imgmodel-main">
+                      <button class="imgmodel-exp" title="Edit recipe (CFG, steps, …)" onclick={() => (m._open = !m._open)}>{m._open ? '▾' : '▸'}</button>
+                      <span class="imgmodel-name" title={m.note || ''}>{m.name}</span>
+                      <label class="imgmodel-flag" title="May be selected automatically (safe on a shared GPU)">
+                        <input
+                          type="checkbox"
+                          checked={m.autoPick}
+                          onchange={(e) => {
+                            m.autoPick = e.currentTarget.checked
+                            if (!m.autoPick && imageDefault === m.name) imageDefault = ''
+                          }}
+                        />
+                        auto
+                      </label>
+                      <label class="imgmodel-flag" title={m.autoPick ? 'Make this the default model' : 'Enable auto first'}>
+                        <input
+                          type="radio"
+                          name="imgdefault"
+                          checked={imageDefault === m.name}
+                          disabled={!m.autoPick}
+                          onchange={() => (imageDefault = m.name)}
+                        />
+                        default
+                      </label>
+                    </div>
+                    {#if m._open}
+                      <div class="imgmodel-recipe">
+                        <label>Steps<input type="number" min="1" bind:value={m.steps} /></label>
+                        <label>CFG<input type="number" min="0" step="0.5" bind:value={m.cfg} /></label>
+                        <label>Sampler<input list="imgsamplers" bind:value={m.sampler} /></label>
+                        <label>Scheduler<input list="imgschedulers" bind:value={m.scheduler} /></label>
+                        <label>Width<input type="number" min="64" step="64" bind:value={m.width} /></label>
+                        <label>Height<input type="number" min="64" step="64" bind:value={m.height} /></label>
+                        <label class="wide">Modules <span class="muted">(comma-separated — for DiTs like z_image / flux)</span><input bind:value={m._modules} placeholder="e.g. qwen3_4b, z_image_ae" /></label>
+                      </div>
+                    {/if}
                   </li>
                 {/each}
               </ul>
+              <datalist id="imgsamplers">
+                <option>Euler</option><option>Euler a</option><option>DPM++ 2M</option><option>DPM++ 2M SDE</option><option>DPM++ 3M SDE</option><option>DPM++ SDE</option><option>ER SDE</option><option>LMS</option><option>Heun</option><option>DDIM</option><option>UniPC</option>
+              </datalist>
+              <datalist id="imgschedulers">
+                <option>simple</option><option>karras</option><option>normal</option><option>exponential</option><option>beta</option><option>sgm_uniform</option>
+              </datalist>
             {:else if !imageFetching}
               <div class="imgmodels-hint muted">No models yet — Fetch from Forge to load the checkpoints it has.</div>
             {/if}
@@ -1938,10 +1973,15 @@
   }
   .imgmodel {
     display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 0;
+    border-top: 0.5px solid var(--border);
+  }
+  .imgmodel-main {
+    display: flex;
     align-items: center;
     gap: 10px;
-    padding: 5px 0;
-    border-top: 0.5px solid var(--border);
   }
   .imgmodel.dim .imgmodel-name {
     opacity: 0.55;
@@ -1967,6 +2007,42 @@
     width: auto;
     margin: 0;
     cursor: pointer;
+  }
+  .imgmodel-exp {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    padding: 0 2px;
+    flex-shrink: 0;
+  }
+  .imgmodel-recipe {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px 10px;
+    margin: 2px 0 4px 22px;
+  }
+  .imgmodel-recipe label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .imgmodel-recipe label.wide {
+    grid-column: 1 / -1;
+  }
+  .imgmodel-recipe input {
+    background: var(--paper);
+    color: var(--ink);
+    border: 0.5px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 6px;
+    font: inherit;
+    font-size: 12px;
+    width: 100%;
   }
   .toollist {
     border: 0.5px solid var(--border);
