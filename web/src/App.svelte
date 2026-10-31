@@ -1177,10 +1177,8 @@
           disabled={streaming}
         />
       </div>
-    </main>
-  </div>
 
-  <footer class="statusbar" class:narrow={narrow}>
+      <footer class="statusbar" class:narrow={narrow}>
     {#if narrow}
       <button class="statusbtn icon" onclick={toggleNav} aria-label="Chats" title="Chats">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
@@ -1218,7 +1216,9 @@
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="8" cy="13" r="1.5" /></svg>
       </button>
     {/if}
-  </footer>
+      </footer>
+    </main>
+  </div>
 
   {#if memoryOpen}
     <div class="modal-backdrop" onclick={() => (memoryOpen = false)}>
