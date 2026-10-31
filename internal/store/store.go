@@ -37,11 +37,12 @@ func Open(root string) (*Store, error) {
 // ConversationMeta is the per-conversation metadata persisted as meta.json next
 // to conversation.md.
 type ConversationMeta struct {
-	ID      string    `json:"id"`
-	Title   string    `json:"title"`
-	Model   string    `json:"model,omitempty"`
-	Created time.Time `json:"created"`
-	Updated time.Time `json:"updated"`
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Model         string    `json:"model,omitempty"`
+	Created       time.Time `json:"created"`
+	Updated       time.Time `json:"updated"`
+	DisabledTools []string  `json:"disabledTools,omitempty"` // tools curated off for this chat (per-chat; see registryFor)
 }
 
 // ProjectMeta is the per-project metadata persisted as folder/<dir>/meta.json.

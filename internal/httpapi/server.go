@@ -75,8 +75,8 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("GET /api/imagegen", s.handleGetImagegen)
 	s.mux.HandleFunc("PUT /api/imagegen", s.handlePutImagegen)
 	s.mux.HandleFunc("POST /api/imagegen/fetch", s.handleFetchImagegen)
-	s.mux.HandleFunc("GET /api/tools", s.handleGetTools)
-	s.mux.HandleFunc("PUT /api/tools", s.handlePutTools)
+	s.mux.HandleFunc("GET /api/conversations/{id}/tools", s.handleGetConversationTools)
+	s.mux.HandleFunc("PUT /api/conversations/{id}/tools", s.handlePutConversationTools)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	s.mux.HandleFunc("POST /api/permission/{id}", s.handlePermission)
 	return s
@@ -217,8 +217,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "url is required", http.StatusBadRequest)
 		return
 	}
-	// Read-modify-write so fields this form does not own (e.g. the curated-off
-	// tool set) survive a settings save.
+	// Read-modify-write so any fields this form does not own survive a settings save.
 	cfg, _ := s.st.Config()
 	cfg.URL = url
 	cfg.Token = body.Token
