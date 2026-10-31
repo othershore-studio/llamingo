@@ -38,8 +38,10 @@ type Server struct {
 	gates    map[string]*permission.Gate
 	gatesMu  sync.Mutex
 
-	// Global MCP servers are connected once (lazily) and reused across chats.
-	mcpOnce   sync.Once
+	// Global MCP servers are connected lazily and reused across chats; the registry
+	// is rebuilt in place when the MCP config changes, so edits apply without an
+	// app restart (see reloadGlobalServers).
+	mcpMu     sync.Mutex
 	mcpGlobal mcp.Registry
 }
 
@@ -77,6 +79,8 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("POST /api/imagegen/fetch", s.handleFetchImagegen)
 	s.mux.HandleFunc("GET /api/conversations/{id}/tools", s.handleGetConversationTools)
 	s.mux.HandleFunc("PUT /api/conversations/{id}/tools", s.handlePutConversationTools)
+	s.mux.HandleFunc("GET /api/mcp", s.handleGetMCP)
+	s.mux.HandleFunc("PUT /api/mcp", s.handlePutMCP)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	s.mux.HandleFunc("POST /api/permission/{id}", s.handlePermission)
 	return s

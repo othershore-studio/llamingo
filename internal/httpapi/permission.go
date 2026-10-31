@@ -255,28 +255,49 @@ func (s *Server) locationSetting() string {
 // prompt); a server that fails to start is logged and skipped rather than
 // breaking chat.
 func (s *Server) globalServers() mcp.Registry {
-	s.mcpOnce.Do(func() {
-		reg := mcp.NewRegistry(nil) // global = trusted, so the gate is unused here
-		servers, err := mcp.Load(globalMCPPath(s.st.Root()), "")
-		if err != nil {
-			log.Printf("mcp: load global config: %v", err)
-		}
-		for _, srv := range servers {
-			c, err := mcp.Connect(srv)
-			if err != nil {
-				log.Printf("mcp: connect %q: %v", srv.Name, err)
-				continue
-			}
-			if err := reg.Add(context.Background(), srv, c); err != nil {
-				log.Printf("mcp: add %q: %v", srv.Name, err)
-				_ = c.Close()
-				continue
-			}
-			log.Printf("mcp: connected global server %q", srv.Name)
-		}
-		s.mcpGlobal = reg
-	})
+	s.mcpMu.Lock()
+	defer s.mcpMu.Unlock()
+	if s.mcpGlobal == nil {
+		s.mcpGlobal = s.connectGlobalServers()
+	}
 	return s.mcpGlobal
+}
+
+// connectGlobalServers builds a registry of the user's global MCP servers, each
+// connected; a failure is logged and skipped, not fatal. Global servers are
+// user-authored and trusted, so the gate is unused here.
+func (s *Server) connectGlobalServers() *mcp.ServerRegistry {
+	reg := mcp.NewRegistry(nil)
+	servers, err := mcp.Load(globalMCPPath(s.st.Root()), "")
+	if err != nil {
+		log.Printf("mcp: load global config: %v", err)
+	}
+	for _, srv := range servers {
+		c, err := mcp.Connect(srv)
+		if err != nil {
+			log.Printf("mcp: connect %q: %v", srv.Name, err)
+			continue
+		}
+		if err := reg.Add(context.Background(), srv, c); err != nil {
+			log.Printf("mcp: add %q: %v", srv.Name, err)
+			_ = c.Close()
+			continue
+		}
+		log.Printf("mcp: connected global server %q", srv.Name)
+	}
+	return reg
+}
+
+// reloadGlobalServers rebuilds the global MCP registry from the current config —
+// closing the old connections and reconnecting — so a config edit (add / edit /
+// remove a server) applies on the next turn without an app restart.
+func (s *Server) reloadGlobalServers() {
+	s.mcpMu.Lock()
+	defer s.mcpMu.Unlock()
+	if old, ok := s.mcpGlobal.(*mcp.ServerRegistry); ok {
+		old.Close()
+	}
+	s.mcpGlobal = s.connectGlobalServers()
 }
 
 // globalMCPPath is the global MCP config in the store root — mcp.json, or a

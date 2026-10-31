@@ -115,3 +115,22 @@ func readConfig(path string) (map[string]ServerConfig, error) {
 	}
 	return f.MCPServers, nil
 }
+
+// LoadServers reads one mcp.json and returns its server map (nil if the file is
+// absent). The UI reads this to list and edit the configured servers.
+func LoadServers(path string) (map[string]ServerConfig, error) {
+	return readConfig(path)
+}
+
+// SaveServers writes the server map to path as mcp.json (the "mcpServers" object),
+// so a UI edit persists to the same file a user could hand-edit.
+func SaveServers(path string, servers map[string]ServerConfig) error {
+	b, err := json.MarshalIndent(configFile{MCPServers: servers}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("mcp: marshal config: %w", err)
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return fmt.Errorf("mcp: write %s: %w", path, err)
+	}
+	return nil
+}
