@@ -91,6 +91,23 @@
     }, 80)
     return () => clearInterval(id)
   })
+  // The indicator's label: during an image generation, name the model so a slow
+  // model-load reads as progress, not a freeze ("Generating with Juggernaut…").
+  // Otherwise the playful themed word. The model comes from the tool-call args
+  // when the model named one; a blank falls back to a generic phrase.
+  function workingLabel(m) {
+    if (toolRunning && m?.tools?.length) {
+      const t = m.tools[m.tools.length - 1]
+      if (t?.name === 'generate_image') {
+        let model = ''
+        try {
+          model = JSON.parse(t.arguments || '{}').model || ''
+        } catch {}
+        return model ? `Generating with ${model}` : 'Generating an image'
+      }
+    }
+    return workingWord
+  }
   let budget = $state(null) // { used, nCtx, level }
   let speed = $state(null) // last turn's tokens/sec: { promptPerSecond, predictPerSecond, predictN }
   let error = $state(null)
@@ -1017,7 +1034,7 @@
               <div class="msg assistant prose" use:copyableCode={m.content}>{@html renderContent(m.content)}</div>
             {/if}
             {#if streaming && i === messages.length - 1 && (m.content === '' || toolRunning)}
-              <div class="msg assistant" style="opacity:.6">{SPINNER[spinnerFrame]} {workingWord}…</div>
+              <div class="msg assistant" style="opacity:.6">{SPINNER[spinnerFrame]} {workingLabel(m)}…</div>
             {/if}
           {/if}
           {#if m.time && (m.role === 'user' || m.content !== '')}
