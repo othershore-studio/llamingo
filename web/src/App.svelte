@@ -144,6 +144,10 @@
   let mcpServers = $state([]) // Settings MCP servers: [{name, transport, url, header, editable, connected, _id}]
   let mcpLoaded = $state(false) // did GET /api/mcp succeed? (guards save from wiping on a failed load)
   let mcpId = 0 // stable keys for MCP server rows
+  let projectOpen = $state(false) // ⋮ Project surface (project/folder settings)
+  let projectInProject = $state(false) // is the active chat a project session?
+  let projectSystem = $state([]) // project system-tool defaults: [{name, description, enabled}]
+  let projectMcp = $state([]) // project MCP servers (read-only)
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -448,6 +452,36 @@
   }
   function toggleToolGroup(g, on) {
     for (const t of g.tools) t.enabled = on
+  }
+
+  // Project surface — project/folder settings, their own place (apart from the
+  // global Settings and the per-chat Tools). The system-tool defaults a new session
+  // in this project inherits (still overridable per chat), plus the project's
+  // read-only MCP servers. See /api/project.
+  async function openProject() {
+    if (!activeId) return
+    try {
+      const d = await apiFetch(`/api/project?conv=${activeId}`).then((r) => r.json())
+      projectInProject = !!d.inProject
+      projectSystem = d.systemTools ?? []
+      projectMcp = d.mcp ?? []
+    } catch {
+      projectInProject = false
+      projectSystem = []
+      projectMcp = []
+    }
+    projectOpen = true
+  }
+  async function saveProject() {
+    if (projectInProject) {
+      const disabledSystem = projectSystem.filter((t) => !t.enabled).map((t) => t.name)
+      await apiFetch(`/api/project?conv=${activeId}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ disabledSystem }),
+      })
+    }
+    projectOpen = false
   }
 
   // MCP servers — the Settings "MCP servers" section. Add/edit streamable-HTTP
@@ -955,6 +989,7 @@
     <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
     <nav class="sysmenu actionsmenu" class:up={narrow}>
       <button onclick={() => { actionsMenu = false; openTools() }} disabled={!activeId}>Tools</button>
+      <button onclick={() => { actionsMenu = false; openProject() }} disabled={!activeId}>Project</button>
       <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
       <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
     </nav>
@@ -1249,6 +1284,54 @@
         </div>
         <div class="modal-foot">
           <button class="primary" onclick={saveTools}>Save</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if projectOpen}
+    <div class="modal-backdrop" onclick={() => (projectOpen = false)}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-head">
+          <span>Project</span>
+          <button class="x" onclick={() => (projectOpen = false)}>✕</button>
+        </div>
+        <div class="modal-body">
+          {#if !projectInProject}
+            <div class="imgmodels-hint muted">This chat isn't in a project folder. Open a folder and start a session in it to set its tool defaults.</div>
+          {:else}
+            <div class="group-head">System tool defaults <span class="muted">(what a new session here starts with)</span></div>
+            <div class="toollist">
+              {#each projectSystem as t (t.name)}
+                <label class="toolrow" title={t.description || ''}>
+                  <input type="checkbox" bind:checked={t.enabled} />
+                  <span class="toolname">{t.name}</span>
+                </label>
+              {/each}
+            </div>
+
+            <div class="group-head">MCP servers <span class="muted">(this project's .mcp.json — read-only)</span></div>
+            {#if projectMcp.length}
+              <div class="imgmodels">
+                <ul class="imgmodels-list">
+                  {#each projectMcp as sv (sv.name)}
+                    <li class="mcpserver">
+                      <div class="mcpserver-head">
+                        <span class="conn-dot" class:on={sv.connected} title={sv.connected ? 'connected' : 'not connected'}></span>
+                        <span class="mcp-name-ro">{sv.name}</span>
+                        <span class="muted">{sv.transport}</span>
+                      </div>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {:else}
+              <div class="imgmodels-hint muted">No project MCP servers. Add a <code>.mcp.json</code> to the folder.</div>
+            {/if}
+          {/if}
+        </div>
+        <div class="modal-foot">
+          <button class="primary" onclick={saveProject}>Save</button>
         </div>
       </div>
     </div>
