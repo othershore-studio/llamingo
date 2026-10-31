@@ -934,14 +934,6 @@
     </button>
     <span class="wordmark">llaminGO{activeTitle ? ` › ${activeTitle}` : ''}</span>
     <span class="spacer"></span>
-    {#if conn?.thinkingSupported}
-      <button
-        class="pill-btn"
-        class:on={thinking}
-        onclick={() => (thinking = !thinking)}
-        title="Toggle the model's thinking for new messages"
-      >Thinking {thinking ? 'on' : 'off'}</button>
-    {/if}
     {#if !narrow}
     <button
       class="icon-btn"
@@ -988,7 +980,6 @@
   {#if actionsMenu}
     <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
     <nav class="sysmenu actionsmenu" class:up={narrow}>
-      <button onclick={() => { actionsMenu = false; openTools() }} disabled={!activeId}>Tools</button>
       <button onclick={() => { actionsMenu = false; openProject() }} disabled={!activeId}>Project</button>
       <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
       <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
@@ -1176,6 +1167,13 @@
           onkeydown={(e) => e.key === 'Enter' && send()}
           disabled={streaming}
         />
+        <div class="composer-controls">
+          {#if conn?.thinkingSupported}
+            <button class="pill-btn" class:on={thinking} onclick={() => (thinking = !thinking)} title="Toggle the model's thinking for new messages">Thinking {thinking ? 'on' : 'off'}</button>
+          {/if}
+          <button class="pill-btn" onclick={openTools} disabled={!activeId} title="Trim the tools for this chat">Tools</button>
+          <span class="spacer"></span>
+        </div>
       </div>
 
       <footer class="statusbar" class:narrow={narrow}>
@@ -1913,6 +1911,12 @@
   .composer {
     border-top: 0.5px solid var(--border);
     padding: 12px;
+  }
+  .composer-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
   }
   .field {
     width: 100%;
