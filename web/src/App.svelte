@@ -129,8 +129,10 @@
   let memoryTampered = $state(false)
 
   let settingsOpen = $state(false) // connection settings modal open?
-  let settingsUrl = $state('') // editable llama-server URL
-  let settingsToken = $state('') // editable bearer token
+  let connections = $state([]) // saved llama-server connections: [{name, url, token, _id}]
+  let activeUrl = $state('') // the connection the backend is pointed at now
+  let connOpen = $state(false) // status-bar connection picker open?
+  let connId = 0
   let settingsLocation = $state('') // editable user location (for place-aware tools)
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
@@ -349,22 +351,19 @@
   // The llama-server connection, persisted to config.json and hot-swapped live.
   async function openSettings() {
     const s = await apiFetch('/api/settings').then((r) => r.json())
-    settingsUrl = s.url ?? ''
-    settingsToken = s.token ?? ''
     settingsLocation = s.location ?? ''
     settingsForgeUrl = s.forgeUrl ?? ''
     settingsDebug = s.debug ?? false
+    await loadConnections()
     await loadImageModels()
     await loadMCP()
     settingsOpen = true
   }
   async function saveSettings() {
-    const url = settingsUrl.trim()
-    if (!url) return
     await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), debug: settingsDebug }),
+      body: JSON.stringify({ location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), debug: settingsDebug }),
     })
     // Image models: persist the user's choices, or seed them from Forge on a first
     // connect (an empty list + a Forge URL). See internal/imagegen.
@@ -373,8 +372,49 @@
       else await fetchImageModels()
     }
     await saveMCP()
+    await saveConnections()
     settingsOpen = false
-    checkServer() // re-poll so the status reflects the new connection now
+    checkServer() // re-poll so the status reflects any connection change now
+  }
+
+  // Saved llama-server connections — the Settings "Connections" card and the
+  // status-bar picker. One server = one model, so switching the active connection
+  // is how the user switches model: activating hot-swaps the live backend and
+  // re-reads /props. See /api/connections.
+  async function loadConnections() {
+    try {
+      const d = await apiFetch('/api/connections').then((r) => r.json())
+      activeUrl = d.activeUrl ?? ''
+      connections = (d.connections ?? []).map((c) => ({ ...c, _id: connId++ }))
+    } catch {
+      connections = []
+    }
+  }
+  async function saveConnections() {
+    await apiFetch('/api/connections', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ connections: connections.map((c) => ({ name: (c.name || '').trim(), url: (c.url || '').trim(), token: (c.token || '').trim() })) }),
+    })
+  }
+  function addConnection() {
+    connections = [...connections, { name: '', url: '', token: '', _id: connId++ }]
+  }
+  function removeConnection(c) {
+    connections = connections.filter((x) => x !== c)
+  }
+  async function activateConnection(c) {
+    const url = (c.url || '').trim()
+    if (!url) return
+    await apiFetch('/api/connections/activate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url, token: (c.token || '').trim() }),
+    })
+    activeUrl = url
+    connOpen = false
+    await checkServer() // re-read /props → model, context size, thinking support
+    if (activeId) loadBudget(activeId) // the context window may have changed
   }
 
   // Image models — the Settings "Image generation" section. The list is seeded
@@ -1219,8 +1259,26 @@
       </button>
     {/if}
     {#if conn && reachable}
-      <span class="dot"></span>
-      <span class="statusmodel">{modelName(conn.model)} · {conn.nCtx} ctx</span>
+      <div class="connwrap">
+        <button class="statusmodel connpick" onclick={() => { connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title="Switch connection">
+          <span class="dot"></span>
+          <span class="connpick-label">{modelName(conn.model)} · {conn.nCtx} ctx</span>
+          <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>
+        </button>
+        {#if connOpen}
+          <div class="conn-backdrop" onclick={() => (connOpen = false)}></div>
+          <div class="conn-pop">
+            {#each connections as c (c._id ?? c.url)}
+              <button class="conn-row" class:active={c.url === activeUrl} onclick={() => activateConnection(c)}>
+                <span class="conn-dot" class:on={c.url === activeUrl}></span>
+                <span class="conn-row-name">{c.name}</span>
+                <span class="conn-row-url muted">{c.url}</span>
+              </button>
+            {/each}
+            <button class="conn-manage" onclick={() => { connOpen = false; openSettings() }}>Manage…</button>
+          </div>
+        {/if}
+      </div>
     {:else if !reachable}
       <span class="dot off"></span>
       <span>server unreachable — reconnecting…</span>
@@ -1392,20 +1450,33 @@
           <button class="x" onclick={() => (settingsOpen = false)}>✕</button>
         </div>
         <div class="modal-body">
-        <div class="group-head">Connection</div>
-        <label class="setting">
-          <span>llama-server URL</span>
-          <input
-            class="field"
-            bind:value={settingsUrl}
-            placeholder="http://localhost:8080"
-            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
-          />
-        </label>
-        <label class="setting">
-          <span>Bearer token <span class="muted">(optional, for an auth proxy)</span></span>
-          <input class="field" type="password" bind:value={settingsToken} placeholder="leave blank for none" />
-        </label>
+        <div class="group-head">Connections <span class="muted">(llama-servers to switch between)</span></div>
+        <div class="imgmodels">
+          <div class="imgmodels-head">
+            <span class="muted">Servers{connections.length ? ` · ${connections.length}` : ''}</span>
+            <button class="refresh" onclick={addConnection}>+ Add connection</button>
+          </div>
+          {#if connections.length}
+            <div class="imgmodels-hint muted">One server serves one model, so the active connection is your model. Pick it here (the dot) or from the status bar.</div>
+            <ul class="imgmodels-list">
+              {#each connections as c (c._id)}
+                <li class="mcpserver">
+                  <div class="mcpserver-head">
+                    <label class="conn-radio" title={c.url === activeUrl ? 'Active connection' : 'Make this the active connection'}>
+                      <input type="radio" name="activeconn" checked={c.url === activeUrl} onchange={() => activateConnection(c)} />
+                    </label>
+                    <input class="field mcp-name" placeholder="name" bind:value={c.name} />
+                    <button class="imgmodel-exp" title="Remove connection" onclick={() => removeConnection(c)}>✕</button>
+                  </div>
+                  <input class="field" placeholder="http://localhost:8080" bind:value={c.url} />
+                  <input class="field" type="password" placeholder="Bearer token — optional (for an auth proxy)" bind:value={c.token} />
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <div class="imgmodels-hint muted">No saved connections. Add one, or it falls back to $LLAMINGO_URL.</div>
+          {/if}
+        </div>
 
         <div class="group-head">Image generation</div>
         <label class="setting">
@@ -2195,6 +2266,108 @@
   }
   .ctx-pop .statusbtn {
     align-self: center;
+  }
+  /* Connection picker: the active llama-server (= model) on the status-bar left;
+     click to switch among saved connections. Opens upward like the ctx popover. */
+  .connwrap {
+    position: relative;
+    display: inline-flex;
+    min-width: 0;
+  }
+  .statusmodel.connpick {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 6px;
+    min-width: 0;
+  }
+  .statusmodel.connpick:hover {
+    background: var(--paper);
+  }
+  .connpick-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .connpick .caret {
+    opacity: 0.6;
+    flex-shrink: 0;
+  }
+  .conn-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+  }
+  .conn-pop {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 21;
+    min-width: 240px;
+    max-width: 360px;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+  }
+  .conn-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-align: left;
+    border: none;
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    font-size: 12px;
+    padding: 7px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .conn-row:hover {
+    background: var(--paper);
+  }
+  .conn-row.active .conn-row-name {
+    color: var(--clay);
+  }
+  .conn-row-name {
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  .conn-row-url {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .conn-manage {
+    text-align: left;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    padding: 7px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    border-top: 0.5px solid var(--border);
+    margin-top: 2px;
+  }
+  .conn-manage:hover {
+    background: var(--paper);
+  }
+  .conn-radio {
+    display: inline-flex;
+    align-items: center;
   }
   .summary-mark summary {
     color: var(--clay);
