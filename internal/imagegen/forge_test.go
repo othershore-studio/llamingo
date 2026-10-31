@@ -66,3 +66,28 @@ func TestForgeNeoGenerate(t *testing.T) {
 		t.Errorf("forge_additional_modules = %+v, want the 2 DiT modules", ov["forge_additional_modules"])
 	}
 }
+
+// ListModels fetches Forge's checkpoints from /sdapi/v1/sd-models and returns each
+// model_name (the value sd_model_checkpoint accepts), falling back to title.
+func TestForgeNeoListModels(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"title": "Juggernaut-XI.safetensors [abc123]", "model_name": "Juggernaut-XI-byRunDiffusion"},
+			{"title": "z_image_turbo.safetensors", "model_name": "z_image_turbo"},
+		})
+	}))
+	defer srv.Close()
+
+	names, err := imagegen.NewForgeNeo(srv.URL).ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/sdapi/v1/sd-models" {
+		t.Errorf("GET %q, want /sdapi/v1/sd-models", gotPath)
+	}
+	if len(names) != 2 || names[0] != "Juggernaut-XI-byRunDiffusion" || names[1] != "z_image_turbo" {
+		t.Errorf("names = %v, want the two model_names", names)
+	}
+}

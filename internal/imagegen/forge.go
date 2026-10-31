@@ -142,6 +142,52 @@ func (f *ForgeNeo) Generate(ctx context.Context, prompt string, opts Options) (I
 	return img, nil
 }
 
+// forgeModel is one checkpoint from Forge's /sdapi/v1/sd-models listing. Only the
+// name matters here.
+type forgeModel struct {
+	Title     string `json:"title"`
+	ModelName string `json:"model_name"`
+}
+
+// ListModels returns the checkpoint names Forge currently has, via
+// GET /sdapi/v1/sd-models. The name is model_name — the value Forge accepts for
+// override_settings.sd_model_checkpoint (confirmed against a live Forge Neo) —
+// falling back to title. The caller should give ctx a timeout; the client's
+// generous timeout is for generation, not this listing.
+func (f *ForgeNeo) ListModels(ctx context.Context) ([]string, error) {
+	if f.baseURL == "" {
+		return nil, fmt.Errorf("imagegen: no Forge URL configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.baseURL+"/sdapi/v1/sd-models", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("imagegen: forge models request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("imagegen: forge http %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	var models []forgeModel
+	if err := json.NewDecoder(resp.Body).Decode(&models); err != nil {
+		return nil, fmt.Errorf("imagegen: decode forge models: %w", err)
+	}
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		name := m.ModelName
+		if name == "" {
+			name = m.Title
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 // stripDataURL drops a leading "data:image/...;base64," prefix if present, so the
 // remainder decodes as raw base64.
 func stripDataURL(s string) string {

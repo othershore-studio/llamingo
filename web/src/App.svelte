@@ -118,6 +118,10 @@
   let settingsLocation = $state('') // editable user location (for place-aware tools)
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
+  let imageModels = $state([]) // image models: [{name, autoPick, default, promptStyle, note}]
+  let imageDefault = $state('') // chosen default model name
+  let imageFetching = $state(false) // a fetch-from-Forge is in flight
+  let imageError = $state('') // last fetch error, shown inline
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -309,6 +313,7 @@
     settingsLocation = s.location ?? ''
     settingsForgeUrl = s.forgeUrl ?? ''
     settingsDebug = s.debug ?? false
+    await loadImageModels()
     settingsOpen = true
   }
   async function saveSettings() {
@@ -319,8 +324,63 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), debug: settingsDebug }),
     })
+    // Image models: persist the user's choices, or seed them from Forge on a first
+    // connect (an empty list + a Forge URL). See internal/imagegen.
+    if (settingsForgeUrl.trim()) {
+      if (imageModels.length) await saveImageModels()
+      else await fetchImageModels()
+    }
     settingsOpen = false
     checkServer() // re-poll so the status reflects the new connection now
+  }
+
+  // Image models — the Settings "Image generation" section. The list is seeded
+  // from Forge (safe-by-default: heavy DiTs stay opt-in) and the user toggles
+  // which may auto-select and which is the default.
+  async function loadImageModels() {
+    try {
+      const d = await apiFetch('/api/imagegen').then((r) => r.json())
+      imageModels = d.models ?? []
+      imageDefault = d.default ?? ''
+    } catch {
+      imageModels = []
+      imageDefault = ''
+    }
+    imageError = ''
+  }
+  // Fetch the checkpoints Forge currently has and merge them into the list,
+  // keeping any choices already made. Uses the just-typed URL so it works before
+  // Save — this is the Fetch / Refresh button and the first-connect seed.
+  async function fetchImageModels() {
+    if (imageFetching) return
+    imageFetching = true
+    imageError = ''
+    try {
+      const r = await apiFetch('/api/imagegen/fetch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ forgeUrl: settingsForgeUrl.trim() }),
+      })
+      if (!r.ok) throw new Error((await r.text()).trim() || `HTTP ${r.status}`)
+      const d = await r.json()
+      imageModels = d.models ?? []
+      imageDefault = d.default ?? ''
+    } catch (e) {
+      imageError = String(e?.message || e)
+    } finally {
+      imageFetching = false
+    }
+  }
+  async function saveImageModels() {
+    if (!imageModels.length) return
+    await apiFetch('/api/imagegen', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        default: imageDefault,
+        models: imageModels.map((m) => ({ name: m.name, autoPick: !!m.autoPick })),
+      }),
+    })
   }
 
   async function ackMemory() {
@@ -1057,6 +1117,54 @@
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
         </label>
+        {#if settingsForgeUrl.trim()}
+          <div class="imgmodels">
+            <div class="imgmodels-head">
+              <span class="muted">Models{imageModels.length ? ` · ${imageModels.length}` : ''}</span>
+              <button class="refresh" onclick={fetchImageModels} disabled={imageFetching}>
+                {imageFetching ? 'Fetching…' : imageModels.length ? 'Refresh from Forge' : 'Fetch from Forge'}
+              </button>
+            </div>
+            {#if imageError}
+              <div class="imgmodels-err">Couldn't reach Forge: {imageError}</div>
+            {/if}
+            {#if imageModels.length}
+              <div class="imgmodels-hint muted">
+                <b>Auto</b> — may be chosen automatically. <b>Default</b> — used when none is named. Heavy models stay opt-in (they can stall a shared GPU).
+              </div>
+              <ul class="imgmodels-list">
+                {#each imageModels as m (m.name)}
+                  <li class="imgmodel" class:dim={!m.autoPick}>
+                    <span class="imgmodel-name" title={m.note || ''}>{m.name}</span>
+                    <label class="imgmodel-flag" title="May be selected automatically (safe on a shared GPU)">
+                      <input
+                        type="checkbox"
+                        checked={m.autoPick}
+                        onchange={(e) => {
+                          m.autoPick = e.currentTarget.checked
+                          if (!m.autoPick && imageDefault === m.name) imageDefault = ''
+                        }}
+                      />
+                      auto
+                    </label>
+                    <label class="imgmodel-flag" title={m.autoPick ? 'Make this the default model' : 'Enable auto first'}>
+                      <input
+                        type="radio"
+                        name="imgdefault"
+                        checked={imageDefault === m.name}
+                        disabled={!m.autoPick}
+                        onchange={() => (imageDefault = m.name)}
+                      />
+                      default
+                    </label>
+                  </li>
+                {/each}
+              </ul>
+            {:else if !imageFetching}
+              <div class="imgmodels-hint muted">No models yet — Fetch from Forge to load the checkpoints it has.</div>
+            {/if}
+          </div>
+        {/if}
 
         <div class="group-head">Location</div>
         <label class="setting">
@@ -1705,6 +1813,84 @@
     letter-spacing: 0.04em;
     color: var(--muted);
     margin-top: 4px;
+  }
+  .imgmodels {
+    padding: 10px 12px;
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--ink) 3%, transparent);
+  }
+  .imgmodels-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .imgmodels-head .muted {
+    font-size: 12px;
+  }
+  .imgmodels-head button.refresh {
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 10px;
+    border: 0.5px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .imgmodels-head button.refresh:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .imgmodels-hint {
+    font-size: 12px;
+    line-height: 1.35;
+    margin: 8px 0 0;
+  }
+  .imgmodels-err {
+    font-size: 12px;
+    color: var(--danger, #c0392b);
+    margin: 8px 0 0;
+  }
+  .imgmodels-list {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .imgmodel {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 0;
+    border-top: 0.5px solid var(--border);
+  }
+  .imgmodel.dim .imgmodel-name {
+    opacity: 0.55;
+  }
+  .imgmodel-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+  }
+  .imgmodel-flag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--muted);
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  .imgmodel-flag input {
+    width: auto;
+    margin: 0;
+    cursor: pointer;
   }
   .modal-backdrop {
     position: fixed;

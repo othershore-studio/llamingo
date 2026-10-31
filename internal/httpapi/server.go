@@ -72,6 +72,9 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("GET /api/conversations/{id}/attachments/{name}", s.handleGetAttachment)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	s.mux.HandleFunc("GET /api/imagegen", s.handleGetImagegen)
+	s.mux.HandleFunc("PUT /api/imagegen", s.handlePutImagegen)
+	s.mux.HandleFunc("POST /api/imagegen/fetch", s.handleFetchImagegen)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	s.mux.HandleFunc("POST /api/permission/{id}", s.handlePermission)
 	return s
