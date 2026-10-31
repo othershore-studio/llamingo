@@ -77,6 +77,7 @@
   // "Working" indicator: a braille spinner + a themed word while a turn runs.
   let spinnerFrame = $state(0)
   let workingWord = $state(WORKING_WORDS[0])
+  let toolRunning = $state(false) // a tool is executing — keep the indicator up even when narration is shown
   $effect(() => {
     if (!streaming) {
       spinnerFrame = 0
@@ -454,6 +455,7 @@
     messages.push({ role: 'user', content: text, time: now })
     messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], time: now })
     streaming = true
+    toolRunning = false
     streamingChatId = activeId // bind this stream to its chat (see handleEvent / selectChat)
     streamMessages = messages // the array this stream writes to, even if the view switches away
     try {
@@ -464,6 +466,7 @@
       reachable = false
     } finally {
       streaming = false
+      toolRunning = false
       streamingChatId = null
       streamMessages = null
     }
@@ -507,10 +510,12 @@
     const live = streamMessages
     const onScreen = streamingChatId === activeId
     if (event === 'delta' && payload.content) {
+      toolRunning = false // content is streaming again — no longer waiting on a tool
       if (live?.length) live[live.length - 1].content += payload.content
     } else if (event === 'reasoning' && payload.content) {
       if (live?.length) live[live.length - 1].reasoning += payload.content
     } else if (event === 'tool_call') {
+      toolRunning = true // a tool is now running — keep the working indicator up through the gap
       const last = live?.[live.length - 1]
       if (last) (last.tools ??= []).push({ name: payload.name, arguments: payload.arguments })
     } else if (event === 'compacted') {
@@ -521,6 +526,7 @@
     } else if (event === 'permission') {
       pending = payload // always surface: a blocking approval, shown whichever chat is active (answered by id)
     } else if (event === 'done') {
+      toolRunning = false
       pending = null // the turn resolved — dismiss any consent prompt that went unanswered
       if (onScreen) {
         budget = payload.budget
@@ -908,7 +914,8 @@
             {/if}
             {#if m.content !== ''}
               <div class="msg assistant prose" use:copyableCode={m.content}>{@html renderContent(m.content)}</div>
-            {:else if streaming && i === messages.length - 1}
+            {/if}
+            {#if streaming && i === messages.length - 1 && (m.content === '' || toolRunning)}
               <div class="msg assistant" style="opacity:.6">{SPINNER[spinnerFrame]} {workingWord}…</div>
             {/if}
           {/if}
