@@ -122,6 +122,7 @@
   let imageDefault = $state('') // chosen default model name
   let imageFetching = $state(false) // a fetch-from-Forge is in flight
   let imageError = $state('') // last fetch error, shown inline
+  let toolList = $state([]) // advertised tools for curation: [{name, description, enabled}]
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -315,6 +316,7 @@
     settingsForgeUrl = s.forgeUrl ?? ''
     settingsDebug = s.debug ?? false
     await loadImageModels()
+    await loadTools()
     settingsOpen = true
   }
   async function saveSettings() {
@@ -331,6 +333,7 @@
       if (imageModels.length) await saveImageModels()
       else await fetchImageModels()
     }
+    await saveTools()
     settingsOpen = false
     checkServer() // re-poll so the status reflects the new connection now
   }
@@ -381,6 +384,27 @@
         default: imageDefault,
         models: imageModels.map((m) => ({ name: m.name, autoPick: !!m.autoPick })),
       }),
+    })
+  }
+
+  // Tool curation — load the advertised tools and persist which are turned off,
+  // so a small model isn't drowned by the full set. Skip the save when the list
+  // is empty (nothing to curate, or the load failed — don't clobber the saved set).
+  async function loadTools() {
+    try {
+      const d = await apiFetch('/api/tools').then((r) => r.json())
+      toolList = d.tools ?? []
+    } catch {
+      toolList = []
+    }
+  }
+  async function saveTools() {
+    if (!toolList.length) return
+    const disabled = toolList.filter((t) => !t.enabled).map((t) => t.name)
+    await apiFetch('/api/tools', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ disabled }),
     })
   }
 
@@ -1194,6 +1218,18 @@
           />
         </label>
 
+        {#if toolList.length}
+          <div class="group-head">Tools <span class="muted">({toolList.filter((t) => t.enabled).length}/{toolList.length} on — trim if the model gets confused)</span></div>
+          <div class="toollist">
+            {#each toolList as t (t.name)}
+              <label class="toolrow" title={t.description || ''}>
+                <input type="checkbox" bind:checked={t.enabled} />
+                <span class="toolname">{t.name}</span>
+              </label>
+            {/each}
+          </div>
+        {/if}
+
         <div class="group-head">Display</div>
         <label class="setting">
           <span>Show thinking &amp; tool activity <span class="muted">(off = chat only; view-only, saved per browser)</span></span>
@@ -1914,6 +1950,28 @@
     width: auto;
     margin: 0;
     cursor: pointer;
+  }
+  .toollist {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+  }
+  .toolrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    cursor: pointer;
+  }
+  .toolrow input {
+    width: auto;
+    margin: 0;
+    cursor: pointer;
+  }
+  .toolname {
+    font-size: 13px;
   }
   .modal-backdrop {
     position: fixed;

@@ -24,11 +24,12 @@ func (s *Store) Root() string { return s.root }
 // next to the memory file, so these survive across launches without re-exporting
 // an env var.
 type Config struct {
-	URL      string `json:"url,omitempty"`
-	Token    string `json:"token,omitempty"`
-	Location string `json:"location,omitempty"` // the user's manually set location (city/country)
-	ForgeURL string `json:"forgeUrl,omitempty"` // Forge Neo image server (empty = image generation off)
-	Debug    bool   `json:"debug,omitempty"`    // write raw llama/Forge/tool payloads to each chat's logs/ (debug mode)
+	URL           string   `json:"url,omitempty"`
+	Token         string   `json:"token,omitempty"`
+	Location      string   `json:"location,omitempty"`      // the user's manually set location (city/country)
+	ForgeURL      string   `json:"forgeUrl,omitempty"`      // Forge Neo image server (empty = image generation off)
+	Debug         bool     `json:"debug,omitempty"`         // write raw llama/Forge/tool payloads to each chat's logs/ (debug mode)
+	DisabledTools []string `json:"disabledTools,omitempty"` // tool names the user has curated off (small models drown in too many)
 }
 
 // Config returns the saved configuration. A missing file is the zero Config, not

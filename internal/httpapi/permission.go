@@ -196,7 +196,13 @@ func (s *Server) registryFor(convID string) mcp.Registry {
 	if tool := s.imageTool(convID, gate); tool != nil {
 		regs = append(regs, tool)
 	}
-	return mcp.Combine(regs...)
+	// Curation: drop any tools the user has turned off, so a small model isn't
+	// drowned by the full set (read fresh each turn — see mcp.Curate, /api/tools).
+	reg := mcp.Combine(regs...)
+	if cfg, err := s.st.Config(); err == nil {
+		reg = mcp.Curate(reg, toSet(cfg.DisabledTools))
+	}
+	return reg
 }
 
 // imageTool builds the image-generation tool for a conversation when a Forge URL
