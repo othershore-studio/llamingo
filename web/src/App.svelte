@@ -947,7 +947,16 @@
     return path.split(/[\\/]/).pop().replace(/\.gguf$/, '')
   }
 
-  const pct = $derived(budget && budget.nCtx ? Math.min(100, Math.round((100 * budget.used) / budget.nCtx)) : 0)
+  // Meter the budget against whatever connection is active NOW: switching to a
+  // smaller-context model re-evaluates the same token count against the new window
+  // (and can tip it into overflow) without waiting for the next turn. conn.nCtx
+  // updates on every /props poll, including right after a connection switch.
+  const ctxMax = $derived(conn?.nCtx || budget?.nCtx || 0)
+  const pct = $derived(budget && ctxMax ? Math.min(100, Math.round((100 * budget.used) / ctxMax)) : 0)
+  const ctxOver = $derived(!!(budget && ctxMax && budget.used > ctxMax))
+  const ctxLevel = $derived(
+    !budget || !ctxMax ? 'healthy' : budget.used / ctxMax >= 0.9 ? 'full' : budget.used / ctxMax >= 0.75 ? 'near' : 'healthy'
+  )
 
   // The window title reflects the active conversation — "llaminGO › Chat name" in
   // the desktop title bar / taskbar and the browser tab, or just "llaminGO" at the
@@ -1297,20 +1306,26 @@
     {/if}
     {#if budget && activeId}
       <div class="ctxwrap">
-        <button class="statusbtn ctx-pill {budget.level}" onclick={() => (budgetOpen = !budgetOpen)} aria-haspopup="true" aria-expanded={budgetOpen} title="Context usage">
+        <button class="statusbtn ctx-pill {ctxLevel}" onclick={() => (budgetOpen = !budgetOpen)} aria-haspopup="true" aria-expanded={budgetOpen} title={ctxOver ? 'Over the context window' : 'Context usage'}>
           <svg class="batt" viewBox="0 0 24 12" width="22" height="11" aria-hidden="true">
             <rect x="1" y="1.5" width="18" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" />
             <rect x="20.5" y="4" width="2.5" height="4" rx="1" fill="currentColor" />
             <rect x="2.6" y="3.1" width={Math.max(0, Math.min(15.8, (pct / 100) * 15.8))} height="5.8" rx="1" fill="currentColor" />
           </svg>
           <span class="ctx-pct">{pct}%</span>
+          {#if ctxOver}<span class="ctx-bang" aria-label="over the context window">!</span>{/if}
           {#if !narrow}<span class="ctx-label">Context</span>{/if}
         </button>
         {#if budgetOpen}
           <div class="ctx-backdrop" onclick={() => (budgetOpen = false)}></div>
           <div class="ctx-pop">
-            <div class="bar {budget.level}"><span class="fill" style="width:{pct}%"></span></div>
-            <div class="ctx-count">{budget.used} / {budget.nCtx}</div>
+            <div class="bar {ctxLevel}"><span class="fill" style="width:{pct}%"></span></div>
+            <div class="ctx-count">{budget.used} / {ctxMax} tokens</div>
+            {#if ctxOver}
+              <div class="ctx-warn">Over this model's {ctxMax}-token window. Trim tools (the Tools button) or switch to a larger-context model.</div>
+            {:else if ctxLevel === 'near'}
+              <div class="ctx-warn soft">Near this model's {ctxMax}-token window.</div>
+            {/if}
             <button class="statusbtn" onclick={() => { budgetOpen = false; compact() }} disabled={streaming}>Compact</button>
           </div>
         {/if}
@@ -2266,6 +2281,24 @@
   }
   .ctx-pop .statusbtn {
     align-self: center;
+  }
+  .ctx-bang {
+    color: #d64545;
+    font-weight: 700;
+  }
+  .ctx-warn {
+    font-size: 11px;
+    line-height: 1.35;
+    color: #d64545;
+    background: color-mix(in srgb, #d64545 8%, transparent);
+    border: 0.5px solid color-mix(in srgb, #d64545 30%, transparent);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .ctx-warn.soft {
+    color: #e0932a;
+    background: color-mix(in srgb, #e0932a 8%, transparent);
+    border-color: color-mix(in srgb, #e0932a 30%, transparent);
   }
   /* Connection picker: the active llama-server (= model) on the status-bar left;
      click to switch among saved connections. Opens upward like the ctx popover. */

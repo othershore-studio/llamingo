@@ -211,15 +211,19 @@ func (s *Server) registryFor(convID string) mcp.Registry {
 	return reg
 }
 
-// budgetTools returns the tool definitions to METER for a conversation WITHOUT
-// opening any MCP connection: the local system tools (memory, location, project
-// files, image gen), curated per chat. MCP tool cost is deliberately left out
-// here — metering it on open would mean connecting the servers (and tripping
-// their gate) just to navigate; it lands in the honest count once a turn runs
-// and is then persisted (see SetConversationBudget). Mirrors registryFor's local
-// half.
+// budgetTools returns the tool definitions to METER for a conversation, curated
+// per chat, WITHOUT opening any MCP connection on open: the local system tools
+// (memory, location, project files, image gen) plus the global MCP servers IF
+// they are already connected (their schemas are a big chunk of the prompt, so a
+// chat with them enabled reads honestly — and can warn when they overflow a small
+// context). Project MCP is still left out here (it would trip its per-project
+// gate); its cost lands in the authoritative count once a turn runs and is then
+// persisted (see SetConversationBudget).
 func (s *Server) budgetTools(convID string) []backend.ToolDef {
 	regs := []mcp.Registry{memtool.NewTool(s.st, nil), localtools.NewTool(s.locationSetting)}
+	if g := s.globalServersConnected(); g != nil {
+		regs = append(regs, g)
+	}
 	if root, ok, err := s.st.ProjectRoot(convID); err == nil && ok && root != "" {
 		regs = append(regs, filetools.NewTool(root))
 	}
@@ -286,6 +290,19 @@ func (s *Server) globalServers() mcp.Registry {
 	defer s.mcpMu.Unlock()
 	if s.mcpGlobal == nil {
 		s.mcpGlobal = s.connectGlobalServers()
+	}
+	return s.mcpGlobal
+}
+
+// globalServersConnected returns the global MCP registry only if it is already
+// connected, without forcing a connection — so metering a chat's tool cost on
+// open never triggers a network round-trip. Nil until the first turn connects
+// them; once connected, their (often large) schemas are counted in the budget.
+func (s *Server) globalServersConnected() mcp.Registry {
+	s.mcpMu.Lock()
+	defer s.mcpMu.Unlock()
+	if s.mcpGlobal == nil {
+		return nil
 	}
 	return s.mcpGlobal
 }
