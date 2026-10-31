@@ -147,6 +147,7 @@
   let projectInProject = $state(false) // is the active chat a project session?
   let projectSystem = $state([]) // project system-tool defaults: [{name, description, enabled}]
   let projectMcp = $state([]) // project MCP servers (read-only)
+  let budgetOpen = $state(false) // the status-bar Context popover (bar + count + Compact)
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -1233,19 +1234,29 @@
     {/if}
     <span class="spacer"></span>
     {#if report}<span class="report">{report}</span>{/if}
-    {#if budget}
-      <span>context {budget.used} / {budget.nCtx}</span>
-      <span class="bar {budget.level}"><span class="fill" style="width:{pct}%"></span></span>
-    {/if}
     {#if projectInProject && narrow}
       <button class="statusbtn icon" onclick={openProject} aria-label="Project" title="Project"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z" /></svg></button>
     {/if}
-    {#if activeId}
-      <button class="statusbtn" class:icon={narrow} onclick={compact} disabled={streaming} aria-label="Compact" title="Compact">
-        {#if narrow}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3,3 8,7 13,3" /><polyline points="3,13 8,9 13,13" /></svg>
-        {:else}Compact{/if}
-      </button>
+    {#if budget && activeId}
+      <div class="ctxwrap">
+        <button class="statusbtn ctx-pill {budget.level}" onclick={() => (budgetOpen = !budgetOpen)} aria-haspopup="true" aria-expanded={budgetOpen} title="Context usage">
+          <svg class="batt" viewBox="0 0 24 12" width="22" height="11" aria-hidden="true">
+            <rect x="1" y="1.5" width="18" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <rect x="20.5" y="4" width="2.5" height="4" rx="1" fill="currentColor" />
+            <rect x="2.6" y="3.1" width={Math.max(0, Math.min(15.8, (pct / 100) * 15.8))} height="5.8" rx="1" fill="currentColor" />
+          </svg>
+          <span class="ctx-pct">{pct}%</span>
+          {#if !narrow}<span class="ctx-label">Context</span>{/if}
+        </button>
+        {#if budgetOpen}
+          <div class="ctx-backdrop" onclick={() => (budgetOpen = false)}></div>
+          <div class="ctx-pop">
+            <div class="bar {budget.level}"><span class="fill" style="width:{pct}%"></span></div>
+            <div class="ctx-count">{budget.used} / {budget.nCtx}</div>
+            <button class="statusbtn" onclick={() => { budgetOpen = false; compact() }} disabled={streaming}>Compact</button>
+          </div>
+        {/if}
+      </div>
     {/if}
     {#if narrow}
       <button class="statusbtn icon" aria-label="Menu" aria-haspopup="true" aria-expanded={actionsMenu} title="Memory, Settings" onclick={() => (actionsMenu = !actionsMenu)}>
@@ -2127,6 +2138,63 @@
   }
   .bar.full .fill {
     background: #d64545;
+  }
+  /* Context pill + popover: the budget as one status-bar control. The pill is a
+     battery filled to the usage %, colored by level; pressing it opens a popover
+     with the full bar, the exact count, and Compact. */
+  .ctxwrap {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+  .ctx-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .ctx-pill .ctx-pct {
+    font-variant-numeric: tabular-nums;
+  }
+  .ctx-pill.near {
+    color: #e0932a;
+    border-color: color-mix(in srgb, #e0932a 40%, transparent);
+  }
+  .ctx-pill.full {
+    color: #d64545;
+    border-color: color-mix(in srgb, #d64545 40%, transparent);
+  }
+  .ctx-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+  }
+  .ctx-pop {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    z-index: 21;
+    min-width: 180px;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ctx-pop .bar {
+    width: 100%;
+    display: block;
+    height: 8px;
+  }
+  .ctx-count {
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+  .ctx-pop .statusbtn {
+    align-self: center;
   }
   .summary-mark summary {
     color: var(--clay);
