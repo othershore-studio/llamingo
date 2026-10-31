@@ -112,3 +112,64 @@ func (c Config) Model(name string) (ModelConfig, bool) {
 	}
 	return ModelConfig{}, false
 }
+
+// SaveConfig writes the image-gen config to path as indented JSON, creating or
+// replacing the file. It is the counterpart to LoadConfig — the connect-and-
+// configure UI and the Forge prepopulate persist through it.
+func SaveConfig(path string, c Config) error {
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("imagegen: marshal config: %w", err)
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return fmt.Errorf("imagegen: write config: %w", err)
+	}
+	return nil
+}
+
+// Merge reconciles the configured models with the checkpoints Forge currently
+// reports (see ForgeNeo.ListModels). It is both the first-time seed (from an empty
+// Config) and the refresh:
+//
+//   - a checkpoint already configured is kept verbatim — the user's AutoPick, the
+//     chosen default, and any recipe overrides survive a refresh;
+//   - a checkpoint new to Forge is added with name-inferred defaults (heavy DiTs
+//     stay opt-in — see ModelConfig.AutoPickable);
+//   - a configured model Forge no longer has is dropped (it can't be generated).
+//
+// Order follows Forge's list, so the UI stays stable. The default is kept safe
+// (see SafeDefault), so a fresh seed never auto-picks a heavy model.
+func (c Config) Merge(forgeNames []string) Config {
+	existing := make(map[string]ModelConfig, len(c.Models))
+	for _, m := range c.Models {
+		existing[strings.ToLower(m.Name)] = m
+	}
+	out := Config{Default: c.Default}
+	for _, name := range forgeNames {
+		if m, ok := existing[strings.ToLower(name)]; ok {
+			out.Models = append(out.Models, m)
+		} else {
+			out.Models = append(out.Models, ModelConfig{Name: name})
+		}
+	}
+	out.Default = SafeDefault(out, out.Default)
+	return out
+}
+
+// SafeDefault returns prefer when it names a configured, auto-pickable model; else
+// the first auto-pickable model (a light SDXL/SD1.5 that won't OOM the shared
+// GPU); else "". It keeps an unnamed generation's sticky default from ever landing
+// on a heavy DiT the user has not opted into.
+func SafeDefault(c Config, prefer string) string {
+	if prefer != "" {
+		if m, ok := c.Model(prefer); ok && m.AutoPickable() {
+			return prefer
+		}
+	}
+	for _, m := range c.Models {
+		if m.AutoPickable() {
+			return m.Name
+		}
+	}
+	return ""
+}
