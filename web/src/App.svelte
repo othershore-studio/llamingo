@@ -134,6 +134,7 @@
   let onTop = $state(false) // always-on-top state
   let maximized = $state(false) // desktop window maximized? drives the maximize/restore icon
   let sidebarOpen = $state(loadSidebar()) // left panel shown? persisted per browser
+  let showDetail = $state(loadShowDetail()) // show the thinking trace + "used X" tool chips? (view-only, per browser)
   const SIDEBAR_MIN = 180, SIDEBAR_MAX = 460 // sidebar drag-resize clamp (px)
   let sidebarWidth = $state(loadSidebarWidth()) // left panel width, drag-resizable + persisted
   // Thin-window (drawer) mode. The breakpoint lives here in JS as the
@@ -679,6 +680,22 @@
       localStorage.setItem('llamingo.sidebar', sidebarOpen ? 'open' : 'closed')
     } catch {}
   }
+  // Detailed vs chat-only reading: whether to show the assistant's thinking trace
+  // and "used X" tool chips. View-only and per browser — the trail is still saved
+  // to disk and still re-enters nothing; this only hides it. Defaults to shown.
+  function loadShowDetail() {
+    try {
+      return localStorage.getItem('llamingo.showDetail') !== 'off'
+    } catch {
+      return true
+    }
+  }
+  function setShowDetail(v) {
+    showDetail = v
+    try {
+      localStorage.setItem('llamingo.showDetail', v ? 'on' : 'off')
+    } catch {}
+  }
   // The hamburger toggles the saved sidebar when wide, but only the transient
   // drawer when thin — so toggling on a phone never rewrites the saved preference.
   function toggleNav() {
@@ -958,7 +975,7 @@
       <div class="thread">
         {#if error}<p class="error">{error}</p>{/if}
         {#each messages as m, i}
-          {#if m.reasoning}
+          {#if showDetail && m.reasoning}
             <details class="thinking" open={streaming && i === messages.length - 1 && !m.content}>
               <summary>Thinking</summary>
               <div class="rtext prose">{@html md.render(m.reasoning)}</div>
@@ -967,7 +984,7 @@
           {#if m.role === 'user'}
             <div class="msg user">{m.content}</div>
           {:else}
-            {#if m.tools?.length}
+            {#if showDetail && m.tools?.length}
               {#each m.tools as t}
                 <div class="toolcall" title={t.arguments}>used <strong>{t.name}</strong></div>
               {/each}
@@ -1175,6 +1192,12 @@
             placeholder="e.g. Quito, Ecuador — blank to share none"
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
+        </label>
+
+        <div class="group-head">Display</div>
+        <label class="setting">
+          <span>Show thinking &amp; tool activity <span class="muted">(off = chat only; view-only, saved per browser)</span></span>
+          <input type="checkbox" checked={showDetail} onchange={(e) => setShowDetail(e.currentTarget.checked)} style="width:auto" />
         </label>
 
         <div class="group-head">Debug</div>
