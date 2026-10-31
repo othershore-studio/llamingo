@@ -90,6 +90,9 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("GET /api/project", s.handleGetProject)
 	s.mux.HandleFunc("GET /api/project/status", s.handleGetProjectStatus)
 	s.mux.HandleFunc("PUT /api/project", s.handlePutProject)
+	s.mux.HandleFunc("GET /api/connections", s.handleGetConnections)
+	s.mux.HandleFunc("PUT /api/connections", s.handlePutConnections)
+	s.mux.HandleFunc("POST /api/connections/activate", s.handleActivateConnection)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	s.mux.HandleFunc("POST /api/permission/{id}", s.handlePermission)
 	return s
@@ -225,15 +228,16 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	url := strings.TrimSpace(body.URL)
-	if url == "" {
-		http.Error(w, "url is required", http.StatusBadRequest)
-		return
-	}
 	// Read-modify-write so any fields this form does not own survive a settings save.
 	cfg, _ := s.st.Config()
-	cfg.URL = url
-	cfg.Token = body.Token
+	// The connection now lives in its own card (/api/connections); a Settings save
+	// that omits the URL leaves the active connection untouched and updates only the
+	// fields below. A URL is still honored (and hot-swapped) for back-compat.
+	url := strings.TrimSpace(body.URL)
+	if url != "" {
+		cfg.URL = url
+		cfg.Token = body.Token
+	}
 	cfg.Location = strings.TrimSpace(body.Location)
 	cfg.ForgeURL = strings.TrimSpace(body.ForgeURL)
 	cfg.Debug = body.Debug
@@ -241,7 +245,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	rc.SetConnection(url, body.Token)
+	if url != "" {
+		rc.SetConnection(url, body.Token)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

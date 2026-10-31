@@ -29,6 +29,19 @@ type Config struct {
 	Location string `json:"location,omitempty"` // the user's manually set location (city/country)
 	ForgeURL string `json:"forgeUrl,omitempty"` // Forge Neo image server (empty = image generation off)
 	Debug    bool   `json:"debug,omitempty"`    // write raw llama/Forge/tool payloads to each chat's logs/ (debug mode)
+
+	// Connections are the saved llama-servers the user switches between; URL/Token
+	// above is whichever one is active now. See the Connection type.
+	Connections []Connection `json:"connections,omitempty"`
+}
+
+// Connection is a saved llama-server the user can switch between — a name plus its
+// URL and optional bearer token. One server serves one model, so switching the
+// connection is how the user switches model; the active one is Config.URL/Token.
+type Connection struct {
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+	Token string `json:"token,omitempty"`
 }
 
 // Config returns the saved configuration. A missing file is the zero Config, not

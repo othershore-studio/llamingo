@@ -194,9 +194,13 @@ func TestSettings(t *testing.T) {
 	if got["debug"] != true {
 		t.Errorf("after PUT, debug = %v, want true (new field round-trips)", got["debug"])
 	}
-	// A blank url is rejected.
-	if code := put("   "); code != http.StatusBadRequest {
-		t.Errorf("blank-url PUT = %d, want 400", code)
+	// The connection lives in its own card now (/api/connections), so a Settings
+	// save with a blank url is accepted and leaves the active connection untouched.
+	if code := put("   "); code != http.StatusNoContent {
+		t.Errorf("blank-url PUT = %d, want 204 (connection left alone)", code)
+	}
+	if got := get(); got["url"] != "http://example.invalid:9999" {
+		t.Errorf("after a blank-url save, url = %v, want the connection unchanged", got["url"])
 	}
 }
 
