@@ -23,6 +23,7 @@ type mcpResp struct {
 		URL      string `json:"url"`
 		Header   string `json:"header"`
 		Editable bool   `json:"editable"`
+		Scope    string `json:"scope"`
 	} `json:"servers"`
 }
 
@@ -71,5 +72,52 @@ func TestMCPServersRoundTrip(t *testing.T) {
 	}
 	if l, ok := byName["local"]; !ok || l.editable {
 		t.Errorf("stdio 'local' = %+v, want preserved and not editable", l)
+	}
+}
+
+// A project session's own .mcp.json servers are listed (scope "project",
+// read-only) alongside the global ones, keyed by the conv query.
+func TestProjectMCPServersListed(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projPath := t.TempDir()
+	proj, err := st.OpenProject(projPath, "Proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := st.NewSession(proj.ID, "Sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mcp.SaveServers(filepath.Join(projPath, ".mcp.json"), map[string]mcp.ServerConfig{
+		"proj-srv": {Command: "nonexistent-proj-cmd-xyz"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(httpapi.New(backend.New("http://unused.invalid"), st))
+	t.Cleanup(api.Close)
+
+	// No conv → only global servers (none configured here).
+	var got mcpResp
+	getJSONInto(t, api.URL+"/api/mcp", &got)
+	if len(got.Servers) != 0 {
+		t.Errorf("no-conv list = %d servers, want 0", len(got.Servers))
+	}
+
+	// With the project session, its server shows up — scope project, not editable.
+	getJSONInto(t, api.URL+"/api/mcp?conv="+sess.ID, &got)
+	found := false
+	for _, s := range got.Servers {
+		if s.Name == "proj-srv" {
+			found = true
+			if s.Scope != "project" || s.Editable {
+				t.Errorf("proj-srv = %+v, want scope project and not editable", s)
+			}
+		}
+	}
+	if !found {
+		t.Error("proj-srv (from the project's .mcp.json) should be listed for the project session")
 	}
 }
