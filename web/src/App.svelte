@@ -1150,6 +1150,7 @@
           <span>Settings</span>
           <button class="x" onclick={() => (settingsOpen = false)}>✕</button>
         </div>
+        <div class="modal-body">
         <div class="group-head">Connection</div>
         <label class="setting">
           <span>llama-server URL</span>
@@ -1258,6 +1259,7 @@
           <span>Debug logging <span class="muted">(save raw llama / Forge / tool payloads to each chat's logs/ folder)</span></span>
           <input type="checkbox" bind:checked={settingsDebug} style="width:auto" />
         </label>
+        </div>
         <div class="modal-foot">
           <button class="primary" onclick={saveSettings}>Save &amp; connect</button>
         </div>
@@ -1933,8 +1935,6 @@
     list-style: none;
     margin: 6px 0 0;
     padding: 0;
-    max-height: 220px;
-    overflow-y: auto;
   }
   .imgmodel {
     display: flex;
@@ -1969,8 +1969,6 @@
     cursor: pointer;
   }
   .toollist {
-    max-height: 200px;
-    overflow-y: auto;
     border: 0.5px solid var(--border);
     border-radius: 8px;
     padding: 6px 10px;
@@ -2015,6 +2013,7 @@
     display: flex;
     align-items: center;
     font-weight: 500;
+    flex-shrink: 0;
   }
   .modal-head .x {
     margin-left: auto;
@@ -2023,6 +2022,37 @@
     color: var(--muted);
     cursor: pointer;
     font: inherit;
+  }
+  /* The settings content scrolls as one; the header and footer stay put. */
+  .modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 10px;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--ink) 28%, transparent) transparent;
+  }
+  .modal-body > * + * {
+    margin-top: 10px;
+  }
+  .modal-body::-webkit-scrollbar {
+    width: 10px;
+  }
+  .modal-body::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .modal-body::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--ink) 22%, transparent);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+    border-radius: 6px;
+  }
+  .modal-body::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--ink) 36%, transparent);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+    border-radius: 6px;
   }
   .warn {
     background: color-mix(in srgb, #e0932a 15%, transparent);
@@ -2047,6 +2077,7 @@
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+    flex-shrink: 0;
   }
   .modal-foot button {
     border: 0.5px solid var(--border);
