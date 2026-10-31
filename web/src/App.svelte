@@ -459,7 +459,7 @@
   }
   async function loadMCP() {
     try {
-      const d = await apiFetch('/api/mcp' + (activeId ? `?conv=${activeId}` : '')).then((r) => r.json())
+      const d = await apiFetch('/api/mcp').then((r) => r.json())
       mcpServers = prepMCP(d.servers)
       mcpLoaded = true
     } catch {
@@ -1227,7 +1227,7 @@
                       indeterminate={g.tools.some((t) => t.enabled) && !g.tools.every((t) => t.enabled)}
                       onchange={(e) => toggleToolGroup(g, e.currentTarget.checked)}
                     />
-                    {g.kind === 'mcp' ? g.name : 'System tools'}
+                    {g.kind === 'mcp' ? g.name : 'System tools'}{#if g.scope === 'project'} <span class="muted">· project</span>{/if}
                     <span class="muted">({g.tools.filter((t) => t.enabled).length}/{g.tools.length})</span>
                   </label>
                 </div>
@@ -1363,7 +1363,7 @@
             <button class="refresh" onclick={addMCPServer}>+ Add server</button>
           </div>
           {#if mcpServers.length}
-            <div class="imgmodels-hint muted">Global servers (edit here) connect on the next message — no restart. A project session also lists its own <code>.mcp.json</code> servers (read-only). Enable them per chat in the Tools panel.</div>
+            <div class="imgmodels-hint muted">Streamable-HTTP servers. Changes connect on the next message — no restart. Enable them per chat in the Tools panel.</div>
             <ul class="imgmodels-list">
               {#each mcpServers as sv (sv._id)}
                 <li class="mcpserver">
@@ -1379,7 +1379,7 @@
                     <div class="mcpserver-head">
                       <span class="conn-dot" class:on={sv.connected} title={sv.connected ? 'connected' : 'not connected'}></span>
                       <span class="mcp-name-ro">{sv.name}</span>
-                      <span class="muted">{sv.scope === 'project' ? 'project' : sv.transport} — edit in {sv.scope === 'project' ? '.mcp.json (repo)' : 'mcp.json'}</span>
+                      <span class="muted">{sv.transport} — edit in mcp.json</span>
                     </div>
                   {/if}
                 </li>
