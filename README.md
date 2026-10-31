@@ -3,7 +3,8 @@
 A sovereign, local-first chat client for **[llama.cpp](https://github.com/ggml-org/llama.cpp)** users — in the
 spirit of a desktop/mobile AI client, but for the models *you* run, on hardware *you* own.
 
-> **Status:** design / planning (pre-code). This repo currently holds `.md` design docs only.
+> **Status:** a working alpha — a Go core + CLI, a Svelte web UI, and a Wails desktop app, built and used against
+> real local models. Pre-release and iterating; see [`docs/roadmap.md`](docs/roadmap.md).
 
 ## What it is
 
@@ -25,7 +26,7 @@ to actually use — with real context management, chat history, MCP tools, image
 - Not a general "any backend" client. It **targets llama.cpp** and uses its native capabilities as the differentiator.
   It stays OpenAI-compatible, so it *may* talk to other servers — but that is not the scope.
 
-## Tech (planned)
+## Tech
 
 - **Go** core + CLI + optional gateway (single static binary, dockerable / `.service`-friendly).
 - **One shared web UI** across shells; desktop via **Wails** (all-Go) — or Tauri if a true native mobile app is later wanted.
@@ -44,7 +45,7 @@ because the core is written in Go.
 
 llaminGO is developed openly with the help of Claude (Anthropic). We state this plainly: commits Claude helped write
 carry a `Co-Authored-By: Claude` trailer. The code and design are open source so the work can be inspected, reused, and
-given back. If you'd rather not use AI-assisted software, that's a fair call — this disclosure is here so you can make it.
+given back.
 
 ## License
 

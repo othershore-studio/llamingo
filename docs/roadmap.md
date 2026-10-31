@@ -57,7 +57,7 @@ Dependency-ordered; each is test-first (the suite starts at #1), and the CLI is 
 **Done:** `go test ./...` green and GPU-free (all mocked), and the CLI holds a streamed exchange against a real
 `llama-server` with a budget matching its reported `usage`.
 
-## Status (2026-10-29)
+## Status (2026-10-31)
 
 Increments #1–#6 are built and merged — core + honest metering, the two-root store, the client-owned MCP loop and
 permission gate (proven by image gen), the shell (CLI → HTTP/SSE adapter → Svelte web UI → Wails desktop), and #6's
@@ -71,9 +71,8 @@ the model can call a tool mid-turn, mediated by the conversation's permission ga
 handshake** surfacing the consent prompt on the stream and the answer returning on `POST /api/permission/{id}`.
 `write_memory` is live through it — gated, tested end to end (allow and deny paths).
 
-**Native tools and MCP servers are wired-ready seams:** image gen and MCP servers plug into the same Registry as
-`write_memory`, but a live turn currently offers only `write_memory`. Lighting up the rest is the next tool step —
-plumbing, now that the loop + handshake exist.
+**Native tools and MCP servers are live.** Image generation and MCP servers run in a real turn through the same
+Registry as `write_memory` — the loop + handshake proved out, then everything was lit up (the arcs below).
 
 **Post-#6 polish, merged 2026-10-29:** connection config (persisted llama-server URL/token + a Settings panel + live
 hot-swap); a topbar declutter (⋮ menu, pinned window controls); a responsive thin-window layout (sidebar drawer with
@@ -81,9 +80,22 @@ state preservation + a bottom action bar); compaction UX (an in-thread "Compacti
 it ran, with a timestamp); readable speaker labels in `conversation.md`; and the window title tracking the active
 chat. See [`ui.md`](ui.md).
 
-**Remaining threads:** light up image gen + MCP servers in a live turn; small niceties (friendly model name via
-`--alias`, native `time`/`location` tools, compaction token-savings on the summary marker); model selection moving to
-the bottom bar; then v2 — the gateway.
+**Image generation — shipped end to end (2026-10-30/31).** A native **Forge Neo** `txt2img` tool (no MCP needed),
+with **per-model recipes** (name-inferred defaults + a Settings editor for steps/CFG/sampler/…), an **auto-pick
+allow-list + sticky-safe default** (the shared-GPU guard — a heavy modern DiT is opt-in, so it can't OOM the chat model
+mid-turn), **prepopulate** (seed the model list from Forge's `/sdapi/v1/sd-models`), one-at-a-time serialization, and
+per-chat **debug logging** of raw LLAMA/FORGE/TOOL payloads. Plus **graceful backend-death** — a stream idle-timeout, so
+an OOM-killed `llama-server` ends the turn with an error instead of hanging.
+
+**Tool configuration — shipped (2026-10-31).** Three distinct surfaces: **Settings** (global — llama connection,
+global MCP servers with **live reconnect** / no restart, image models), a per-chat **Tools** panel (curate the chat's
+toolset — **System** vs **MCP**, grouped), and a per-folder **Project** surface (a project's `.mcp.json` servers wired
++ gated per project, plus system-tool defaults in **`.llamingo/project.json`** that new sessions inherit). A chat-only
+display toggle too. *Configuring* (global / project) is kept separate from *activating* (per chat).
+
+**Remaining threads:** composer / bottom-bar polish, and small niceties; then v2 — the gateway (**Taita**).
+Model / connection selection is a v2 concern (a plain `llama-server` serves one model — see
+[`architecture.md`](architecture.md)).
 
 ## Backlog — surfaced by real-model testing (2026-10)
 
