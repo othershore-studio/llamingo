@@ -23,18 +23,28 @@ type mcpServerView struct {
 	Header    string `json:"header"`
 	Editable  bool   `json:"editable"`
 	Connected bool   `json:"connected"`
+	Scope     string `json:"scope"` // "global" | "project"
 }
 
-// mcpServersView lists the configured servers, marking which are currently
-// connected (present in the live registry).
-func (s *Server) mcpServersView() []mcpServerView {
-	servers, _ := mcp.LoadServers(globalMCPPath(s.st.Root()))
-	connected := map[string]bool{}
-	if sr, ok := s.globalServers().(*mcp.ServerRegistry); ok {
-		for _, g := range sr.ToolsByServer() {
-			connected[g.Server] = true
+// mcpServersView lists the configured servers: the global ones, plus (when convID
+// is a project session) that project's own .mcp.json servers. Each is marked with
+// its scope and whether it is currently connected. Global URL-based servers are
+// UI-editable; project servers (a repo file) and stdio servers are read-only.
+func (s *Server) mcpServersView(convID string) []mcpServerView {
+	gservers, _ := mcp.LoadServers(globalMCPPath(s.st.Root()))
+	out := scopeView(gservers, connectedNames(s.globalServers()), "global", true)
+	if convID != "" {
+		if root, ok, _ := s.st.ProjectRoot(convID); ok && root != "" {
+			pservers, _ := mcp.LoadServers(projectMCPPath(root))
+			out = append(out, scopeView(pservers, connectedNames(s.projectServers(root)), "project", false)...)
 		}
 	}
+	return out
+}
+
+// scopeView turns a server map into views at one scope. editable applies only to
+// URL-based servers (stdio is always command-based, so file-managed).
+func scopeView(servers map[string]mcp.ServerConfig, connected map[string]bool, scope string, editable bool) []mcpServerView {
 	out := make([]mcpServerView, 0, len(servers))
 	for name, cfg := range servers {
 		out = append(out, mcpServerView{
@@ -42,18 +52,30 @@ func (s *Server) mcpServersView() []mcpServerView {
 			Transport: cfg.Transport(),
 			URL:       cfg.URL,
 			Header:    cfg.Headers["Authorization"],
-			Editable:  cfg.URL != "", // URL-based are UI-editable; stdio (command) is file-only
+			Editable:  editable && cfg.URL != "",
 			Connected: connected[name],
+			Scope:     scope,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// GET /api/mcp — the configured MCP servers (name, transport, URL, auth header,
-// whether connected) for the Settings UI.
+// connectedNames is the set of server names currently connected in reg.
+func connectedNames(reg mcp.Registry) map[string]bool {
+	names := map[string]bool{}
+	if sr, ok := reg.(*mcp.ServerRegistry); ok {
+		for _, g := range sr.ToolsByServer() {
+			names[g.Server] = true
+		}
+	}
+	return names
+}
+
+// GET /api/mcp[?conv=<id>] — the configured MCP servers for the Settings UI; with
+// conv set to a project session, its project-scope servers are included too.
 func (s *Server) handleGetMCP(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"servers": s.mcpServersView()})
+	writeJSON(w, map[string]any{"servers": s.mcpServersView(r.URL.Query().Get("conv"))})
 }
 
 // PUT /api/mcp {servers:[{name, url, header}]} — replace the URL-based servers with
@@ -100,5 +122,5 @@ func (s *Server) handlePutMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.reloadGlobalServers()
-	writeJSON(w, map[string]any{"servers": s.mcpServersView()})
+	writeJSON(w, map[string]any{"servers": s.mcpServersView(r.URL.Query().Get("conv"))})
 }

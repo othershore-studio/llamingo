@@ -188,9 +188,13 @@ func (s *Server) registryFor(convID string) mcp.Registry {
 	gate := s.gateFor(convID)
 	regs := []mcp.Registry{s.globalServers(), memtool.NewTool(s.st, gate), localtools.NewTool(s.locationSetting)}
 	// The project file tools are confined to the session's project folder, so
-	// they are offered only in a project session (a free chat has no root).
+	// they are offered only in a project session (a free chat has no root); the
+	// project's own MCP servers (its .mcp.json) are offered there too.
 	if root, ok, err := s.st.ProjectRoot(convID); err == nil && ok && root != "" {
 		regs = append(regs, filetools.NewTool(root))
+		if pr := s.projectServers(root); pr != nil {
+			regs = append(regs, pr)
+		}
 	}
 	// Image generation, when a Forge URL and at least one model are configured.
 	if tool := s.imageTool(convID, gate); tool != nil {
@@ -298,6 +302,65 @@ func (s *Server) reloadGlobalServers() {
 		old.Close()
 	}
 	s.mcpGlobal = s.connectGlobalServers()
+}
+
+// projectReg is a project's connected MCP servers plus the mtime of the .mcp.json
+// they came from, so a changed file reconnects (no restart).
+type projectReg struct {
+	reg   *mcp.ServerRegistry
+	mtime time.Time
+}
+
+// projectMCPPath is a project's own MCP config, in its working folder — the
+// standard .mcp.json location, shared with other tools that read it.
+func projectMCPPath(root string) string { return filepath.Join(root, ".mcp.json") }
+
+// projectServers returns the MCP servers declared in a project's .mcp.json,
+// connected and cached per project (keyed by its folder, invalidated by the file's
+// mtime so an edit — in the file or the UI — applies on the next turn, no restart).
+// Project servers are not user-authored (ScopeProject), so their tools clear the
+// permission gate on first use; the gate is per project, so consent is shared
+// across that project's sessions. Returns nil when the project has no .mcp.json.
+func (s *Server) projectServers(root string) mcp.Registry {
+	fi, err := os.Stat(projectMCPPath(root))
+	if err != nil {
+		return nil
+	}
+	s.mcpMu.Lock()
+	defer s.mcpMu.Unlock()
+	if pr, ok := s.projectRegs[root]; ok {
+		if pr.mtime.Equal(fi.ModTime()) {
+			return pr.reg
+		}
+		pr.reg.Close() // the file changed — reconnect
+	}
+	reg := s.connectProjectServers(root)
+	s.projectRegs[root] = &projectReg{reg: reg, mtime: fi.ModTime()}
+	return reg
+}
+
+// connectProjectServers connects the servers in a project's .mcp.json, each gated
+// (project-scoped, not user-authored, so consent on first use).
+func (s *Server) connectProjectServers(root string) *mcp.ServerRegistry {
+	reg := mcp.NewRegistry(permission.New(s.prompter, s.grants))
+	servers, err := mcp.Load("", projectMCPPath(root))
+	if err != nil {
+		log.Printf("mcp: load project config %q: %v", root, err)
+	}
+	for _, srv := range servers {
+		c, err := mcp.Connect(srv)
+		if err != nil {
+			log.Printf("mcp: connect project %q: %v", srv.Name, err)
+			continue
+		}
+		if err := reg.Add(context.Background(), srv, c); err != nil {
+			log.Printf("mcp: add project %q: %v", srv.Name, err)
+			_ = c.Close()
+			continue
+		}
+		log.Printf("mcp: connected project server %q (%s)", srv.Name, root)
+	}
+	return reg
 }
 
 // globalMCPPath is the global MCP config in the store root — mcp.json, or a

@@ -43,19 +43,24 @@ type Server struct {
 	// app restart (see reloadGlobalServers).
 	mcpMu     sync.Mutex
 	mcpGlobal mcp.Registry
+	// Per-project MCP servers (from each project's own .mcp.json), keyed by the
+	// project's working folder and invalidated by the file's mtime — so a project's
+	// servers connect per project, and an edit applies without a restart.
+	projectRegs map[string]*projectReg
 }
 
 // New wires the API over the given backend and store.
 func New(be backend.Backend, st *store.Store) *Server {
 	br := newBroker()
 	s := &Server{
-		be:       be,
-		st:       st,
-		mux:      http.NewServeMux(),
-		broker:   br,
-		prompter: newSSEPrompter(br),
-		grants:   permission.NewMemoryGrantStore(),
-		gates:    map[string]*permission.Gate{},
+		be:          be,
+		st:          st,
+		mux:         http.NewServeMux(),
+		broker:      br,
+		prompter:    newSSEPrompter(br),
+		grants:      permission.NewMemoryGrantStore(),
+		gates:       map[string]*permission.Gate{},
+		projectRegs: map[string]*projectReg{},
 	}
 	s.mux.HandleFunc("GET /api/props", s.handleProps)
 	s.mux.HandleFunc("GET /api/chats", s.handleListChats)
