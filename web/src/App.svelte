@@ -414,7 +414,7 @@
     activeUrl = url
     connOpen = false
     await checkServer() // re-read /props → model, context size, thinking support
-    if (activeId) loadBudget(activeId) // the context window may have changed
+    if (activeId) loadBudget(activeId, true) // re-meter fresh: new model tokenizes differently, and the window changed
   }
 
   // Image models — the Settings "Image generation" section. The list is seeded

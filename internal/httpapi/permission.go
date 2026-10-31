@@ -212,16 +212,17 @@ func (s *Server) registryFor(convID string) mcp.Registry {
 }
 
 // budgetTools returns the tool definitions to METER for a conversation, curated
-// per chat, WITHOUT opening any MCP connection on open: the local system tools
-// (memory, location, project files, image gen) plus the global MCP servers IF
-// they are already connected (their schemas are a big chunk of the prompt, so a
-// chat with them enabled reads honestly — and can warn when they overflow a small
-// context). Project MCP is still left out here (it would trip its per-project
-// gate); its cost lands in the authoritative count once a turn runs and is then
-// persisted (see SetConversationBudget).
+// per chat: the local system tools (memory, location, project files, image gen)
+// plus the user's global MCP servers — whose schemas are a big chunk of the prompt
+// (far larger than the system tools), so a chat with them enabled reads honestly
+// and can warn when they overflow a small context. The global servers connect once
+// and are reused (the same connect a turn does), so the budget counts them from
+// the first open, not only after a turn. Project MCP is left out here (it would
+// trip its per-project gate); its cost lands in the authoritative count once a
+// turn runs and is then persisted (see SetConversationBudget).
 func (s *Server) budgetTools(convID string) []backend.ToolDef {
 	regs := []mcp.Registry{memtool.NewTool(s.st, nil), localtools.NewTool(s.locationSetting)}
-	if g := s.globalServersConnected(); g != nil {
+	if g := s.globalServers(); g != nil {
 		regs = append(regs, g)
 	}
 	if root, ok, err := s.st.ProjectRoot(convID); err == nil && ok && root != "" {
@@ -290,19 +291,6 @@ func (s *Server) globalServers() mcp.Registry {
 	defer s.mcpMu.Unlock()
 	if s.mcpGlobal == nil {
 		s.mcpGlobal = s.connectGlobalServers()
-	}
-	return s.mcpGlobal
-}
-
-// globalServersConnected returns the global MCP registry only if it is already
-// connected, without forcing a connection — so metering a chat's tool cost on
-// open never triggers a network round-trip. Nil until the first turn connects
-// them; once connected, their (often large) schemas are counted in the budget.
-func (s *Server) globalServersConnected() mcp.Registry {
-	s.mcpMu.Lock()
-	defer s.mcpMu.Unlock()
-	if s.mcpGlobal == nil {
-		return nil
 	}
 	return s.mcpGlobal
 }
