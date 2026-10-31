@@ -141,6 +141,9 @@
   let imageError = $state('') // last fetch error, shown inline
   let toolsOpen = $state(false) // per-chat tools modal open?
   let toolGroups = $state([]) // per-chat tools: [{kind, name, tools:[{name, description, enabled}], _open}]
+  let mcpServers = $state([]) // Settings MCP servers: [{name, transport, url, header, editable, connected, _id}]
+  let mcpLoaded = $state(false) // did GET /api/mcp succeed? (guards save from wiping on a failed load)
+  let mcpId = 0 // stable keys for MCP server rows
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -334,6 +337,7 @@
     settingsForgeUrl = s.forgeUrl ?? ''
     settingsDebug = s.debug ?? false
     await loadImageModels()
+    await loadMCP()
     settingsOpen = true
   }
   async function saveSettings() {
@@ -350,6 +354,7 @@
       if (imageModels.length) await saveImageModels()
       else await fetchImageModels()
     }
+    await saveMCP()
     settingsOpen = false
     checkServer() // re-poll so the status reflects the new connection now
   }
@@ -443,6 +448,41 @@
   }
   function toggleToolGroup(g, on) {
     for (const t of g.tools) t.enabled = on
+  }
+
+  // MCP servers — the Settings "MCP servers" section. Add/edit streamable-HTTP
+  // servers (name, URL, Authorization header); they persist to mcp.json and
+  // reconnect on the next message (no restart). stdio servers show read-only (edit
+  // those in the file). Enable per chat in the Tools panel.
+  function prepMCP(arr) {
+    return (arr ?? []).map((s) => ({ ...s, _id: mcpId++ }))
+  }
+  async function loadMCP() {
+    try {
+      const d = await apiFetch('/api/mcp').then((r) => r.json())
+      mcpServers = prepMCP(d.servers)
+      mcpLoaded = true
+    } catch {
+      mcpServers = []
+      mcpLoaded = false
+    }
+  }
+  async function saveMCP() {
+    if (!mcpLoaded) return // a failed load must not wipe the configured servers
+    const servers = mcpServers
+      .filter((s) => s.editable && s.name.trim() && s.url.trim())
+      .map((s) => ({ name: s.name.trim(), url: s.url.trim(), header: (s.header || '').trim() }))
+    await apiFetch('/api/mcp', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ servers }),
+    })
+  }
+  function addMCPServer() {
+    mcpServers = [...mcpServers, { _id: mcpId++, name: '', url: '', header: '', transport: 'http', editable: true, connected: false }]
+  }
+  function removeMCPServer(sv) {
+    mcpServers = mcpServers.filter((x) => x !== sv)
   }
 
   async function ackMemory() {
@@ -1316,6 +1356,40 @@
           </div>
         {/if}
 
+        <div class="group-head">MCP servers <span class="muted">(external tool servers)</span></div>
+        <div class="imgmodels">
+          <div class="imgmodels-head">
+            <span class="muted">Servers{mcpServers.length ? ` · ${mcpServers.length}` : ''}</span>
+            <button class="refresh" onclick={addMCPServer}>+ Add server</button>
+          </div>
+          {#if mcpServers.length}
+            <div class="imgmodels-hint muted">Streamable-HTTP servers. Changes connect on the next message — no restart. Enable them per chat in the Tools panel.</div>
+            <ul class="imgmodels-list">
+              {#each mcpServers as sv (sv._id)}
+                <li class="mcpserver">
+                  {#if sv.editable}
+                    <div class="mcpserver-head">
+                      <span class="conn-dot" class:on={sv.connected} title={sv.connected ? 'connected' : 'not connected'}></span>
+                      <input class="field mcp-name" placeholder="name" bind:value={sv.name} />
+                      <button class="imgmodel-exp" title="Remove server" onclick={() => removeMCPServer(sv)}>✕</button>
+                    </div>
+                    <input class="field" placeholder="https://server.example/mcp" bind:value={sv.url} />
+                    <input class="field" placeholder="Authorization header — optional (e.g. Bearer …)" bind:value={sv.header} />
+                  {:else}
+                    <div class="mcpserver-head">
+                      <span class="conn-dot" class:on={sv.connected} title={sv.connected ? 'connected' : 'not connected'}></span>
+                      <span class="mcp-name-ro">{sv.name}</span>
+                      <span class="muted">{sv.transport} — edit in mcp.json</span>
+                    </div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <div class="imgmodels-hint muted">No MCP servers. Add one to bring in external tools.</div>
+          {/if}
+        </div>
+
         <div class="group-head">Location</div>
         <label class="setting">
           <span>Location <span class="muted">(optional, for place-aware tools — set how broad you like)</span></span>
@@ -2141,6 +2215,41 @@
     list-style: none;
     margin: 4px 0 2px 22px;
     padding: 0;
+  }
+  .mcpserver {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px 0;
+    border-top: 0.5px solid var(--border);
+  }
+  .mcpserver:first-child {
+    border-top: none;
+  }
+  .mcpserver-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .mcpserver-head .muted {
+    font-size: 12px;
+  }
+  .mcp-name {
+    flex: 1;
+  }
+  .mcp-name-ro {
+    flex: 1;
+    font-size: 13px;
+  }
+  .conn-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--ink) 25%, transparent);
+    flex-shrink: 0;
+  }
+  .conn-dot.on {
+    background: var(--ok);
   }
   .modal-backdrop {
     position: fixed;

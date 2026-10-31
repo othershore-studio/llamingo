@@ -194,6 +194,14 @@ func (r *ServerRegistry) ToolsByServer() []ServerTools {
 	return out
 }
 
+// Close disconnects every connected server's client. Used when the registry is
+// rebuilt after a config change, so stale connections don't leak.
+func (r *ServerRegistry) Close() {
+	for _, cc := range r.conns {
+		_ = cc.client.Close()
+	}
+}
+
 // Call routes a tool invocation to its server. A trusted (global) server runs
 // freely; a project server must clear the gate first.
 func (r *ServerRegistry) Call(ctx context.Context, name, arguments string) (string, error) {
