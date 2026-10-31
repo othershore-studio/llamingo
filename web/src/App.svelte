@@ -289,6 +289,20 @@
     }
     messages = msgs
     convSummaries = sums
+    loadBudget(id)
+  }
+
+  // The honest context budget for a chat's current state, fetched on open so the
+  // status bar shows usage before the first message and again on reopen — not
+  // only after a turn's `done`. Guarded against a fast switch; a failed fetch
+  // leaves the bar as it was rather than flashing a stale chat's number.
+  async function loadBudget(id) {
+    try {
+      const b = await apiFetch(`/api/conversations/${id}/budget`).then((r) => (r.ok ? r.json() : null))
+      if (b && activeId === id) budget = b
+    } catch {
+      /* leave the bar as-is */
+    }
   }
 
   // Compaction folds the oldest messages into a summary (non-destructive); the

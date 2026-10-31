@@ -74,6 +74,7 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("PUT /api/memory", s.handlePutMemory)
 	s.mux.HandleFunc("POST /api/memory/ack", s.handleAckMemory)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
+	s.mux.HandleFunc("GET /api/conversations/{id}/budget", s.handleGetBudget)
 	s.mux.HandleFunc("PUT /api/conversations/{id}", s.handleRenameConversation)
 	s.mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
 	s.mux.HandleFunc("GET /api/conversations/{id}/attachments/{name}", s.handleGetAttachment)
@@ -322,6 +323,27 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		entries = []store.Entry{}
 	}
 	writeJSON(w, entries)
+}
+
+// GET /api/conversations/{id}/budget — the honest context budget for the chat's
+// CURRENT state, with no new turn: memory + the projected history, tokenized by
+// the backend. This is what lets the status bar show usage before the first
+// message and again when a chat is reopened, not only after a turn's `done`. It
+// mirrors handleChatStream's pre-turn estimate, so (as there) tool schemas aren't
+// counted — the authoritative correction only lands once a turn actually runs.
+func (s *Server) handleGetBudget(w http.ResponseWriter, r *http.Request) {
+	prior, err := s.st.LoadConversation(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	messages := messagesFromEntries(store.Project(prior))
+	bud, err := contextbudget.New(s.be).Estimate(r.Context(), s.segmentsFor(messages))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]any{"used": bud.Used(), "nCtx": bud.NCtx, "level": string(bud.Level())})
 }
 
 // POST /api/chat/stream {id, content} — the core is the source of truth for

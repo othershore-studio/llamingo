@@ -631,6 +631,42 @@ func TestChatStreamReportsSpeed(t *testing.T) {
 	}
 }
 
+// The budget endpoint reports honest context usage for a chat's current state —
+// a baseline before any turn, then grown by the history after one — so the
+// status bar can show it on open, not only after a turn's done event.
+func TestConversationBudget(t *testing.T) {
+	api := newAPI(t)
+	id := createChat(t, api, "Budget")
+
+	var before struct {
+		Used  int    `json:"used"`
+		NCtx  int    `json:"nCtx"`
+		Level string `json:"level"`
+	}
+	getJSONInto(t, api.URL+"/api/conversations/"+id+"/budget", &before)
+	if before.NCtx <= 0 {
+		t.Fatalf("baseline budget nCtx = %d, want > 0", before.NCtx)
+	}
+
+	// Run a turn so the chat gains history.
+	resp, err := http.Post(api.URL+"/api/chat/stream", "application/json",
+		strings.NewReader(`{"id":"`+id+`","content":"Tell me about Kyoto temples in some detail."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	var after struct {
+		Used int `json:"used"`
+		NCtx int `json:"nCtx"`
+	}
+	getJSONInto(t, api.URL+"/api/conversations/"+id+"/budget", &after)
+	if after.Used <= before.Used {
+		t.Errorf("budget used after a turn = %d, want more than the baseline (%d)", after.Used, before.Used)
+	}
+}
+
 // A turn against an unknown conversation id is rejected before streaming.
 func TestChatStreamUnknownConversation(t *testing.T) {
 	api := newAPI(t)
