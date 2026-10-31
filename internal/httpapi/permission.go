@@ -196,11 +196,12 @@ func (s *Server) registryFor(convID string) mcp.Registry {
 	if tool := s.imageTool(convID, gate); tool != nil {
 		regs = append(regs, tool)
 	}
-	// Curation: drop any tools the user has turned off, so a small model isn't
-	// drowned by the full set (read fresh each turn — see mcp.Curate, /api/tools).
+	// Curation: drop the tools turned off for THIS chat, so a small model isn't
+	// drowned by the full set (per-chat, read fresh each turn — see mcp.Curate and
+	// /api/conversations/{id}/tools).
 	reg := mcp.Combine(regs...)
-	if cfg, err := s.st.Config(); err == nil {
-		reg = mcp.Curate(reg, toSet(cfg.DisabledTools))
+	if disabled, err := s.st.ConversationTools(convID); err == nil {
+		reg = mcp.Curate(reg, toSet(disabled))
 	}
 	return reg
 }

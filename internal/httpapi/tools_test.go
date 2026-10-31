@@ -17,25 +17,32 @@ import (
 )
 
 type toolsResp struct {
-	Tools []struct {
-		Name    string `json:"name"`
-		Enabled bool   `json:"enabled"`
-	} `json:"tools"`
+	Groups []struct {
+		Kind  string `json:"kind"`
+		Name  string `json:"name"`
+		Tools []struct {
+			Name    string `json:"name"`
+			Enabled bool   `json:"enabled"`
+		} `json:"tools"`
+	} `json:"groups"`
 }
 
-func toolEnabled(tr toolsResp, name string) (found, enabled bool) {
-	for _, t := range tr.Tools {
-		if t.Name == name {
-			return true, t.Enabled
+// find reports whether a tool is listed anywhere and whether it is enabled.
+func (tr toolsResp) find(name string) (found, enabled bool) {
+	for _, g := range tr.Groups {
+		for _, t := range g.Tools {
+			if t.Name == name {
+				return true, t.Enabled
+			}
 		}
 	}
 	return false, false
 }
 
-// The curation endpoints list the advertised tools and round-trip a disabled set:
-// after disabling a tool it reports enabled=false, and the change persists (the
-// registry reads the set fresh each turn).
-func TestToolsCurationRoundTrip(t *testing.T) {
+// Per-chat tool curation: the tools list is grouped (a System group with the
+// built-in tools), disabling a tool for a chat round-trips through its meta.json,
+// and it does not affect other chats.
+func TestConversationToolsCuration(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -43,16 +50,21 @@ func TestToolsCurationRoundTrip(t *testing.T) {
 	api := httptest.NewServer(httpapi.New(backend.New("http://unused.invalid"), st))
 	t.Cleanup(api.Close)
 
+	id := createChat(t, api, "Tools")
+
 	var got toolsResp
-	getJSONInto(t, api.URL+"/api/tools", &got)
-	if len(got.Tools) == 0 {
-		t.Fatal("expected some tools listed (at least the native write_memory)")
+	getJSONInto(t, api.URL+"/api/conversations/"+id+"/tools", &got)
+	if len(got.Groups) == 0 {
+		t.Fatal("expected at least the System group")
 	}
-	if found, enabled := toolEnabled(got, "write_memory"); !found || !enabled {
-		t.Fatalf("write_memory found=%v enabled=%v, want it listed and enabled", found, enabled)
+	if got.Groups[0].Kind != "system" {
+		t.Errorf("first group kind = %q, want system", got.Groups[0].Kind)
+	}
+	if found, enabled := got.find("write_memory"); !found || !enabled {
+		t.Fatalf("write_memory found=%v enabled=%v, want listed and enabled", found, enabled)
 	}
 
-	req, _ := http.NewRequest(http.MethodPut, api.URL+"/api/tools", strings.NewReader(`{"disabled":["write_memory"]}`))
+	req, _ := http.NewRequest(http.MethodPut, api.URL+"/api/conversations/"+id+"/tools", strings.NewReader(`{"disabled":["write_memory"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -63,9 +75,16 @@ func TestToolsCurationRoundTrip(t *testing.T) {
 		t.Fatalf("PUT status = %d, want 204", resp.StatusCode)
 	}
 
-	getJSONInto(t, api.URL+"/api/tools", &got)
-	if _, enabled := toolEnabled(got, "write_memory"); enabled {
-		t.Error("write_memory should be disabled after the PUT")
+	getJSONInto(t, api.URL+"/api/conversations/"+id+"/tools", &got)
+	if _, enabled := got.find("write_memory"); enabled {
+		t.Error("write_memory should be disabled for this chat after the PUT")
+	}
+
+	// A different chat is unaffected — curation is per-chat.
+	id2 := createChat(t, api, "Other")
+	getJSONInto(t, api.URL+"/api/conversations/"+id2+"/tools", &got)
+	if _, enabled := got.find("write_memory"); !enabled {
+		t.Error("write_memory should still be enabled in a different chat")
 	}
 }
 

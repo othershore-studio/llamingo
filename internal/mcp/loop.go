@@ -174,6 +174,26 @@ func (r *ServerRegistry) Tools() []backend.ToolDef {
 	return out
 }
 
+// ServerTools is one MCP server's advertised tools, for grouping them by server in
+// the curation UI (Combine flattens them for the model; the UI wants groups).
+type ServerTools struct {
+	Server string
+	Tools  []backend.ToolDef
+}
+
+// ToolsByServer returns each connected server's tools, in connection order.
+func (r *ServerRegistry) ToolsByServer() []ServerTools {
+	out := make([]ServerTools, 0, len(r.conns))
+	for _, cc := range r.conns {
+		g := ServerTools{Server: cc.server.Name}
+		for _, t := range cc.tools {
+			g.Tools = append(g.Tools, toToolDef(t))
+		}
+		out = append(out, g)
+	}
+	return out
+}
+
 // Call routes a tool invocation to its server. A trusted (global) server runs
 // freely; a project server must clear the gate first.
 func (r *ServerRegistry) Call(ctx context.Context, name, arguments string) (string, error) {

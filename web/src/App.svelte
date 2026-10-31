@@ -139,7 +139,8 @@
   let imageDefault = $state('') // chosen default model name
   let imageFetching = $state(false) // a fetch-from-Forge is in flight
   let imageError = $state('') // last fetch error, shown inline
-  let toolList = $state([]) // advertised tools for curation: [{name, description, enabled}]
+  let toolsOpen = $state(false) // per-chat tools modal open?
+  let toolGroups = $state([]) // per-chat tools: [{kind, name, tools:[{name, description, enabled}], _open}]
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -333,7 +334,6 @@
     settingsForgeUrl = s.forgeUrl ?? ''
     settingsDebug = s.debug ?? false
     await loadImageModels()
-    await loadTools()
     settingsOpen = true
   }
   async function saveSettings() {
@@ -350,7 +350,6 @@
       if (imageModels.length) await saveImageModels()
       else await fetchImageModels()
     }
-    await saveTools()
     settingsOpen = false
     checkServer() // re-poll so the status reflects the new connection now
   }
@@ -419,25 +418,31 @@
     })
   }
 
-  // Tool curation — load the advertised tools and persist which are turned off,
-  // so a small model isn't drowned by the full set. Skip the save when the list
-  // is empty (nothing to curate, or the load failed — don't clobber the saved set).
-  async function loadTools() {
+  // Per-chat tool curation — each chat carries its own toolset (System tools + MCP
+  // servers), so a small model isn't drowned by the full set. Opened from the ⋮
+  // menu; changes apply to the next message. See /api/conversations/{id}/tools.
+  async function openTools() {
+    if (!activeId) return
     try {
-      const d = await apiFetch('/api/tools').then((r) => r.json())
-      toolList = d.tools ?? []
+      const d = await apiFetch(`/api/conversations/${activeId}/tools`).then((r) => r.json())
+      toolGroups = (d.groups ?? []).map((g) => ({ ...g, _open: g.kind === 'system' }))
     } catch {
-      toolList = []
+      toolGroups = []
     }
+    toolsOpen = true
   }
   async function saveTools() {
-    if (!toolList.length) return
-    const disabled = toolList.filter((t) => !t.enabled).map((t) => t.name)
-    await apiFetch('/api/tools', {
+    if (!activeId) return
+    const disabled = toolGroups.flatMap((g) => g.tools.filter((t) => !t.enabled).map((t) => t.name))
+    await apiFetch(`/api/conversations/${activeId}/tools`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ disabled }),
     })
+    toolsOpen = false
+  }
+  function toggleToolGroup(g, on) {
+    for (const t of g.tools) t.enabled = on
   }
 
   async function ackMemory() {
@@ -909,6 +914,7 @@
   {#if actionsMenu}
     <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
     <nav class="sysmenu actionsmenu" class:up={narrow}>
+      <button onclick={() => { actionsMenu = false; openTools() }} disabled={!activeId}>Tools</button>
       <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
       <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
     </nav>
@@ -1158,6 +1164,56 @@
     </div>
   {/if}
 
+  {#if toolsOpen}
+    <div class="modal-backdrop" onclick={() => (toolsOpen = false)}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-head">
+          <span>Tools</span>
+          <button class="x" onclick={() => (toolsOpen = false)}>✕</button>
+        </div>
+        <div class="modal-body">
+          {#if toolGroups.length}
+            <div class="imgmodels-hint muted">Trim the toolset for this chat — a small model does better with fewer tools. Changes apply to the next message.</div>
+            {#each toolGroups as g (g.kind + ':' + g.name)}
+              <div class="toolgroup">
+                <div class="toolgroup-head">
+                  {#if g.kind === 'mcp'}
+                    <button class="imgmodel-exp" title="Show tools" onclick={() => (g._open = !g._open)}>{g._open ? '▾' : '▸'}</button>
+                  {/if}
+                  <label class="toolgroup-name">
+                    <input
+                      type="checkbox"
+                      checked={g.tools.every((t) => t.enabled)}
+                      indeterminate={g.tools.some((t) => t.enabled) && !g.tools.every((t) => t.enabled)}
+                      onchange={(e) => toggleToolGroup(g, e.currentTarget.checked)}
+                    />
+                    {g.kind === 'mcp' ? g.name : 'System tools'}
+                    <span class="muted">({g.tools.filter((t) => t.enabled).length}/{g.tools.length})</span>
+                  </label>
+                </div>
+                {#if g.kind === 'system' || g._open}
+                  <ul class="toolgroup-list">
+                    {#each g.tools as t (t.name)}
+                      <label class="toolrow" title={t.description || ''}>
+                        <input type="checkbox" bind:checked={t.enabled} />
+                        <span class="toolname">{t.name}</span>
+                      </label>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/each}
+          {:else}
+            <div class="imgmodels-hint muted">No tools available for this chat.</div>
+          {/if}
+        </div>
+        <div class="modal-foot">
+          <button class="primary" onclick={saveTools}>Save</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if settingsOpen}
     <div class="modal-backdrop" onclick={() => (settingsOpen = false)}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
@@ -1270,18 +1326,6 @@
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
         </label>
-
-        {#if toolList.length}
-          <div class="group-head">Tools <span class="muted">({toolList.filter((t) => t.enabled).length}/{toolList.length} on — trim if the model gets confused)</span></div>
-          <div class="toollist">
-            {#each toolList as t (t.name)}
-              <label class="toolrow" title={t.description || ''}>
-                <input type="checkbox" bind:checked={t.enabled} />
-                <span class="toolname">{t.name}</span>
-              </label>
-            {/each}
-          </div>
-        {/if}
 
         <div class="group-head">Display</div>
         <label class="setting">
@@ -2063,6 +2107,40 @@
   }
   .toolname {
     font-size: 13px;
+  }
+  .toolgroup {
+    border-top: 0.5px solid var(--border);
+    padding: 7px 0;
+  }
+  .toolgroup:first-of-type {
+    border-top: none;
+  }
+  .toolgroup-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .toolgroup-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .toolgroup-name input {
+    width: auto;
+    margin: 0;
+    cursor: pointer;
+  }
+  .toolgroup-name .muted {
+    font-weight: 400;
+    font-size: 12px;
+  }
+  .toolgroup-list {
+    list-style: none;
+    margin: 4px 0 2px 22px;
+    padding: 0;
   }
   .modal-backdrop {
     position: fixed;

@@ -305,6 +305,36 @@ func (s *Store) Rename(id, title string) error {
 	return writeJSON(metaPath, m)
 }
 
+// ConversationTools returns the tool names curated off for this conversation
+// (empty for a fresh chat — everything is offered). Stored per-chat in meta.json,
+// so each chat carries its own toolset.
+func (s *Store) ConversationTools(id string) ([]string, error) {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return nil, err
+	}
+	var m ConversationMeta
+	if err := readJSON(filepath.Join(dir, "meta.json"), &m); err != nil {
+		return nil, fmt.Errorf("store: read meta for tools: %w", err)
+	}
+	return m.DisabledTools, nil
+}
+
+// SetConversationTools persists which tools are curated off for this conversation.
+func (s *Store) SetConversationTools(id string, disabled []string) error {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return err
+	}
+	metaPath := filepath.Join(dir, "meta.json")
+	var m ConversationMeta
+	if err := readJSON(metaPath, &m); err != nil {
+		return fmt.Errorf("store: read meta for tools: %w", err)
+	}
+	m.DisabledTools = disabled
+	return writeJSON(metaPath, m)
+}
+
 // Delete removes a conversation (chat or session) and its directory from disk.
 // The listing self-heals from the files, so nothing else needs updating.
 func (s *Store) Delete(id string) error {

@@ -7,20 +7,12 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
-	"sort"
 
-	"github.com/othershore-studio/llamingo/internal/imagegen"
+	"github.com/othershore-studio/llamingo/internal/filetools"
 	"github.com/othershore-studio/llamingo/internal/localtools"
 	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/memtool"
 )
-
-// toolView is one advertised tool as the curation UI needs it.
-type toolView struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Enabled     bool   `json:"enabled"`
-}
 
 // toSet turns a name list into a lookup set (nil for an empty list, so Curate
 // treats it as a no-op).
@@ -35,47 +27,83 @@ func toSet(xs []string) map[string]bool {
 	return m
 }
 
-// GET /api/tools — every tool currently offered to the model (the MCP servers'
-// plus the native ones), each marked enabled or disabled, for the curation UI. A
-// small local model drowns in too many tools, so the user can turn some off.
-func (s *Server) handleGetTools(w http.ResponseWriter, r *http.Request) {
-	cfg, _ := s.st.Config()
-	disabled := toSet(cfg.DisabledTools)
-	var tools []toolView
-	seen := map[string]bool{}
-	add := func(reg mcp.Registry) {
-		if reg == nil {
-			return
-		}
-		for _, t := range reg.Tools() {
-			if seen[t.Name] {
-				continue
-			}
-			seen[t.Name] = true
-			tools = append(tools, toolView{Name: t.Name, Description: t.Description, Enabled: !disabled[t.Name]})
-		}
-	}
-	// Mirror the sources registryFor assembles (minus the project-scoped file
-	// tools, which are contextual): the global MCP servers and the always-present
-	// native tools. Tools() uses no gate, so a nil one is fine for listing.
-	add(s.globalServers())
-	add(memtool.NewTool(s.st, nil))
-	add(localtools.NewTool(s.locationSetting))
-	if url := s.forgeBaseURL(""); url != "" {
-		if imgCfg, err := imagegen.LoadConfig(s.imagegenConfigPath()); err == nil && len(imgCfg.Models) > 0 {
-			add(imagegen.NewTool(imagegen.NewForgeNeo(url), nil, nil, imgCfg))
-		}
-	}
-	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
-	if tools == nil {
-		tools = []toolView{}
-	}
-	writeJSON(w, map[string]any{"tools": tools})
+// toolItem is one advertised tool as the per-chat curation UI needs it.
+type toolItem struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
 }
 
-// PUT /api/tools {disabled:[names]} — persist which tools are curated off. Only
-// this field of the config changes; the connection and the rest are preserved.
-func (s *Server) handlePutTools(w http.ResponseWriter, r *http.Request) {
+// toolGroup groups tools by source for the UI: one "system" group (the built-in
+// tools) and one "mcp" group per connected server.
+type toolGroup struct {
+	Kind  string     `json:"kind"` // "system" | "mcp"
+	Name  string     `json:"name"`
+	Tools []toolItem `json:"tools"`
+}
+
+func toolItemsOf(reg mcp.Registry, disabled map[string]bool) []toolItem {
+	if reg == nil {
+		return nil
+	}
+	var items []toolItem
+	for _, t := range reg.Tools() {
+		items = append(items, toolItem{Name: t.Name, Description: t.Description, Enabled: !disabled[t.Name]})
+	}
+	return items
+}
+
+// GET /api/conversations/{id}/tools — the tools offered in this chat, grouped into
+// the built-in "System" tools and one group per MCP server, each marked enabled or
+// disabled for this chat. A small local model drowns in too many tools, so each
+// chat carries its own trimmed set (stored in its meta.json).
+func (s *Server) handleGetConversationTools(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	disabledList, err := s.st.ConversationTools(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	disabled := toSet(disabledList)
+	var groups []toolGroup
+
+	// System tools: memory + local always; the project file tools when this chat
+	// has a folder; image generation when configured. Tools() uses no gate.
+	sys := toolGroup{Kind: "system", Name: "System"}
+	sys.Tools = append(sys.Tools, toolItemsOf(memtool.NewTool(s.st, nil), disabled)...)
+	sys.Tools = append(sys.Tools, toolItemsOf(localtools.NewTool(s.locationSetting), disabled)...)
+	if root, ok, _ := s.st.ProjectRoot(id); ok && root != "" {
+		sys.Tools = append(sys.Tools, toolItemsOf(filetools.NewTool(root), disabled)...)
+	}
+	if tool := s.imageTool(id, nil); tool != nil {
+		sys.Tools = append(sys.Tools, toolItemsOf(tool, disabled)...)
+	}
+	if len(sys.Tools) > 0 {
+		groups = append(groups, sys)
+	}
+
+	// MCP servers, grouped by server.
+	if sr, ok := s.globalServers().(*mcp.ServerRegistry); ok {
+		for _, g := range sr.ToolsByServer() {
+			grp := toolGroup{Kind: "mcp", Name: g.Server}
+			for _, t := range g.Tools {
+				grp.Tools = append(grp.Tools, toolItem{Name: t.Name, Description: t.Description, Enabled: !disabled[t.Name]})
+			}
+			if len(grp.Tools) > 0 {
+				groups = append(groups, grp)
+			}
+		}
+	}
+
+	if groups == nil {
+		groups = []toolGroup{}
+	}
+	writeJSON(w, map[string]any{"groups": groups})
+}
+
+// PUT /api/conversations/{id}/tools {disabled:[names]} — persist which tools are
+// curated off for this chat.
+func (s *Server) handlePutConversationTools(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Disabled []string `json:"disabled"`
 	}
@@ -83,10 +111,8 @@ func (s *Server) handlePutTools(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	cfg, _ := s.st.Config()
-	cfg.DisabledTools = body.Disabled
-	if err := s.st.SetConfig(cfg); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.st.SetConversationTools(r.PathValue("id"), body.Disabled); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
