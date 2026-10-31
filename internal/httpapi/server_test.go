@@ -670,6 +670,17 @@ func TestConversationBudget(t *testing.T) {
 	if after.Used <= 0 || after.NCtx <= 0 {
 		t.Errorf("post-turn budget = %+v, want used and nCtx > 0", after)
 	}
+
+	// ?fresh=1 re-meters instead of returning the persisted count — the path the UI
+	// takes when a chat's active tools change.
+	var fresh struct {
+		Used int `json:"used"`
+		NCtx int `json:"nCtx"`
+	}
+	getJSONInto(t, api.URL+"/api/conversations/"+id+"/budget?fresh=1", &fresh)
+	if fresh.Used <= 0 || fresh.NCtx <= 0 {
+		t.Errorf("fresh budget = %+v, want used and nCtx > 0", fresh)
+	}
 }
 
 // A turn against an unknown conversation id is rejected before streaming.

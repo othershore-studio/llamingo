@@ -339,11 +339,15 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 // counted — the authoritative correction only lands once a turn actually runs.
 func (s *Server) handleGetBudget(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	// A chat that has had a turn carries its last accounting (authoritative,
-	// tool-inclusive) in meta — show that, no re-metering or MCP connection.
-	if b, ok, err := s.st.ConversationBudget(id); err == nil && ok {
-		writeJSON(w, map[string]any{"used": b.Used, "nCtx": b.NCtx, "level": b.Level})
-		return
+	// ?fresh=1 forces a re-meter (e.g. the chat's active tools just changed),
+	// ignoring the persisted last-turn count. Otherwise a chat that has had a turn
+	// shows that authoritative, tool-inclusive count straight from meta — no
+	// re-metering, no MCP connection.
+	if r.URL.Query().Get("fresh") == "" {
+		if b, ok, err := s.st.ConversationBudget(id); err == nil && ok {
+			writeJSON(w, map[string]any{"used": b.Used, "nCtx": b.NCtx, "level": b.Level})
+			return
+		}
 	}
 	// A fresh chat has no turn yet: meter the baseline it would start from —
 	// memory + the local system tools (no MCP, so opening connects nothing) + the

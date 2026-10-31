@@ -299,9 +299,9 @@
   // status bar shows usage before the first message and again on reopen — not
   // only after a turn's `done`. Guarded against a fast switch; a failed fetch
   // leaves the bar as it was rather than flashing a stale chat's number.
-  async function loadBudget(id) {
+  async function loadBudget(id, fresh = false) {
     try {
-      const b = await apiFetch(`/api/conversations/${id}/budget`).then((r) => (r.ok ? r.json() : null))
+      const b = await apiFetch(`/api/conversations/${id}/budget${fresh ? '?fresh=1' : ''}`).then((r) => (r.ok ? r.json() : null))
       if (b && activeId === id) budget = b
     } catch {
       /* leave the bar as-is */
@@ -503,6 +503,7 @@
       body: JSON.stringify({ disabled }),
     })
     toolsOpen = false
+    loadBudget(activeId, true) // tools changed — re-meter so the new cost (and any overflow) shows now
   }
   function toggleToolGroup(g, on) {
     for (const t of g.tools) t.enabled = on
