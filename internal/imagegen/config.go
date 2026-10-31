@@ -173,3 +173,45 @@ func SafeDefault(c Config, prefer string) string {
 	}
 	return ""
 }
+
+// WithRecipe sets this model's recipe-override fields from r, but stores only the
+// values that differ from the name-inferred default (DefaultRecipe) — so a field
+// the user leaves at the default stays inferred and keeps tracking the built-in
+// recipes (and future improvements to them). Modules have no inferred default, so
+// they are stored as given. The Settings recipe editor uses this; a hand-edited
+// imagegen.json still works, since any non-zero field is an override either way.
+func (m ModelConfig) WithRecipe(r Recipe, modules []string) ModelConfig {
+	def := DefaultRecipe(m.Name)
+	m.Steps = overrideInt(r.Steps, def.Steps)
+	m.CFG = overrideFloat(r.CFG, def.CFG)
+	m.Sampler = overrideStr(r.Sampler, def.Sampler)
+	m.Scheduler = overrideStr(r.Scheduler, def.Scheduler)
+	m.Width = overrideInt(r.Width, def.Width)
+	m.Height = overrideInt(r.Height, def.Height)
+	m.Modules = modules
+	return m
+}
+
+// overrideInt keeps v as an explicit override only when it is a positive value
+// that differs from the default; otherwise 0, meaning "inherit the default".
+func overrideInt(v, def int) int {
+	if v > 0 && v != def {
+		return v
+	}
+	return 0
+}
+
+func overrideFloat(v, def float64) float64 {
+	if v > 0 && v != def {
+		return v
+	}
+	return 0
+}
+
+func overrideStr(v, def string) string {
+	v = strings.TrimSpace(v)
+	if v != "" && v != def {
+		return v
+	}
+	return ""
+}
