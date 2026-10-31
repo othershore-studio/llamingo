@@ -7,8 +7,12 @@ package backend_test
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/lcpptest"
@@ -91,6 +95,39 @@ func TestChatStream(t *testing.T) {
 	}
 	if usage == nil || usage.PromptTokens != 12 {
 		t.Errorf("usage = %+v, want PromptTokens 12", usage)
+	}
+}
+
+// A backend that streams a little, then goes silent (an OOM-killed or crashed
+// llama-server) must not hang the turn forever: the idle-timeout aborts the read
+// and returns a clear error, after delivering whatever streamed first.
+func TestChatStreamIdleTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"}}]}\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done() // go silent, holding the connection open
+	}))
+	defer srv.Close()
+
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()), backend.WithStreamIdleTimeout(200*time.Millisecond))
+	var content strings.Builder
+	err := be.ChatStream(context.Background(),
+		backend.ChatRequest{Messages: []backend.Message{{Role: backend.RoleUser, Content: "hi"}}},
+		func(d backend.Delta) error {
+			content.WriteString(d.Content)
+			return nil
+		})
+	if err == nil {
+		t.Fatal("expected an idle-timeout error from a silent backend, got nil")
+	}
+	if !strings.Contains(err.Error(), "silent") {
+		t.Errorf("error = %v, want a 'went silent' timeout error", err)
+	}
+	if content.String() != "Hi" {
+		t.Errorf("content before the stall = %q, want the partial %q", content.String(), "Hi")
 	}
 }
 

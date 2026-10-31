@@ -15,17 +15,28 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // LlamaCppNative talks to a llama.cpp `llama-server` over its native endpoints
 // (/props, /tokenize, /apply-template) and the OpenAI-compatible streaming chat
 // endpoint. It is the only Backend implementation.
 type LlamaCppNative struct {
-	mu      sync.RWMutex
-	baseURL string
-	token   string
-	http    *http.Client
+	mu          sync.RWMutex
+	baseURL     string
+	token       string
+	http        *http.Client
+	idleTimeout time.Duration
 }
+
+// streamIdleTimeout is how long ChatStream waits for any data from llama-server
+// before giving up. A live generation streams tokens continuously, and even a
+// large prompt's first-token latency on the biggest local models stays well under
+// this; a longer silence means the server crashed or was OOM-killed (e.g. by a
+// shared-GPU image load), so the read is aborted and an error surfaced rather than
+// freezing the turn forever. Override with WithStreamIdleTimeout.
+const streamIdleTimeout = 120 * time.Second
 
 // Option configures a LlamaCppNative.
 type Option func(*LlamaCppNative)
@@ -36,12 +47,24 @@ func WithHTTPClient(c *http.Client) Option { return func(l *LlamaCppNative) { l.
 // WithToken sets a bearer token for an auth-fronted reverse proxy.
 func WithToken(t string) Option { return func(l *LlamaCppNative) { l.token = t } }
 
+// WithStreamIdleTimeout overrides how long ChatStream tolerates silence from
+// llama-server before treating it as dead (default streamIdleTimeout). Tests set
+// it small; a caller may raise it for an unusually slow endpoint.
+func WithStreamIdleTimeout(d time.Duration) Option {
+	return func(l *LlamaCppNative) {
+		if d > 0 {
+			l.idleTimeout = d
+		}
+	}
+}
+
 // New returns a LlamaCppNative for the given base URL (e.g.
 // "http://localhost:8080" or "https://host/llama"); a trailing slash is fine.
 func New(baseURL string, opts ...Option) *LlamaCppNative {
 	l := &LlamaCppNative{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    http.DefaultClient,
+		baseURL:     strings.TrimRight(baseURL, "/"),
+		http:        http.DefaultClient,
+		idleTimeout: streamIdleTimeout,
 	}
 	for _, o := range opts {
 		o(l)
@@ -143,11 +166,29 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn fun
 	if len(req.TemplateKwargs) > 0 {
 		body["chat_template_kwargs"] = req.TemplateKwargs
 	}
-	resp, err := l.post(ctx, "/v1/chat/completions", body)
+	// Watchdog against a silently dead backend: a shared-GPU image load can OOM
+	// llama-server mid-turn, after which the stream read below would block forever
+	// and freeze the turn. If no data arrives for l.idleTimeout, cancel the request
+	// so the read returns, and surface a clear error instead of hanging. Reset on
+	// every line, so a long but live generation is never cut off.
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var timedOut atomic.Bool
+	watchdog := time.AfterFunc(l.idleTimeout, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	defer watchdog.Stop()
+
+	resp, err := l.post(reqCtx, "/v1/chat/completions", body)
 	if err != nil {
+		if timedOut.Load() {
+			return fmt.Errorf("llama: backend went silent for %s before responding — it may have crashed or run out of memory", l.idleTimeout)
+		}
 		return err
 	}
 	defer resp.Body.Close()
+	watchdog.Reset(l.idleTimeout) // headers are in; now watch for the stream going quiet
 
 	acc := map[int]*ToolCall{}
 	var order []int
@@ -170,6 +211,9 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn fun
 	br := bufio.NewReader(resp.Body)
 	for {
 		line, readErr := br.ReadString('\n')
+		if readErr == nil {
+			watchdog.Reset(l.idleTimeout) // data is flowing — keep the turn alive
+		}
 		if data, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "data:"); ok {
 			data = strings.TrimSpace(data)
 			if data == "[DONE]" {
@@ -216,6 +260,9 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn fun
 			break
 		}
 		if readErr != nil {
+			if timedOut.Load() {
+				return fmt.Errorf("llama: backend went silent for %s — it may have crashed or run out of memory", l.idleTimeout)
+			}
 			return fmt.Errorf("llama: read stream: %w", readErr)
 		}
 	}
