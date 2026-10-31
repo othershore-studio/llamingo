@@ -91,6 +91,23 @@
     }, 80)
     return () => clearInterval(id)
   })
+  // The indicator's label: during an image generation, name the model so a slow
+  // model-load reads as progress, not a freeze ("Generating with Juggernaut…").
+  // Otherwise the playful themed word. The model comes from the tool-call args
+  // when the model named one; a blank falls back to a generic phrase.
+  function workingLabel(m) {
+    if (toolRunning && m?.tools?.length) {
+      const t = m.tools[m.tools.length - 1]
+      if (t?.name === 'generate_image') {
+        let model = ''
+        try {
+          model = JSON.parse(t.arguments || '{}').model || ''
+        } catch {}
+        return model ? `Generating with ${model}` : 'Generating an image'
+      }
+    }
+    return workingWord
+  }
   let budget = $state(null) // { used, nCtx, level }
   let speed = $state(null) // last turn's tokens/sec: { promptPerSecond, predictPerSecond, predictN }
   let error = $state(null)
@@ -122,6 +139,7 @@
   let imageDefault = $state('') // chosen default model name
   let imageFetching = $state(false) // a fetch-from-Forge is in flight
   let imageError = $state('') // last fetch error, shown inline
+  let toolList = $state([]) // advertised tools for curation: [{name, description, enabled}]
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -134,6 +152,7 @@
   let onTop = $state(false) // always-on-top state
   let maximized = $state(false) // desktop window maximized? drives the maximize/restore icon
   let sidebarOpen = $state(loadSidebar()) // left panel shown? persisted per browser
+  let showDetail = $state(loadShowDetail()) // show the thinking trace + "used X" tool chips? (view-only, per browser)
   const SIDEBAR_MIN = 180, SIDEBAR_MAX = 460 // sidebar drag-resize clamp (px)
   let sidebarWidth = $state(loadSidebarWidth()) // left panel width, drag-resizable + persisted
   // Thin-window (drawer) mode. The breakpoint lives here in JS as the
@@ -314,6 +333,7 @@
     settingsForgeUrl = s.forgeUrl ?? ''
     settingsDebug = s.debug ?? false
     await loadImageModels()
+    await loadTools()
     settingsOpen = true
   }
   async function saveSettings() {
@@ -330,6 +350,7 @@
       if (imageModels.length) await saveImageModels()
       else await fetchImageModels()
     }
+    await saveTools()
     settingsOpen = false
     checkServer() // re-poll so the status reflects the new connection now
   }
@@ -380,6 +401,27 @@
         default: imageDefault,
         models: imageModels.map((m) => ({ name: m.name, autoPick: !!m.autoPick })),
       }),
+    })
+  }
+
+  // Tool curation — load the advertised tools and persist which are turned off,
+  // so a small model isn't drowned by the full set. Skip the save when the list
+  // is empty (nothing to curate, or the load failed — don't clobber the saved set).
+  async function loadTools() {
+    try {
+      const d = await apiFetch('/api/tools').then((r) => r.json())
+      toolList = d.tools ?? []
+    } catch {
+      toolList = []
+    }
+  }
+  async function saveTools() {
+    if (!toolList.length) return
+    const disabled = toolList.filter((t) => !t.enabled).map((t) => t.name)
+    await apiFetch('/api/tools', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ disabled }),
     })
   }
 
@@ -679,6 +721,22 @@
       localStorage.setItem('llamingo.sidebar', sidebarOpen ? 'open' : 'closed')
     } catch {}
   }
+  // Detailed vs chat-only reading: whether to show the assistant's thinking trace
+  // and "used X" tool chips. View-only and per browser — the trail is still saved
+  // to disk and still re-enters nothing; this only hides it. Defaults to shown.
+  function loadShowDetail() {
+    try {
+      return localStorage.getItem('llamingo.showDetail') !== 'off'
+    } catch {
+      return true
+    }
+  }
+  function setShowDetail(v) {
+    showDetail = v
+    try {
+      localStorage.setItem('llamingo.showDetail', v ? 'on' : 'off')
+    } catch {}
+  }
   // The hamburger toggles the saved sidebar when wide, but only the transient
   // drawer when thin — so toggling on a phone never rewrites the saved preference.
   function toggleNav() {
@@ -958,7 +1016,7 @@
       <div class="thread">
         {#if error}<p class="error">{error}</p>{/if}
         {#each messages as m, i}
-          {#if m.reasoning}
+          {#if showDetail && m.reasoning}
             <details class="thinking" open={streaming && i === messages.length - 1 && !m.content}>
               <summary>Thinking</summary>
               <div class="rtext prose">{@html md.render(m.reasoning)}</div>
@@ -967,7 +1025,7 @@
           {#if m.role === 'user'}
             <div class="msg user">{m.content}</div>
           {:else}
-            {#if m.tools?.length}
+            {#if showDetail && m.tools?.length}
               {#each m.tools as t}
                 <div class="toolcall" title={t.arguments}>used <strong>{t.name}</strong></div>
               {/each}
@@ -976,7 +1034,7 @@
               <div class="msg assistant prose" use:copyableCode={m.content}>{@html renderContent(m.content)}</div>
             {/if}
             {#if streaming && i === messages.length - 1 && (m.content === '' || toolRunning)}
-              <div class="msg assistant" style="opacity:.6">{SPINNER[spinnerFrame]} {workingWord}…</div>
+              <div class="msg assistant" style="opacity:.6">{SPINNER[spinnerFrame]} {workingLabel(m)}…</div>
             {/if}
           {/if}
           {#if m.time && (m.role === 'user' || m.content !== '')}
@@ -1175,6 +1233,24 @@
             placeholder="e.g. Quito, Ecuador — blank to share none"
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
+        </label>
+
+        {#if toolList.length}
+          <div class="group-head">Tools <span class="muted">({toolList.filter((t) => t.enabled).length}/{toolList.length} on — trim if the model gets confused)</span></div>
+          <div class="toollist">
+            {#each toolList as t (t.name)}
+              <label class="toolrow" title={t.description || ''}>
+                <input type="checkbox" bind:checked={t.enabled} />
+                <span class="toolname">{t.name}</span>
+              </label>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="group-head">Display</div>
+        <label class="setting">
+          <span>Show thinking &amp; tool activity <span class="muted">(off = chat only; view-only, saved per browser)</span></span>
+          <input type="checkbox" checked={showDetail} onchange={(e) => setShowDetail(e.currentTarget.checked)} style="width:auto" />
         </label>
 
         <div class="group-head">Debug</div>
@@ -1891,6 +1967,28 @@
     width: auto;
     margin: 0;
     cursor: pointer;
+  }
+  .toollist {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 10px;
+  }
+  .toolrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    cursor: pointer;
+  }
+  .toolrow input {
+    width: auto;
+    margin: 0;
+    cursor: pointer;
+  }
+  .toolname {
+    font-size: 13px;
   }
   .modal-backdrop {
     position: fixed;
