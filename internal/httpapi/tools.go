@@ -37,8 +37,9 @@ type toolItem struct {
 // toolGroup groups tools by source for the UI: one "system" group (the built-in
 // tools) and one "mcp" group per connected server.
 type toolGroup struct {
-	Kind  string     `json:"kind"` // "system" | "mcp"
-	Name  string     `json:"name"`
+	Kind  string     `json:"kind"`            // "system" | "mcp"
+	Name  string     `json:"name"`            //
+	Scope string     `json:"scope,omitempty"` // "project" for a project's own MCP server (else global)
 	Tools []toolItem `json:"tools"`
 }
 
@@ -53,6 +54,26 @@ func toolItemsOf(reg mcp.Registry, disabled map[string]bool) []toolItem {
 	return items
 }
 
+// mcpGroupsOf turns a ServerRegistry's servers into one group each; scope tags a
+// project's own servers so the UI can tell them from the global ones.
+func mcpGroupsOf(reg mcp.Registry, disabled map[string]bool, scope string) []toolGroup {
+	sr, ok := reg.(*mcp.ServerRegistry)
+	if !ok {
+		return nil
+	}
+	var out []toolGroup
+	for _, g := range sr.ToolsByServer() {
+		grp := toolGroup{Kind: "mcp", Name: g.Server, Scope: scope}
+		for _, t := range g.Tools {
+			grp.Tools = append(grp.Tools, toolItem{Name: t.Name, Description: t.Description, Enabled: !disabled[t.Name]})
+		}
+		if len(grp.Tools) > 0 {
+			out = append(out, grp)
+		}
+	}
+	return out
+}
+
 // GET /api/conversations/{id}/tools — the tools offered in this chat, grouped into
 // the built-in "System" tools and one group per MCP server, each marked enabled or
 // disabled for this chat. A small local model drowns in too many tools, so each
@@ -65,6 +86,7 @@ func (s *Server) handleGetConversationTools(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	disabled := toSet(disabledList)
+	root, hasRoot, _ := s.st.ProjectRoot(id)
 	var groups []toolGroup
 
 	// System tools: memory + local always; the project file tools when this chat
@@ -72,7 +94,7 @@ func (s *Server) handleGetConversationTools(w http.ResponseWriter, r *http.Reque
 	sys := toolGroup{Kind: "system", Name: "System"}
 	sys.Tools = append(sys.Tools, toolItemsOf(memtool.NewTool(s.st, nil), disabled)...)
 	sys.Tools = append(sys.Tools, toolItemsOf(localtools.NewTool(s.locationSetting), disabled)...)
-	if root, ok, _ := s.st.ProjectRoot(id); ok && root != "" {
+	if hasRoot && root != "" {
 		sys.Tools = append(sys.Tools, toolItemsOf(filetools.NewTool(root), disabled)...)
 	}
 	if tool := s.imageTool(id, nil); tool != nil {
@@ -82,17 +104,11 @@ func (s *Server) handleGetConversationTools(w http.ResponseWriter, r *http.Reque
 		groups = append(groups, sys)
 	}
 
-	// MCP servers, grouped by server.
-	if sr, ok := s.globalServers().(*mcp.ServerRegistry); ok {
-		for _, g := range sr.ToolsByServer() {
-			grp := toolGroup{Kind: "mcp", Name: g.Server}
-			for _, t := range g.Tools {
-				grp.Tools = append(grp.Tools, toolItem{Name: t.Name, Description: t.Description, Enabled: !disabled[t.Name]})
-			}
-			if len(grp.Tools) > 0 {
-				groups = append(groups, grp)
-			}
-		}
+	// MCP servers, grouped by server: the global ones, then this project's own
+	// (from its .mcp.json), so project tools can be curated per chat too.
+	groups = append(groups, mcpGroupsOf(s.globalServers(), disabled, "")...)
+	if hasRoot && root != "" {
+		groups = append(groups, mcpGroupsOf(s.projectServers(root), disabled, "project")...)
 	}
 
 	if groups == nil {
