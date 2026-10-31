@@ -44,6 +44,14 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"inProject": true, "root": root, "systemTools": system, "mcp": pmcp})
 }
 
+// GET /api/project/status?conv=<id> — a cheap "is this chat a project session?"
+// for the status bar's Project control. Unlike /api/project it touches no MCP, so
+// switching between chats never triggers a project-server connection (or its gate).
+func (s *Server) handleGetProjectStatus(w http.ResponseWriter, r *http.Request) {
+	root, ok, _ := s.st.ProjectRoot(r.URL.Query().Get("conv"))
+	writeJSON(w, map[string]any{"inProject": ok && root != ""})
+}
+
 // PUT /api/project?conv=<id> {disabledSystem:[names]} — persist the system tools a
 // new session in this project starts with off (to .llamingo/project.json).
 func (s *Server) handlePutProject(w http.ResponseWriter, r *http.Request) {

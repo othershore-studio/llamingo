@@ -899,6 +899,19 @@
     document.title = t
     if (isDesktop) window.runtime?.WindowSetTitle?.(t)
   })
+  // Know eagerly whether the active chat is a project session, so the status bar
+  // can gate its Project control without opening the surface. Uses the cheap
+  // /status probe (no MCP), and discards a stale answer on a fast chat switch.
+  $effect(() => {
+    const id = activeId
+    if (!id) { projectInProject = false; return }
+    let cancelled = false
+    apiFetch(`/api/project/status?conv=${id}`)
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) projectInProject = !!d.inProject })
+      .catch(() => { if (!cancelled) projectInProject = false })
+    return () => { cancelled = true }
+  })
 </script>
 
 <div class="app">
@@ -980,7 +993,6 @@
   {#if actionsMenu}
     <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
     <nav class="sysmenu actionsmenu" class:up={narrow}>
-      <button onclick={() => { actionsMenu = false; openProject() }} disabled={!activeId}>Project</button>
       <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
       <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
     </nav>
@@ -1195,12 +1207,18 @@
     {:else}
       <span>connecting…</span>
     {/if}
+    {#if projectInProject && !narrow}
+      <button class="statusbtn" onclick={openProject} aria-label="Project" title="Project settings">Project</button>
+    {/if}
     <span class="spacer"></span>
     {#if report}<span class="report">{report}</span>{/if}
     {#if speed}<span title="generation tokens per second">{Math.round(speed.predictPerSecond)} tok/s</span>{/if}
     {#if budget}
       <span>context {budget.used} / {budget.nCtx}</span>
       <span class="bar {budget.level}"><span class="fill" style="width:{pct}%"></span></span>
+    {/if}
+    {#if projectInProject && narrow}
+      <button class="statusbtn icon" onclick={openProject} aria-label="Project" title="Project"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z" /></svg></button>
     {/if}
     {#if activeId}
       <button class="statusbtn" class:icon={narrow} onclick={compact} disabled={streaming} aria-label="Compact" title="Compact">
