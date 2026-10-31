@@ -49,6 +49,16 @@ func DefaultRecipe(name string) Recipe {
 	}
 }
 
+// defaultAutoPick infers whether a model is safe to auto-select from its name.
+// Modern DiTs (z_image / flux / qwen / anima) load large encoders/VAEs — a heavy
+// VRAM swap that can OOM the chat model on a shared GPU — so they are off by
+// default; SDXL/SD1.5 are light enough to pick freely. Override per model with
+// ModelConfig.AutoPick when the card has headroom.
+func defaultAutoPick(name string) bool {
+	n := strings.ToLower(name)
+	return !has(n, "z_image", "z-image", "zimage", "flux", "klein", "qwen", "anima")
+}
+
 // variant lowers steps/CFG and switches the sampler for a turbo/lightning/flash
 // few-step checkpoint (not applied to the modern DiTs, which are already few-step).
 func variant(n string, r Recipe) Recipe {

@@ -20,6 +20,7 @@ import (
 type ModelConfig struct {
 	Name      string   `json:"name"`
 	Modules   []string `json:"modules,omitempty"`
+	AutoPick  *bool    `json:"autoPick,omitempty"` // may it be auto-selected? nil = infer from the name
 	Steps     int      `json:"steps,omitempty"`
 	CFG       float64  `json:"cfg,omitempty"`
 	Sampler   string   `json:"sampler,omitempty"`
@@ -55,6 +56,18 @@ func (m ModelConfig) Recipe() Recipe {
 		r.Note = m.Note
 	}
 	return r
+}
+
+// AutoPickable reports whether the model may be selected automatically — by the
+// model from list_image_models, or as the sticky default when a generation names
+// none. A configured AutoPick wins; otherwise it is inferred from the name
+// (modern DiTs are heavy on a shared GPU, so off; SDXL/SD1.5 are light, so on).
+// See defaultAutoPick.
+func (m ModelConfig) AutoPickable() bool {
+	if m.AutoPick != nil {
+		return *m.AutoPick
+	}
+	return defaultAutoPick(m.Name)
 }
 
 // Config is the image-generation configuration — the enabled models and which is
