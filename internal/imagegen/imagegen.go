@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
@@ -71,6 +72,27 @@ const (
 // racing. There is no setting: running two at once on one GPU never wins; a bigger
 // card or a second backend is a future concern (Taita's, eventually).
 var genSem = make(chan struct{}, 1)
+
+// lastModel remembers the checkpoint the last successful generation used, which
+// ≈ what Forge has resident. A generation that names no model prefers this (when
+// it's still auto-pickable) over the configured default, to skip the few-second
+// checkpoint reload. Guarded because the permission gate runs before the queue.
+var (
+	lastModelMu sync.Mutex
+	lastModelNm string
+)
+
+func lastModel() string {
+	lastModelMu.Lock()
+	defer lastModelMu.Unlock()
+	return lastModelNm
+}
+
+func setLastModel(name string) {
+	lastModelMu.Lock()
+	lastModelNm = name
+	lastModelMu.Unlock()
+}
 
 // Tool is the built-in image-generation tool. Its Tools/Call methods satisfy the
 // MCP loop's Registry, so it is offered alongside MCP tools. It is wired only
@@ -138,12 +160,9 @@ func (t *Tool) generate(ctx context.Context, arguments string) (string, error) {
 	if strings.TrimSpace(a.Prompt) == "" {
 		return "", fmt.Errorf("imagegen: prompt is required")
 	}
-	mc, ok := t.cfg.Model(a.Model)
+	mc, result, ok := t.resolveModel(a.Model)
 	if !ok {
-		if a.Model != "" {
-			return fmt.Sprintf("No image model named %q. Call list_image_models to see the configured ones.", a.Model), nil
-		}
-		return "No default image model is configured. Call list_image_models, or ask the user to set one.", nil
+		return result, nil // a result explaining why (unknown / not auto-pickable / none configured)
 	}
 	r := mc.Recipe()
 
@@ -178,6 +197,7 @@ func (t *Tool) generate(ctx context.Context, arguments string) (string, error) {
 	if err != nil {
 		return "Image generation failed: " + err.Error(), nil
 	}
+	setLastModel(mc.Name) // now resident in Forge — prefer it next time, to skip a reload
 	fname, err := randomName(extForMIME(img.MIME))
 	if err != nil {
 		return "", err
@@ -188,6 +208,34 @@ func (t *Tool) generate(ctx context.Context, arguments string) (string, error) {
 	}
 	return fmt.Sprintf("Image generated with %s (seed %d, %s): ![generated image](%s)",
 		mc.Name, img.Seed, time.Since(start).Round(time.Second), ref), nil
+}
+
+// resolveModel picks the model for a generation. A named model must be configured
+// and auto-pickable (heavy DiTs are opt-in — see ModelConfig.AutoPickable); an
+// unnamed one prefers the last-used model when it's still auto-pickable (likely
+// resident in Forge, so no reload), else the configured default. ok is false when
+// nothing usable resolves, and result is the message to show in that case.
+func (t *Tool) resolveModel(name string) (mc ModelConfig, result string, ok bool) {
+	if name != "" {
+		m, found := t.cfg.Model(name)
+		if !found {
+			return ModelConfig{}, fmt.Sprintf("No image model named %q. Call list_image_models to see the ones available.", name), false
+		}
+		if !m.AutoPickable() {
+			return ModelConfig{}, fmt.Sprintf("The %q model is not enabled for automatic use — it may need more VRAM than the shared GPU can spare. The user can enable it in the image config.", name), false
+		}
+		return m, "", true
+	}
+	if last := lastModel(); last != "" {
+		if m, found := t.cfg.Model(last); found && m.AutoPickable() {
+			return m, "", true
+		}
+	}
+	m, found := t.cfg.Model("")
+	if !found {
+		return ModelConfig{}, "No default image model is configured. Call list_image_models, or ask the user to set one.", false
+	}
+	return m, "", true
 }
 
 // listModels reports the configured models and their prompt style, so the model
@@ -207,6 +255,9 @@ func (t *Tool) listModels() string {
 		fmt.Fprintf(&b, "- %s — prompt style: %s", m.Name, r.PromptStyle)
 		if r.Note != "" {
 			fmt.Fprintf(&b, " (%s)", r.Note)
+		}
+		if !m.AutoPickable() {
+			b.WriteString(" — opt-in only; the user must enable it (heavy on a shared GPU)")
 		}
 		b.WriteByte('\n')
 	}

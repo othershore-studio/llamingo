@@ -177,3 +177,99 @@ func TestToolAdvertised(t *testing.T) {
 		t.Errorf("tool names = %v, want generate_image + list_image_models", names)
 	}
 }
+
+// AutoPickable infers from the name — SDXL/SD1.5 on, modern DiTs off — and an
+// explicit AutoPick overrides either way.
+func TestAutoPickable(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		m    imagegen.ModelConfig
+		want bool
+	}{
+		{imagegen.ModelConfig{Name: "DreamShaperXL_Turbo_SFW"}, true},
+		{imagegen.ModelConfig{Name: "Juggernaut-XI-byRunDiffusion"}, true},
+		{imagegen.ModelConfig{Name: "NoobAI-XL-v1.1"}, true},
+		{imagegen.ModelConfig{Name: "z_image_turbo"}, false},
+		{imagegen.ModelConfig{Name: "flux-2-klein-4b"}, false},
+		{imagegen.ModelConfig{Name: "qwen-image"}, false},
+		{imagegen.ModelConfig{Name: "flux-2-klein-4b", AutoPick: &yes}, true},
+		{imagegen.ModelConfig{Name: "DreamShaperXL_Turbo_SFW", AutoPick: &no}, false},
+	}
+	for _, c := range cases {
+		if got := c.m.AutoPickable(); got != c.want {
+			t.Errorf("AutoPickable(%q, override=%v) = %v, want %v", c.m.Name, c.m.AutoPick, got, c.want)
+		}
+	}
+}
+
+// list_image_models shows every configured model but marks the non-auto-pickable
+// ones opt-in, so the model is steered to the safe set (the hard stop is in
+// generate; see TestGenerateRefusesNonAutoPickModel).
+func TestListModelsMarksOptIn(t *testing.T) {
+	cfg := imagegen.Config{
+		Default: "DreamShaperXL_Turbo_SFW",
+		Models: []imagegen.ModelConfig{
+			{Name: "DreamShaperXL_Turbo_SFW"},
+			{Name: "flux-2-klein-4b"}, // modern DiT → opt-in
+		},
+	}
+	lst, _ := imagegen.NewTool(&fakeGen{}, nopSink{}, gate(true), cfg).Call(context.Background(), imagegen.ToolListModels, `{}`)
+	if !strings.Contains(lst, "DreamShaperXL_Turbo_SFW") || !strings.Contains(lst, "flux-2-klein-4b") {
+		t.Errorf("list should show both models: %q", lst)
+	}
+	if !strings.Contains(strings.ToLower(lst), "opt-in") {
+		t.Errorf("list should mark the heavy model opt-in: %q", lst)
+	}
+}
+
+// A model that isn't auto-pickable is refused as a result (not generated), so the
+// model can't drive a heavy DiT load on the shared GPU on its own.
+func TestGenerateRefusesNonAutoPickModel(t *testing.T) {
+	gen := &fakeGen{}
+	cfg := imagegen.Config{
+		Default: "DreamShaperXL_Turbo_SFW",
+		Models: []imagegen.ModelConfig{
+			{Name: "DreamShaperXL_Turbo_SFW"},
+			{Name: "flux-2-klein-4b"},
+		},
+	}
+	out, err := imagegen.NewTool(gen, nopSink{}, gate(true), cfg).Call(context.Background(), imagegen.ToolName, `{"prompt":"x","model":"flux-2-klein-4b"}`)
+	if err != nil {
+		t.Fatalf("a refusal should be a result, not an error: %v", err)
+	}
+	if gen.calls != 0 {
+		t.Errorf("a non-auto-pick model should not generate (calls=%d)", gen.calls)
+	}
+	if !strings.Contains(strings.ToLower(out), "not enabled") {
+		t.Errorf("refusal = %q, want a 'not enabled for automatic use' message", out)
+	}
+}
+
+// With no model named, a generation reuses the last-used model (while it's still
+// auto-pickable) instead of the configured default — it's likely resident, so no
+// reload. Both models here are SDXL (auto-pickable).
+func TestStickyDefaultReusesLastSafeModel(t *testing.T) {
+	gen := &fakeGen{}
+	cfg := imagegen.Config{
+		Default: "DreamShaperXL_Turbo_SFW",
+		Models: []imagegen.ModelConfig{
+			{Name: "DreamShaperXL_Turbo_SFW"},
+			{Name: "Juggernaut-XI-byRunDiffusion"},
+		},
+	}
+	tool := imagegen.NewTool(gen, nopSink{}, gate(true), cfg)
+	ctx := context.Background()
+
+	if _, err := tool.Call(ctx, imagegen.ToolName, `{"prompt":"a","model":"Juggernaut-XI-byRunDiffusion"}`); err != nil {
+		t.Fatal(err)
+	}
+	if gen.opts.Model != "Juggernaut-XI-byRunDiffusion" {
+		t.Fatalf("explicit model = %q, want Juggernaut", gen.opts.Model)
+	}
+	if _, err := tool.Call(ctx, imagegen.ToolName, `{"prompt":"b"}`); err != nil {
+		t.Fatal(err)
+	}
+	if gen.opts.Model != "Juggernaut-XI-byRunDiffusion" {
+		t.Errorf("sticky default = %q, want the last-used Juggernaut (not the configured default)", gen.opts.Model)
+	}
+}
