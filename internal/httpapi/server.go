@@ -332,13 +332,23 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 // mirrors handleChatStream's pre-turn estimate, so (as there) tool schemas aren't
 // counted — the authoritative correction only lands once a turn actually runs.
 func (s *Server) handleGetBudget(w http.ResponseWriter, r *http.Request) {
-	prior, err := s.st.LoadConversation(r.PathValue("id"))
+	id := r.PathValue("id")
+	// A chat that has had a turn carries its last accounting (authoritative,
+	// tool-inclusive) in meta — show that, no re-metering or MCP connection.
+	if b, ok, err := s.st.ConversationBudget(id); err == nil && ok {
+		writeJSON(w, map[string]any{"used": b.Used, "nCtx": b.NCtx, "level": b.Level})
+		return
+	}
+	// A fresh chat has no turn yet: meter the baseline it would start from —
+	// memory + the local system tools (no MCP, so opening connects nothing) + the
+	// (empty) history — so usage shows before the first message, tools included.
+	prior, err := s.st.LoadConversation(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	messages := messagesFromEntries(store.Project(prior))
-	bud, err := contextbudget.New(s.be).Estimate(r.Context(), s.segmentsFor(messages))
+	bud, err := contextbudget.New(s.be).Estimate(r.Context(), s.segmentsFor(messages, s.budgetTools(id)))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -384,7 +394,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 
 	bld := contextbudget.New(s.be)
-	segs := s.segmentsFor(messages)
+	segs := s.segmentsFor(messages, nil)
 	bud, err := bld.Estimate(r.Context(), segs)
 	if err != nil {
 		writeEvent(w, flusher, "error", map[string]any{"error": err.Error()})
@@ -397,7 +407,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if res, cerr := s.compactConversation(r.Context(), body.ID); cerr == nil && res.Folded > 0 {
 			if entries, lerr := s.st.LoadConversation(body.ID); lerr == nil {
 				messages = messagesFromEntries(store.Project(entries))
-				segs = s.segmentsFor(messages)
+				segs = s.segmentsFor(messages, nil)
 				if b, eerr := bld.Estimate(r.Context(), segs); eerr == nil {
 					bud = b
 				}
@@ -493,6 +503,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			"predictN":         timings.PredictN,
 		}
 	}
+	// Persist this turn's accounting so the status bar shows it again on reopen,
+	// without re-metering (and with the authoritative count folded in). See
+	// handleGetBudget.
+	_ = s.st.SetConversationBudget(body.ID, store.BudgetStatus{Used: bud.Used(), NCtx: bud.NCtx, Level: string(bud.Level())})
 	emit("done", donePayload)
 }
 

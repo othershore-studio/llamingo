@@ -347,6 +347,47 @@ func (s *Store) SetConversationTools(id string, disabled []string) error {
 	return writeJSON(metaPath, m)
 }
 
+// BudgetStatus is a chat's context accounting from its last turn (used tokens,
+// the context window, and the health level) — persisted in meta.json so the
+// status bar can show it again on reopen without re-metering the prompt.
+type BudgetStatus struct {
+	Used  int    `json:"used"`
+	NCtx  int    `json:"nCtx"`
+	Level string `json:"level"`
+}
+
+// ConversationBudget returns the chat's last-turn budget (ok=false when no turn
+// has run yet).
+func (s *Store) ConversationBudget(id string) (BudgetStatus, bool, error) {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return BudgetStatus{}, false, err
+	}
+	var m ConversationMeta
+	if err := readJSON(filepath.Join(dir, "meta.json"), &m); err != nil {
+		return BudgetStatus{}, false, fmt.Errorf("store: read meta for budget: %w", err)
+	}
+	if m.LastBudget == nil {
+		return BudgetStatus{}, false, nil
+	}
+	return *m.LastBudget, true, nil
+}
+
+// SetConversationBudget records the chat's last-turn budget for the status bar.
+func (s *Store) SetConversationBudget(id string, b BudgetStatus) error {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return err
+	}
+	metaPath := filepath.Join(dir, "meta.json")
+	var m ConversationMeta
+	if err := readJSON(metaPath, &m); err != nil {
+		return fmt.Errorf("store: read meta for budget: %w", err)
+	}
+	m.LastBudget = &b
+	return writeJSON(metaPath, m)
+}
+
 // Delete removes a conversation (chat or session) and its directory from disk.
 // The listing self-heals from the files, so nothing else needs updating.
 func (s *Store) Delete(id string) error {

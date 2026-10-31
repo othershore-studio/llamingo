@@ -48,16 +48,28 @@ func (s *Server) handleAckMemory(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// segmentsFor builds the metered prompt segments for a turn: the personal memory
-// (when non-empty) as its own "memory" segment, then the conversation. Keeping
-// memory a distinct segment is what lets the budget report its cost honestly.
-func (s *Server) segmentsFor(messages []backend.Message) []contextbudget.Segment {
+// segmentsFor builds the metered prompt segments: the personal memory (when
+// non-empty), the offered tools (when any), then the conversation — each a
+// distinct segment so the budget reports its cost honestly. The tools are
+// rendered as a system message of their schemas, a close estimate of what the
+// chat template injects (the authoritative count folds in once a turn runs); the
+// tool schemas are a real chunk of the budget, so a chat that offers them reads
+// honestly even before its first message. Pass nil tools to meter without them.
+func (s *Server) segmentsFor(messages []backend.Message, tools []backend.ToolDef) []contextbudget.Segment {
 	var segs []contextbudget.Segment
 	if mem, _, err := s.st.Memory(); err == nil && strings.TrimSpace(mem) != "" {
 		segs = append(segs, contextbudget.Segment{
 			Name:     "memory",
 			Messages: []backend.Message{{Role: backend.RoleSystem, Content: "Personal memory:\n" + mem}},
 		})
+	}
+	if len(tools) > 0 {
+		if b, err := json.Marshal(tools); err == nil {
+			segs = append(segs, contextbudget.Segment{
+				Name:     "tools",
+				Messages: []backend.Message{{Role: backend.RoleSystem, Content: "Tools available:\n" + string(b)}},
+			})
+		}
 	}
 	return append(segs, contextbudget.Segment{Name: "conversation", Messages: messages})
 }

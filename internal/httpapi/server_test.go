@@ -631,24 +631,25 @@ func TestChatStreamReportsSpeed(t *testing.T) {
 	}
 }
 
-// The budget endpoint reports honest context usage for a chat's current state —
-// a baseline before any turn, then grown by the history after one — so the
-// status bar can show it on open, not only after a turn's done event.
+// The budget endpoint reports honest context usage on open — a baseline before
+// any turn (so the status bar isn't blank on a fresh chat), then the last turn's
+// persisted accounting after one (so a reopen shows it without re-metering).
 func TestConversationBudget(t *testing.T) {
 	api := newAPI(t)
 	id := createChat(t, api, "Budget")
 
-	var before struct {
+	// Before any turn: a metered baseline (memory + system tools + empty history).
+	var baseline struct {
 		Used  int    `json:"used"`
 		NCtx  int    `json:"nCtx"`
 		Level string `json:"level"`
 	}
-	getJSONInto(t, api.URL+"/api/conversations/"+id+"/budget", &before)
-	if before.NCtx <= 0 {
-		t.Fatalf("baseline budget nCtx = %d, want > 0", before.NCtx)
+	getJSONInto(t, api.URL+"/api/conversations/"+id+"/budget", &baseline)
+	if baseline.NCtx <= 0 || baseline.Used <= 0 {
+		t.Fatalf("baseline budget = %+v, want used and nCtx > 0", baseline)
 	}
 
-	// Run a turn so the chat gains history.
+	// After a turn: the persisted last-turn status.
 	resp, err := http.Post(api.URL+"/api/chat/stream", "application/json",
 		strings.NewReader(`{"id":"`+id+`","content":"Tell me about Kyoto temples in some detail."}`))
 	if err != nil {
@@ -662,8 +663,8 @@ func TestConversationBudget(t *testing.T) {
 		NCtx int `json:"nCtx"`
 	}
 	getJSONInto(t, api.URL+"/api/conversations/"+id+"/budget", &after)
-	if after.Used <= before.Used {
-		t.Errorf("budget used after a turn = %d, want more than the baseline (%d)", after.Used, before.Used)
+	if after.Used <= 0 || after.NCtx <= 0 {
+		t.Errorf("post-turn budget = %+v, want used and nCtx > 0", after)
 	}
 }
 

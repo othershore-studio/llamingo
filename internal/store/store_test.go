@@ -46,6 +46,33 @@ func TestChatsCreateAndList(t *testing.T) {
 	}
 }
 
+// A chat's last-turn budget round-trips through meta.json: absent until set,
+// then read back.
+func TestConversationBudgetRoundTrip(t *testing.T) {
+	s, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.NewChat("Budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.ConversationBudget(c.ID); err != nil || ok {
+		t.Fatalf("a fresh chat should have no budget yet (ok=%v, err=%v)", ok, err)
+	}
+	want := store.BudgetStatus{Used: 9000, NCtx: 64000, Level: "healthy"}
+	if err := s.SetConversationBudget(c.ID, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.ConversationBudget(c.ID)
+	if err != nil || !ok {
+		t.Fatalf("ConversationBudget after set: ok=%v, err=%v", ok, err)
+	}
+	if got != want {
+		t.Errorf("budget = %+v, want %+v", got, want)
+	}
+}
+
 func TestRename(t *testing.T) {
 	s, err := store.Open(t.TempDir())
 	if err != nil {
