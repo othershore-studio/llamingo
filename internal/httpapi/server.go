@@ -86,6 +86,8 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("PUT /api/conversations/{id}/tools", s.handlePutConversationTools)
 	s.mux.HandleFunc("GET /api/mcp", s.handleGetMCP)
 	s.mux.HandleFunc("PUT /api/mcp", s.handlePutMCP)
+	s.mux.HandleFunc("GET /api/project", s.handleGetProject)
+	s.mux.HandleFunc("PUT /api/project", s.handlePutProject)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	s.mux.HandleFunc("POST /api/permission/{id}", s.handlePermission)
 	return s

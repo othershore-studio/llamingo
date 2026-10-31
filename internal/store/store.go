@@ -137,7 +137,10 @@ func (s *Store) NewSession(projectID ProjectID, title string) (ConversationMeta,
 		return ConversationMeta{}, err
 	}
 	now := time.Now().UTC()
-	m := ConversationMeta{ID: id, Title: title, Created: now, Updated: now}
+	// A new session inherits the project's tool defaults (it can still override
+	// them per chat); see .llamingo/project.json.
+	defaults, _ := s.ProjectToolDefaults(p.Path)
+	m := ConversationMeta{ID: id, Title: title, Created: now, Updated: now, DisabledTools: defaults}
 	dir := filepath.Join(s.folderRoot(), DirName(p.Path, s.caseSensitive), id)
 	if err := s.scaffoldConversation(dir, m); err != nil {
 		return ConversationMeta{}, err
