@@ -109,7 +109,6 @@
     return workingWord
   }
   let budget = $state(null) // { used, nCtx, level }
-  let speed = $state(null) // last turn's tokens/sec: { promptPerSecond, predictPerSecond, predictN }
   let error = $state(null)
   let convSummaries = $state([]) // compaction summaries, each anchored at its fold point in the thread
   let report = $state(null) // transient compaction report
@@ -281,7 +280,7 @@
       } else if (e.kind === 'toolcall') {
         tools.push({ name: e.name, arguments: e.content }) // name + args persisted; args drive the hover tooltip
       } else if (e.kind === 'msg') {
-        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', tools: e.role === 'assistant' ? tools : [], time: e.time })
+        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', tools: e.role === 'assistant' ? tools : [], time: e.time, tokPerSec: e.tokPerSec })
         trace = ''
         tools = []
       } else if (e.kind === 'summary') {
@@ -724,9 +723,16 @@
     } else if (event === 'done') {
       toolRunning = false
       pending = null // the turn resolved — dismiss any consent prompt that went unanswered
+      // Tag the turn's assistant bubble with its generation speed, so tok/s rides
+      // the response (beside its timestamp), not one global status-bar number. Done
+      // regardless of which chat is on screen, so a backgrounded turn keeps it too.
+      const tps = payload.timings?.predictPerSecond
+      if (tps && live?.length) {
+        const last = live[live.length - 1]
+        if (last?.role === 'assistant') last.tokPerSec = tps
+      }
       if (onScreen) {
         budget = payload.budget
-        speed = payload.timings ?? null
         reachable = true
       }
       reconcileFinal(streamingChatId, live)
@@ -1140,6 +1146,7 @@
             <div class="meta" class:mine={m.role === 'user'}>
               <button class="metabtn" onclick={() => copyMsg(m.content, i)}>{copiedAt === i ? 'copied' : 'copy'}</button>
               <span>{fmtTime(m.time)}</span>
+              {#if m.tokPerSec}<span title="generation tokens per second">· {Math.round(m.tokPerSec)} tok/s</span>{/if}
             </div>
           {/if}
           {#each convSummaries.filter((s) => s.afterIndex === i) as s}
@@ -1212,7 +1219,6 @@
     {/if}
     <span class="spacer"></span>
     {#if report}<span class="report">{report}</span>{/if}
-    {#if speed}<span title="generation tokens per second">{Math.round(speed.predictPerSecond)} tok/s</span>{/if}
     {#if budget}
       <span>context {budget.used} / {budget.nCtx}</span>
       <span class="bar {budget.level}"><span class="fill" style="width:{pct}%"></span></span>

@@ -39,6 +39,11 @@ type Entry struct {
 	Time    time.Time `json:"time"`
 	Content string    `json:"content"`
 
+	// Message-only (assistant turns): the generation speed of the turn (tokens/sec),
+	// persisted in the marker like the timestamp so the per-response tok/s shows
+	// again on reopen. Zero (omitted) for user/system messages and older logs.
+	TokPerSec float64 `json:"tokPerSec,omitempty"`
+
 	// Summary-only (Kind == KindSummary): the id-range this summary shadows and
 	// the accounting the context builder reports when it substitutes it.
 	CoversFrom    string `json:"coversFrom,omitempty"`
@@ -51,6 +56,13 @@ type Entry struct {
 // AppendMessage appends a message entry to a conversation's log and bumps its
 // Updated time. Append-only: nothing already written is touched.
 func (s *Store) AppendMessage(id, role, content string) (Entry, error) {
+	return s.AppendMessageTimed(id, role, content, 0)
+}
+
+// AppendMessageTimed is AppendMessage with the turn's generation speed
+// (tokens/sec) to persist alongside the message — used for the assistant turn so
+// the per-response tok/s survives a reopen. A tokPerSec of 0 stores nothing.
+func (s *Store) AppendMessageTimed(id, role, content string, tokPerSec float64) (Entry, error) {
 	dir, err := s.conversationDir(id)
 	if err != nil {
 		return Entry{}, err
@@ -59,7 +71,7 @@ func (s *Store) AppendMessage(id, role, content string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	e := Entry{ID: eid, Kind: KindMessage, Role: role, Time: time.Now().UTC(), Content: content}
+	e := Entry{ID: eid, Kind: KindMessage, Role: role, Time: time.Now().UTC(), Content: content, TokPerSec: tokPerSec}
 	if err := appendEntry(filepath.Join(dir, "conversation.md"), e); err != nil {
 		return Entry{}, err
 	}
@@ -388,8 +400,12 @@ func rawMarker(e Entry) string {
 		return fmt.Sprintf("<!-- llamingo:toolcall id=%s name=%s t=%s -->",
 			e.ID, e.Name, e.Time.UTC().Format(time.RFC3339))
 	}
-	return fmt.Sprintf("<!-- llamingo:msg id=%s role=%s t=%s -->",
+	marker := fmt.Sprintf("<!-- llamingo:msg id=%s role=%s t=%s",
 		e.ID, e.Role, e.Time.UTC().Format(time.RFC3339))
+	if e.TokPerSec > 0 {
+		marker += fmt.Sprintf(" tps=%.1f", e.TokPerSec)
+	}
+	return marker + " -->"
 }
 
 // entryLabel is the bold speaker label shown before an entry's marker.
@@ -454,6 +470,7 @@ func parseConversation(data []byte) (string, []Entry) {
 				e.Name = attrs["name"]
 			} else {
 				e.Role = attrs["role"]
+				e.TokPerSec = atof(attrs["tps"])
 			}
 			cur = &e
 			continue
@@ -497,6 +514,11 @@ func splitCovers(s string) (string, string) {
 func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+func atof(s string) float64 {
+	f, _ := strconv.ParseFloat(s, 64)
+	return f
 }
 
 func newEntryID() (string, error) {

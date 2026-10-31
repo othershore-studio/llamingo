@@ -453,7 +453,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	for _, tc := range toolCallsFrom(out) {
 		_ = s.st.AppendToolUse(body.ID, tc.name, tc.args)
 	}
-	if _, err := s.st.AppendMessage(body.ID, "assistant", answer); err != nil {
+	tps := 0.0
+	if timings != nil {
+		tps = timings.PredictPerSecond
+	}
+	if _, err := s.st.AppendMessageTimed(body.ID, "assistant", answer, tps); err != nil {
 		emit("error", map[string]any{"error": err.Error()})
 		return
 	}
