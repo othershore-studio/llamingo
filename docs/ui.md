@@ -171,3 +171,13 @@ Small web-UI traps already paid for, kept so the next app doesn't re-learn them:
   JS; open/closed state preserved across thin↔wide). Added the *Implementation gotchas* section.
 - 2026-10-29: Thin-window **bottom bar** — at ≤700px the status bar becomes the action strip (Chats button opens the
   drawer, Compact becomes an icon, the ⋮ menu moves down from the topbar and opens upward); wide layout unchanged.
+- 2026-10-29 – 10-31: **Image generation UI** — an **Image models** section in Settings (fetch/refresh from Forge,
+  per-model **auto-pick** + **default**, an expandable **recipe editor** for steps/CFG/sampler/size/modules), and a
+  "Generating with ‹model›…" cue in the working indicator.
+- 2026-10-31: **Tool-configuration surfaces** settled into three, deliberately distinct — **Settings** (⋮ menu;
+  global: connection, global MCP servers, image models, display, debug), a per-chat **Tools** panel (⋮ menu; curate the
+  chat's toolset — System vs grouped MCP servers, including a project's own), and a per-folder **Project** surface
+  (⋮ menu, in a project session; system-tool defaults + the project's read-only `.mcp.json` servers). *Configuring*
+  (global / per-folder) is separate from *activating* (per chat). The Settings modal scrolls as one styled pane; a
+  chat-only **display toggle** hides the thinking + tool trail. **Model selection** is deferred to v2 (a plain
+  `llama-server` serves one model).

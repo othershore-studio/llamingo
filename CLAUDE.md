@@ -5,8 +5,9 @@ Operational guide for working in this repo. Design rationale lives in [`docs/`](
 
 ## What this is
 
-**llaminGO** — a sovereign, local-first chat client for **llama.cpp** (`llama-server`). A Go core with thin shells
-(CLI now; Wails desktop + web UI later). It is a *client*, not a runtime: it assumes a running `llama-server` and
+**llaminGO** — a sovereign, local-first chat client for **llama.cpp** (`llama-server`). A Go core with thin shells:
+a CLI, an `internal/httpapi` HTTP/SSE adapter, a **Svelte** web UI (`web/`), and a **Wails** desktop app. It is a
+*client*, not a runtime: it assumes a running `llama-server` and
 leans on its **native API** (`/props`, `/apply-template` + `/tokenize`, `/slots`, streaming `/v1/chat/completions`
 with `--jinja`) for honest context metering and a client-owned MCP loop. See `docs/architecture.md`.
 
@@ -22,7 +23,14 @@ with `--jinja`) for honest context metering and a client-owned MCP loop. See `do
 - `internal/backend/` — the one `Backend` seam to the engine; `LlamaCppNative` is the only implementation.
 - `internal/lcpptest/` — a deterministic fake `llama-server` (httptest) for GPU-free tests.
 - `internal/contextbudget/` — the single context builder + honest token budget.
-- `cmd/llamingo/` — the CLI shell (consumes the core package directly).
+- `internal/store/` — the two-root file store (free `chat/` + project `folder/`), per-conversation `meta.json`, memory.
+- `internal/mcp/` — the client-owned MCP loop + JSON-RPC client (stdio / Streamable-HTTP) + config.
+- `internal/httpapi/` — the HTTP + SSE adapter over the core (the surface the web UI consumes); agentic wiring + the permission handshake.
+- `internal/permission/` — the scope × risk permission gate + grant store.
+- `internal/imagegen/` — the native image tool (Forge Neo) + per-model recipes/config.
+- `internal/memtool`, `internal/localtools`, `internal/filetools`, `internal/debuglog` — the other native tools + debug logging.
+- `cmd/llamingo/` — the CLI shell; `cmd/llamingo-serve/` — the HTTP server the desktop/web UI points at.
+- `web/` — the Svelte 5 web UI (`web/src/App.svelte`); `build/` — the Wails desktop app scaffolding.
 
 ## Build & test
 
@@ -30,7 +38,10 @@ with `--jinja`) for honest context metering and a client-owned MCP loop. See `do
 go vet ./...
 go test ./...          # GPU-free: everything runs against internal/lcpptest
 go build ./...
-go run ./cmd/llamingo -url http://localhost:8080 -m "Hello"
+go run ./cmd/llamingo -url http://localhost:8080 -m "Hello"   # CLI
+
+npm --prefix web run build   # the Svelte web UI
+wails build                  # the desktop app — close the running app first, or the exe is left stale/locked
 ```
 
 ## Conventions
