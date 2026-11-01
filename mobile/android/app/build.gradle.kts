@@ -2,6 +2,11 @@ plugins {
     id("com.android.application")
 }
 
+// Release signing reads the keystore path + credentials from gradle properties
+// (~/.gradle/gradle.properties) or env vars, so no key material lives in the repo.
+// If unset, the release build is left unsigned; debug builds are unaffected.
+val releaseKeystore = (project.findProperty("llamingo.keystore") as String?) ?: System.getenv("LLAMINGO_KEYSTORE")
+
 android {
     namespace = "studio.annoyances.llamingo"
     compileSdk = 36
@@ -17,9 +22,23 @@ android {
         versionName = "0.1-spike"
     }
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = (project.findProperty("llamingo.storePassword") as String?) ?: System.getenv("LLAMINGO_STORE_PASSWORD")
+                keyAlias = (project.findProperty("llamingo.keyAlias") as String?) ?: System.getenv("LLAMINGO_KEY_ALIAS")
+                keyPassword = (project.findProperty("llamingo.keyPassword") as String?) ?: System.getenv("LLAMINGO_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
