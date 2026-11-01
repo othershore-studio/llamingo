@@ -364,7 +364,7 @@ func (s *Server) handleGetBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	messages := messagesFromEntries(store.Project(prior))
-	bud, err := contextbudget.New(s.be).Estimate(r.Context(), s.segmentsFor(messages, s.budgetTools(id)))
+	bud, err := contextbudget.New(s.be).Estimate(r.Context(), s.segmentsFor(id, messages, s.budgetTools(id)))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -410,7 +410,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 
 	bld := contextbudget.New(s.be)
-	segs := s.segmentsFor(messages, nil)
+	segs := s.segmentsFor(body.ID, messages, nil)
 	bud, err := bld.Estimate(r.Context(), segs)
 	if err != nil {
 		writeEvent(w, flusher, "error", map[string]any{"error": err.Error()})
@@ -423,7 +423,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if res, cerr := s.compactConversation(r.Context(), body.ID); cerr == nil && res.Folded > 0 {
 			if entries, lerr := s.st.LoadConversation(body.ID); lerr == nil {
 				messages = messagesFromEntries(store.Project(entries))
-				segs = s.segmentsFor(messages, nil)
+				segs = s.segmentsFor(body.ID, messages, nil)
 				if b, eerr := bld.Estimate(r.Context(), segs); eerr == nil {
 					bud = b
 				}

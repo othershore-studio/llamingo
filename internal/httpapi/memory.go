@@ -48,14 +48,16 @@ func (s *Server) handleAckMemory(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// segmentsFor builds the metered prompt segments: the personal memory (when
+// segmentsFor builds the metered prompt segments: the persona system prompt and
+// the working-directory note (when applicable), the personal memory (when
 // non-empty), the offered tools (when any), then the conversation — each a
 // distinct segment so the budget reports its cost honestly. The tools are
 // rendered as a system message of their schemas, a close estimate of what the
 // chat template injects (the authoritative count folds in once a turn runs); the
 // tool schemas are a real chunk of the budget, so a chat that offers them reads
 // honestly even before its first message. Pass nil tools to meter without them.
-func (s *Server) segmentsFor(messages []backend.Message, tools []backend.ToolDef) []contextbudget.Segment {
+// convID lets a project session add its working-directory note (""/free chat: none).
+func (s *Server) segmentsFor(convID string, messages []backend.Message, tools []backend.ToolDef) []contextbudget.Segment {
 	var segs []contextbudget.Segment
 	// The active connection's system prompt (a persona's instructions), prepended as
 	// a system message and metered like any other segment. Empty = none.
@@ -63,6 +65,11 @@ func (s *Server) segmentsFor(messages []backend.Message, tools []backend.ToolDef
 		if sp := strings.TrimSpace(cfg.SystemPrompt); sp != "" {
 			segs = append(segs, contextbudget.Segment{Name: "system", Messages: []backend.Message{{Role: backend.RoleSystem, Content: sp}}})
 		}
+	}
+	// In a project session, tell the model its working directory so it uses relative
+	// paths (the file tools are confined to this folder). A project can opt out.
+	if note := s.workingDirNote(convID); note != "" {
+		segs = append(segs, contextbudget.Segment{Name: "workdir", Messages: []backend.Message{{Role: backend.RoleSystem, Content: note}}})
 	}
 	if mem, _, err := s.st.Memory(); err == nil && strings.TrimSpace(mem) != "" {
 		segs = append(segs, contextbudget.Segment{
@@ -79,4 +86,18 @@ func (s *Server) segmentsFor(messages []backend.Message, tools []backend.ToolDef
 		}
 	}
 	return append(segs, contextbudget.Segment{Name: "conversation", Messages: messages})
+}
+
+// workingDirNote is the environment note a project session prepends so the model
+// knows where it is working and refers to files by relative paths. Empty for a
+// free chat (no project folder) or when the project has opted the note out.
+func (s *Server) workingDirNote(convID string) string {
+	root, ok, err := s.st.ProjectRoot(convID)
+	if err != nil || !ok || root == "" {
+		return ""
+	}
+	if show, err := s.st.ProjectShowWorkingDir(root); err == nil && !show {
+		return ""
+	}
+	return "Your working directory is " + root + " — refer to files by paths relative to it."
 }
