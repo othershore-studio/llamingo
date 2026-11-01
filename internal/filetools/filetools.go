@@ -58,6 +58,8 @@ const (
 	toolRenameFile    = "rename_file"
 	toolCreateFolder  = "create_folder"
 	toolRenameFolder  = "rename_folder"
+	toolDeleteFile    = "delete_file"
+	toolDeleteFolder  = "delete_folder"
 )
 
 // Tools advertises the file tools to the model.
@@ -146,6 +148,23 @@ func (t *Tool) Tools() []backend.ToolDef {
 				`"to":{"type":"string","description":"the new path within the project"}},` +
 				`"required":["from","to"]}`),
 		},
+		{
+			Name: toolDeleteFile,
+			Description: "Delete a file in the project, by its path (relative to the project root). " +
+				"Permanent — asks the user to confirm every time (it can't be undone).",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the file's path within the project"}},` +
+				`"required":["path"]}`),
+		},
+		{
+			Name: toolDeleteFolder,
+			Description: "Delete a folder in the project and everything inside it, by its path " +
+				"(relative to the project root). Permanent and recursive — asks the user to confirm every " +
+				"time, and cannot delete the project root.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the folder's path within the project"}},` +
+				`"required":["path"]}`),
+		},
 	}
 }
 
@@ -170,6 +189,10 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return t.createFolder(ctx, arguments)
 	case toolRenameFolder:
 		return t.renameWithin(ctx, toolRenameFolder, arguments, true)
+	case toolDeleteFile:
+		return t.deleteFile(ctx, arguments)
+	case toolDeleteFolder:
+		return t.deleteFolder(ctx, arguments)
 	default:
 		return "", fmt.Errorf("filetools: unknown tool %q", name)
 	}
