@@ -30,8 +30,13 @@ type Config struct {
 	ForgeURL string `json:"forgeUrl,omitempty"` // Forge Neo image server (empty = image generation off)
 	Debug    bool   `json:"debug,omitempty"`    // write raw llama/Forge/tool payloads to each chat's logs/ (debug mode)
 
+	// Temperature and MinP are the ACTIVE connection's sampling, applied to every
+	// turn (nil = the server/model default). Set when a connection is activated.
+	Temperature *float64 `json:"temperature,omitempty"`
+	MinP        *float64 `json:"minP,omitempty"`
+
 	// Connections are the saved llama-servers the user switches between; URL/Token
-	// above is whichever one is active now. See the Connection type.
+	// (and Temperature/MinP) above are whichever one is active now. See Connection.
 	Connections []Connection `json:"connections,omitempty"`
 }
 
@@ -42,6 +47,11 @@ type Connection struct {
 	Name  string `json:"name"`
 	URL   string `json:"url"`
 	Token string `json:"token,omitempty"`
+	// Sampling for this connection (nil = the server/model default). This is what
+	// lets one saved server double as personas — e.g. a low-temperature "Coder" and
+	// a high-temperature "Creative" both pointing at the same URL.
+	Temperature *float64 `json:"temperature,omitempty"`
+	MinP        *float64 `json:"minP,omitempty"`
 }
 
 // Config returns the saved configuration. A missing file is the zero Config, not

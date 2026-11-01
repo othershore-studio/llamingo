@@ -27,9 +27,9 @@ func (s *Server) handleGetConnections(w http.ResponseWriter, r *http.Request) {
 	activeURL := rc.BaseURL()
 	conns := cfg.Connections
 	if activeURL != "" && !containsURL(conns, activeURL) {
-		conns = append([]store.Connection{{Name: defaultConnName(activeURL), URL: activeURL, Token: rc.Token()}}, conns...)
+		conns = append([]store.Connection{{Name: defaultConnName(activeURL), URL: activeURL, Token: rc.Token(), Temperature: cfg.Temperature, MinP: cfg.MinP}}, conns...)
 	}
-	writeJSON(w, map[string]any{"activeUrl": activeURL, "connections": conns})
+	writeJSON(w, map[string]any{"activeUrl": activeURL, "activeTemperature": cfg.Temperature, "activeMinP": cfg.MinP, "connections": conns})
 }
 
 // PUT /api/connections {connections:[{name,url,token}]} — save the list (the
@@ -63,8 +63,10 @@ func (s *Server) handlePutConnections(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /api/connections/activate {url, token} — point the live backend at this
-// connection and persist it as active, so it survives a restart. The next /props
+// POST /api/connections/activate {url, token, temperature, minP} — point the live
+// backend at this connection, with its sampling, and persist it as active so it
+// survives a restart. Sending the sampling here (not just the URL) is what makes
+// two connections on the SAME url behave as distinct personas. The next /props
 // poll reflects the new model; the client re-reads /props after this returns.
 func (s *Server) handleActivateConnection(w http.ResponseWriter, r *http.Request) {
 	rc, ok := s.be.(backend.Reconfigurable)
@@ -73,8 +75,10 @@ func (s *Server) handleActivateConnection(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var body struct {
-		URL   string `json:"url"`
-		Token string `json:"token"`
+		URL         string   `json:"url"`
+		Token       string   `json:"token"`
+		Temperature *float64 `json:"temperature"`
+		MinP        *float64 `json:"minP"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -87,11 +91,13 @@ func (s *Server) handleActivateConnection(w http.ResponseWriter, r *http.Request
 	}
 	cfg, _ := s.st.Config()
 	cfg.URL, cfg.Token = url, strings.TrimSpace(body.Token)
+	cfg.Temperature, cfg.MinP = body.Temperature, body.MinP
 	if err := s.st.SetConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	rc.SetConnection(url, cfg.Token)
+	rc.SetSampling(body.Temperature, body.MinP)
 	w.WriteHeader(http.StatusNoContent)
 }
 
