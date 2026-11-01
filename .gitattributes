@@ -1,0 +1,38 @@
+# Normalize line endings: text files are stored with LF in the repo and checked
+# out with the platform's native endings. Keeps diffs clean across Windows, macOS
+# and Linux contributors (and ends the LF/CRLF churn on a Windows checkout).
+* text=auto eol=lf
+
+# Source and config: always LF
+*.go     text eol=lf
+*.mod    text eol=lf
+*.sum    text eol=lf
+*.ts     text eol=lf
+*.js     text eol=lf
+*.mjs    text eol=lf
+*.svelte text eol=lf
+*.css    text eol=lf
+*.html   text eol=lf
+*.json   text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.md     text eol=lf
+*.sh     text eol=lf
+
+# Windows-specific files must keep CRLF
+*.bat      text eol=crlf
+*.ps1      text eol=crlf
+*.cmd      text eol=crlf
+*.manifest text eol=crlf
+
+# Binary assets: never touch
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
