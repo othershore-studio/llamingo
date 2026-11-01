@@ -12,6 +12,10 @@
   const apiOrigin = () => (window.runtime ? 'http://127.0.0.1:8766' : '')
   const apiFetch = (path, opts) => fetch(apiOrigin() + path, opts)
 
+  // On touch devices (phone) Enter inserts a newline and the Send button sends
+  // (WhatsApp-style); a mouse/desktop keeps Enter-to-send.
+  const coarsePointer = typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches
+
   // Playful "working" words shown while a turn runs — llama / Andean / Ecuador
   // themed. Edit this list freely (add your Ecuadorian picks); one is chosen per
   // turn and rotates every few seconds. SPINNER is the braille animation frames.
@@ -1305,7 +1309,7 @@
           placeholder="Ask something…"
           bind:value={input}
           bind:this={inputEl}
-          onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send() } }}
+          onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !coarsePointer) { e.preventDefault(); send() } }}
           disabled={streaming}
         ></textarea>
         <div class="composer-controls">
@@ -1314,6 +1318,9 @@
           {/if}
           <button class="pill-btn" onclick={openTools} disabled={!activeId} title="Trim the tools for this chat">Tools</button>
           <span class="spacer"></span>
+          <button class="pill-btn send-btn" onclick={send} disabled={streaming || !input.trim()} aria-label="Send" title="Send (Enter)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5" /><path d="M5 12l7-7 7 7" /></svg>
+          </button>
         </div>
       </div>
 
@@ -2544,6 +2551,26 @@
     color: var(--clay);
     border-color: color-mix(in srgb, var(--clay) 40%, transparent);
     background: color-mix(in srgb, var(--clay) 12%, transparent);
+  }
+  /* The composer send button: a filled accent so it reads as the primary action
+     (needed on mobile, where there's no Enter-to-send affordance). */
+  .send-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border-color: transparent;
+    background: var(--clay);
+    color: #fff;
+  }
+  .send-btn:hover {
+    background: color-mix(in srgb, var(--clay) 85%, black);
+  }
+  .send-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .setting {
     display: flex;
