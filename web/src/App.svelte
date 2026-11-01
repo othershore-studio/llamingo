@@ -69,6 +69,9 @@
   // In the Wails desktop shell the window is frameless, so the HTML topbar is the
   // title bar: draggable, with our own min/max/close. The browser/PWA has none.
   const isDesktop = typeof window !== 'undefined' && !!window.runtime
+  // The phone client — the mobile app or a touch browser — is "desktop minus
+  // Projects": projects (a desktop/coding concern) are hidden there.
+  const mobileClient = !isDesktop && coarsePointer
 
   let conn = $state(null) // { model, nCtx }
   let chats = $state([])
@@ -1172,6 +1175,7 @@
         {/each}
       </ul>
 
+      {#if !mobileClient}
       <div class="switcher">Projects</div>
       <button class="new" onclick={() => (openingFolder = !openingFolder)}>+ Open folder</button>
       {#if openingFolder}
@@ -1230,6 +1234,7 @@
           <li class="row muted">No projects yet</li>
         {/each}
       </ul>
+      {/if}
     </aside>
     {#if !narrow && sidebarShown}
       <div
@@ -1357,12 +1362,12 @@
         </div>
       {/if}
     </div>
-    {#if projectInProject && !narrow}
+    {#if projectInProject && !narrow && !mobileClient}
       <button class="statusbtn" onclick={openProject} aria-label="Project" title="Project settings">Project</button>
     {/if}
     <span class="spacer"></span>
     {#if report}<span class="report">{report}</span>{/if}
-    {#if projectInProject && narrow}
+    {#if projectInProject && narrow && !mobileClient}
       <button class="statusbtn icon" onclick={openProject} aria-label="Project" title="Project"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z" /></svg></button>
     {/if}
     {#if budget && activeId}
