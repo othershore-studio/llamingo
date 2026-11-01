@@ -52,6 +52,7 @@ const (
 	toolListFiles     = "list_files"
 	toolSearchFiles   = "search_files"
 	toolSearchInFiles = "search_in_files"
+	toolFolderTree    = "folder_tree"
 	toolReadFile      = "read_file"
 	toolWriteFile     = "write_file"
 )
@@ -87,6 +88,16 @@ func (t *Tool) Tools() []backend.ToolDef {
 				`"limit":{"type":"integer","description":"max matching lines (default 50)"}},"required":["pattern"]}`),
 		},
 		{
+			Name: toolFolderTree,
+			Description: "Show the project's folder tree — files and folders nested — under an optional " +
+				"sub-path, to a depth (default 3). Capped; skips .git and node_modules. Good for seeing the " +
+				"project layout at a glance before listing or reading.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"sub-path to root the tree at; omit for the project root"},` +
+				`"depth":{"type":"integer","description":"how many levels deep (default 3)"},` +
+				`"limit":{"type":"integer","description":"max entries (default 300)"}}}`),
+		},
+		{
 			Name: toolReadFile,
 			Description: "Read a file's contents in the project, by its path (relative to the project " +
 				"root). Returns the text, capped for very large files. Read a file before you overwrite it.",
@@ -116,6 +127,8 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return t.searchFiles(arguments)
 	case toolSearchInFiles:
 		return t.searchInFiles(arguments)
+	case toolFolderTree:
+		return t.folderTree(arguments)
 	case toolReadFile:
 		return t.readFile(arguments)
 	case toolWriteFile:
