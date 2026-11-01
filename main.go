@@ -28,6 +28,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/othershore-studio/llamingo/internal/autostart"
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/httpapi"
 	"github.com/othershore-studio/llamingo/internal/store"
@@ -74,6 +75,16 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Autostart launches us with --minimized so the login start comes up hidden in
+	// the tray (the window opens on a tray click); a manual launch carries no flag
+	// and opens normally. See internal/autostart.
+	startHidden := false
+	for _, arg := range os.Args[1:] {
+		if arg == autostart.MinimizedFlag {
+			startHidden = true
+		}
+	}
+
 	// Serve the core API on loopback (a real server that streams); bind before
 	// the window opens so the SPA's first request can't race the listener. A busy
 	// port almost always means a second instance is launching, so don't die here:
@@ -90,12 +101,13 @@ func main() {
 	trayStart, trayEnd := systray.RunWithExternalLoop(onTrayReady, func() {})
 
 	if err := wails.Run(&options.App{
-		Title:     "llaminGO",
-		Width:     1100,
-		Height:    720,
-		MinWidth:  600,
-		MinHeight: 400,
-		Frameless: true,
+		Title:       "llaminGO",
+		Width:       1100,
+		Height:      720,
+		MinWidth:    600,
+		MinHeight:   400,
+		Frameless:   true,
+		StartHidden: startHidden,
 		AssetServer: &assetserver.Options{
 			Assets: dist,
 		},
