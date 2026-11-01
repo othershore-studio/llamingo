@@ -56,3 +56,23 @@ func TestSegmentsForIncludesTools(t *testing.T) {
 		t.Fatalf("segments = %+v, want [tools conversation]", segs)
 	}
 }
+
+// The active connection's system prompt is its own metered segment, prepended
+// before the conversation (a persona's instructions reach the model each turn).
+func TestSegmentsForIncludesSystemPrompt(t *testing.T) {
+	llama := lcpptest.NewServer()
+	defer llama.Close()
+	be := backend.New(llama.URL, backend.WithHTTPClient(llama.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetConfig(store.Config{SystemPrompt: "You are a terse coding assistant."}); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(be, st)
+	segs := srv.segmentsFor([]backend.Message{{Role: backend.RoleUser, Content: "hi"}}, nil)
+	if len(segs) != 2 || segs[0].Name != "system" || segs[1].Name != "conversation" {
+		t.Fatalf("segments = %+v, want [system conversation]", segs)
+	}
+}

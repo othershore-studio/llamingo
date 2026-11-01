@@ -79,6 +79,7 @@ func (s *Server) handlePutConnections(w http.ResponseWriter, r *http.Request) {
 	clean := make([]store.Connection, 0, len(body.Connections))
 	for _, c := range body.Connections {
 		c.ID, c.Name, c.URL, c.Token = strings.TrimSpace(c.ID), strings.TrimSpace(c.Name), strings.TrimSpace(c.URL), strings.TrimSpace(c.Token)
+		c.SystemPrompt = strings.TrimSpace(c.SystemPrompt)
 		if c.URL == "" {
 			continue
 		}
@@ -111,11 +112,12 @@ func (s *Server) handleActivateConnection(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var body struct {
-		ID          string   `json:"id"`
-		URL         string   `json:"url"`
-		Token       string   `json:"token"`
-		Temperature *float64 `json:"temperature"`
-		MinP        *float64 `json:"minP"`
+		ID           string   `json:"id"`
+		URL          string   `json:"url"`
+		Token        string   `json:"token"`
+		Temperature  *float64 `json:"temperature"`
+		MinP         *float64 `json:"minP"`
+		SystemPrompt string   `json:"systemPrompt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -130,6 +132,7 @@ func (s *Server) handleActivateConnection(w http.ResponseWriter, r *http.Request
 	cfg.ActiveID = strings.TrimSpace(body.ID)
 	cfg.URL, cfg.Token = url, strings.TrimSpace(body.Token)
 	cfg.Temperature, cfg.MinP = body.Temperature, body.MinP
+	cfg.SystemPrompt = strings.TrimSpace(body.SystemPrompt)
 	if err := s.st.SetConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

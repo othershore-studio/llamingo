@@ -412,11 +412,11 @@
     await apiFetch('/api/connections', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ connections: connections.map((c) => ({ id: c.id, name: (c.name || '').trim(), url: (c.url || '').trim(), token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP) })) }),
+      body: JSON.stringify({ connections: connections.map((c) => ({ id: c.id, name: (c.name || '').trim(), url: (c.url || '').trim(), token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP), systemPrompt: (c.systemPrompt || '').trim() })) }),
     })
   }
   function addConnection() {
-    connections = [...connections, { id: newConnId(), name: '', url: '', token: '', temperature: null, minP: null, _id: connId++ }]
+    connections = [...connections, { id: newConnId(), name: '', url: '', token: '', temperature: null, minP: null, systemPrompt: '', _id: connId++ }]
   }
   function removeConnection(c) {
     connections = connections.filter((x) => x !== c)
@@ -427,7 +427,7 @@
     await apiFetch('/api/connections/activate', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: c.id, url, token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP) }),
+      body: JSON.stringify({ id: c.id, url, token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP), systemPrompt: (c.systemPrompt || '').trim() }),
     })
     activeConnId = c.id
     activeUrl = url
@@ -1515,6 +1515,7 @@
                     <label>temp <input class="field conn-num" type="number" step="0.1" min="0" max="2" placeholder="default" bind:value={c.temperature} /></label>
                     <label>min_p <input class="field conn-num" type="number" step="0.01" min="0" max="1" placeholder="default" bind:value={c.minP} /></label>
                   </div>
+                  <textarea class="field conn-prompt" rows="2" placeholder="System prompt — optional (this persona's instructions)" bind:value={c.systemPrompt}></textarea>
                 </li>
               {/each}
             </ul>
@@ -2458,6 +2459,12 @@
   .conn-num {
     width: 84px;
     padding: 6px 8px;
+  }
+  .conn-prompt {
+    resize: vertical;
+    min-height: 42px;
+    line-height: 1.4;
+    font-family: inherit;
   }
   .conn-radio {
     display: inline-flex;

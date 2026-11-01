@@ -14,11 +14,12 @@ type connectionsResp struct {
 	ActiveID    string `json:"activeId"`
 	ActiveURL   string `json:"activeUrl"`
 	Connections []struct {
-		ID          string   `json:"id"`
-		Name        string   `json:"name"`
-		URL         string   `json:"url"`
-		Token       string   `json:"token"`
-		Temperature *float64 `json:"temperature"`
+		ID           string   `json:"id"`
+		Name         string   `json:"name"`
+		URL          string   `json:"url"`
+		Token        string   `json:"token"`
+		Temperature  *float64 `json:"temperature"`
+		SystemPrompt string   `json:"systemPrompt"`
 	} `json:"connections"`
 }
 
@@ -39,7 +40,7 @@ func TestConnections(t *testing.T) {
 	}
 
 	// Save a named list; Lab carries a persona temperature.
-	put := `{"connections":[{"name":"Lab","url":"http://lab.invalid:8080","token":"abc","temperature":0.2},{"name":"Local","url":"http://localhost:8080"}]}`
+	put := `{"connections":[{"name":"Lab","url":"http://lab.invalid:8080","token":"abc","temperature":0.2,"systemPrompt":"You code."},{"name":"Local","url":"http://localhost:8080"}]}`
 	req, _ := http.NewRequest(http.MethodPut, api.URL+"/api/connections", strings.NewReader(put))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -56,11 +57,11 @@ func TestConnections(t *testing.T) {
 	if len(g.Connections) != 3 {
 		t.Fatalf("after save, connections = %+v, want 3 (2 saved + active)", g.Connections)
 	}
-	var labID string
+	var labID, labPrompt string
 	var labTemp *float64
 	for _, c := range g.Connections {
 		if c.Name == "Lab" {
-			labID, labTemp = c.ID, c.Temperature
+			labID, labTemp, labPrompt = c.ID, c.Temperature, c.SystemPrompt
 		}
 	}
 	if labID == "" {
@@ -68,6 +69,9 @@ func TestConnections(t *testing.T) {
 	}
 	if labTemp == nil || *labTemp != 0.2 {
 		t.Errorf("Lab temperature did not round-trip: %v", labTemp)
+	}
+	if labPrompt != "You code." {
+		t.Errorf("Lab system prompt did not round-trip: %q", labPrompt)
 	}
 
 	// Activate Lab by id → it becomes live and is persisted as active.

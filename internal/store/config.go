@@ -39,9 +39,12 @@ type Config struct {
 	// turn (nil = the server/model default). Set when a connection is activated.
 	Temperature *float64 `json:"temperature,omitempty"`
 	MinP        *float64 `json:"minP,omitempty"`
+	// SystemPrompt is the ACTIVE connection's system prompt, prepended to every turn
+	// (empty = none). Set when a connection is activated; read fresh per turn.
+	SystemPrompt string `json:"systemPrompt,omitempty"`
 
 	// Connections are the saved llama-servers the user switches between; URL/Token
-	// (and Temperature/MinP) above are whichever one is active now. See Connection.
+	// (and Temperature/MinP/SystemPrompt) above are whichever one is active now.
 	Connections []Connection `json:"connections,omitempty"`
 }
 
@@ -58,6 +61,10 @@ type Connection struct {
 	// a high-temperature "Creative" both pointing at the same URL.
 	Temperature *float64 `json:"temperature,omitempty"`
 	MinP        *float64 `json:"minP,omitempty"`
+	// SystemPrompt is this connection's own instructions (empty = none), prepended
+	// as a system message on every turn — the other half of a persona (a "Coder"
+	// brief vs a "Creative" brief). In v2 a Taita persona prompt composes above it.
+	SystemPrompt string `json:"systemPrompt,omitempty"`
 }
 
 // Config returns the saved configuration. A missing file is the zero Config, not

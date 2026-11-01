@@ -57,6 +57,13 @@ func (s *Server) handleAckMemory(w http.ResponseWriter, r *http.Request) {
 // honestly even before its first message. Pass nil tools to meter without them.
 func (s *Server) segmentsFor(messages []backend.Message, tools []backend.ToolDef) []contextbudget.Segment {
 	var segs []contextbudget.Segment
+	// The active connection's system prompt (a persona's instructions), prepended as
+	// a system message and metered like any other segment. Empty = none.
+	if cfg, err := s.st.Config(); err == nil {
+		if sp := strings.TrimSpace(cfg.SystemPrompt); sp != "" {
+			segs = append(segs, contextbudget.Segment{Name: "system", Messages: []backend.Message{{Role: backend.RoleSystem, Content: sp}}})
+		}
+	}
 	if mem, _, err := s.st.Memory(); err == nil && strings.TrimSpace(mem) != "" {
 		segs = append(segs, contextbudget.Segment{
 			Name:     "memory",
