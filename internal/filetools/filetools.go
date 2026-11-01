@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/permission"
@@ -49,18 +50,19 @@ func NewTool(projectRoot string, gate *permission.Gate, reads map[string]bool) *
 }
 
 const (
-	toolListFiles     = "list_files"
-	toolSearchFiles   = "search_files"
-	toolSearchInFiles = "search_in_files"
-	toolFolderTree    = "folder_tree"
-	toolReadFile      = "read_file"
-	toolWriteFile     = "write_file"
-	toolRenameFile    = "rename_file"
-	toolCreateFolder  = "create_folder"
-	toolRenameFolder  = "rename_folder"
-	toolCopyFile      = "copy_file"
-	toolDeleteFile    = "delete_file"
-	toolDeleteFolder  = "delete_folder"
+	toolListFiles      = "list_files"
+	toolSearchFiles    = "search_files"
+	toolSearchInFiles  = "search_in_files"
+	toolFolderTree     = "folder_tree"
+	toolReadFile       = "read_file"
+	toolFileProperties = "file_properties"
+	toolWriteFile      = "write_file"
+	toolRenameFile     = "rename_file"
+	toolCreateFolder   = "create_folder"
+	toolRenameFolder   = "rename_folder"
+	toolCopyFile       = "copy_file"
+	toolDeleteFile     = "delete_file"
+	toolDeleteFolder   = "delete_folder"
 )
 
 // Tools advertises the file tools to the model.
@@ -109,6 +111,14 @@ func (t *Tool) Tools() []backend.ToolDef {
 				"root). Returns the text, capped for very large files. Read a file before you overwrite it.",
 			Parameters: json.RawMessage(`{"type":"object","properties":{` +
 				`"path":{"type":"string","description":"the file's path within the project"}},"required":["path"]}`),
+		},
+		{
+			Name: toolFileProperties,
+			Description: "Show a file or folder's properties — its type (file/folder/symlink), size, " +
+				"last-modified time, and permission mode — without reading its contents. Read-only. " +
+				"(Created and accessed times aren't reported; they aren't portable across operating systems.)",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the path within the project"}},"required":["path"]}`),
 		},
 		{
 			Name: toolWriteFile,
@@ -192,6 +202,8 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return t.folderTree(arguments)
 	case toolReadFile:
 		return t.readFile(arguments)
+	case toolFileProperties:
+		return t.fileProperties(arguments)
 	case toolWriteFile:
 		return t.writeFile(ctx, arguments)
 	case toolRenameFile:
@@ -249,6 +261,52 @@ func (t *Tool) readFile(arguments string) (string, error) {
 		header += fmt.Sprintf(" — first %s", humanSize(maxBytes))
 	}
 	return header + ":\n" + out, nil
+}
+
+// fileProperties reports a path's type, size, modified time, and mode — the fields
+// os.Stat gives on every OS. Created and accessed times are deliberately omitted:
+// Go's standard library doesn't expose them portably (Windows has a birth time,
+// Linux's ctime is change-not-creation, macOS differs), and per-OS syscall code
+// isn't worth it here. Read-only, so no gate. Uses Lstat, so a symlink reports as
+// one rather than being followed.
+func (t *Tool) fileProperties(arguments string) (string, error) {
+	var a struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &a); err != nil {
+		return "", fmt.Errorf("filetools: arguments: %w", err)
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return "", fmt.Errorf("filetools: path is required")
+	}
+	abs, err := resolveWithin(t.root, a.Path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(abs)
+	if err != nil {
+		return "", fmt.Errorf("filetools: properties %s: %w", displayPath(a.Path), err)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s — %s\n", displayPath(a.Path), fileKind(info.Mode()))
+	fmt.Fprintf(&b, "Size: %s (%d bytes)\n", humanSize(info.Size()), info.Size())
+	fmt.Fprintf(&b, "Modified: %s\n", info.ModTime().Format(time.RFC3339))
+	fmt.Fprintf(&b, "Mode: %s", info.Mode().String())
+	return b.String(), nil
+}
+
+// fileKind names a path's type for file_properties.
+func fileKind(m os.FileMode) string {
+	switch {
+	case m&os.ModeSymlink != 0:
+		return "symlink"
+	case m.IsDir():
+		return "folder"
+	case m.IsRegular():
+		return "file"
+	default:
+		return "other"
+	}
 }
 
 // writeFile creates or overwrites a file. An existing file must have been read

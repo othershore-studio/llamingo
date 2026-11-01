@@ -42,6 +42,39 @@ func TestReadFile(t *testing.T) {
 	}
 }
 
+// file_properties reports a path's type, size, and modified time (read-only, no
+// gate), for a file and a folder, and is confined.
+func TestFileProperties(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "notes.txt"), "hello world") // 11 bytes
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewTool(root, nil, nil)
+
+	out, err := tool.Call(context.Background(), toolFileProperties, `{"path":"notes.txt"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"file", "11 bytes", "Modified:", "Mode:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("file_properties missing %q:\n%s", want, out)
+		}
+	}
+
+	dirOut, err := tool.Call(context.Background(), toolFileProperties, `{"path":"dir"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(dirOut, "folder") {
+		t.Errorf("file_properties(dir) = %q, want it to say folder", dirOut)
+	}
+
+	if _, err := tool.Call(context.Background(), toolFileProperties, `{"path":"../etc"}`); err == nil {
+		t.Error("file_properties should reject an escaping path")
+	}
+}
+
 // write_file creates a new file without a prior read (and overwriting a file the
 // tool itself just wrote is fine — it's seen), but a PRE-EXISTING file is refused
 // until it's been read this chat. The gate approves the write.
