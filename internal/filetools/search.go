@@ -22,6 +22,10 @@ const (
 	maxGrepLimit     = 200
 	maxGrepFileSize  = 1 << 20 // 1 MiB: skip larger files when grepping
 	maxGrepLineLen   = 300     // clip long matching lines in the result
+	defaultTreeDepth = 3
+	maxTreeDepth     = 8
+	defaultTreeLimit = 300
+	maxTreeLimit     = 2000
 )
 
 type searchArgs struct {
@@ -144,6 +148,79 @@ func (t *Tool) searchInFiles(arguments string) (string, error) {
 		return header + ".", nil
 	}
 	return header + ":\n" + strings.Join(matches, "\n") + "\n", nil
+}
+
+// folderTree renders the project's structure (files and folders, nested) under an
+// optional sub-path, to a depth, capped by entry count. Skips .git and
+// node_modules; read-only.
+func (t *Tool) folderTree(arguments string) (string, error) {
+	var a struct {
+		Path  string `json:"path"`
+		Depth int    `json:"depth"`
+		Limit int    `json:"limit"`
+	}
+	if strings.TrimSpace(arguments) != "" {
+		if err := json.Unmarshal([]byte(arguments), &a); err != nil {
+			return "", fmt.Errorf("filetools: arguments: %w", err)
+		}
+	}
+	depth := a.Depth
+	if depth <= 0 {
+		depth = defaultTreeDepth
+	}
+	if depth > maxTreeDepth {
+		depth = maxTreeDepth
+	}
+	limit := clampLimit(a.Limit, defaultTreeLimit, maxTreeLimit)
+	start, err := resolveWithin(t.root, a.Path)
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+	shown := 0
+	truncated := false
+	err = filepath.WalkDir(start, func(abs string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return nil
+		}
+		if abs == start {
+			return nil // the root itself is not a line
+		}
+		if d.IsDir() && skipDirName(d.Name()) {
+			return filepath.SkipDir
+		}
+		if shown >= limit {
+			truncated = true
+			return filepath.SkipAll
+		}
+		rel, err := filepath.Rel(start, abs)
+		if err != nil {
+			return nil
+		}
+		level := strings.Count(filepath.ToSlash(rel), "/") // 0 = a direct child
+		indent := strings.Repeat("  ", level)
+		if d.IsDir() {
+			fmt.Fprintf(&b, "%s%s/\n", indent, d.Name())
+			shown++
+			if level+1 >= depth {
+				return filepath.SkipDir // don't descend past the depth
+			}
+			return nil
+		}
+		fmt.Fprintf(&b, "%s%s\n", indent, d.Name())
+		shown++
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("filetools: tree %s: %w", displayPath(a.Path), err)
+	}
+
+	header := fmt.Sprintf("Tree of %s (depth %d) — %d entries", displayPath(a.Path), depth, shown)
+	if truncated {
+		header += " (limit reached; narrow the path or raise the limit)"
+	}
+	return header + ":\n" + b.String(), nil
 }
 
 // walkProject walks the tree under startAbs, invoking fn for each regular file

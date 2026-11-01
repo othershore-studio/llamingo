@@ -165,6 +165,7 @@
   let projectInProject = $state(false) // is the active chat a project session?
   let projectSystem = $state([]) // project system-tool defaults: [{name, description, enabled}]
   let projectMcp = $state([]) // project MCP servers (read-only)
+  let projectShowWorkingDir = $state(true) // prepend the "your working directory is …" note
   let budgetOpen = $state(false) // the status-bar Context popover (bar + count + Compact)
 
   let reachable = $state(true)
@@ -539,10 +540,12 @@
       projectInProject = !!d.inProject
       projectSystem = d.systemTools ?? []
       projectMcp = d.mcp ?? []
+      projectShowWorkingDir = d.showWorkingDir !== false
     } catch {
       projectInProject = false
       projectSystem = []
       projectMcp = []
+      projectShowWorkingDir = true
     }
     projectOpen = true
   }
@@ -552,7 +555,7 @@
       await apiFetch(`/api/project?conv=${activeId}`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ disabledSystem }),
+        body: JSON.stringify({ disabledSystem, showWorkingDir: projectShowWorkingDir }),
       })
     }
     projectOpen = false
@@ -1454,6 +1457,14 @@
                   <span class="toolname">{t.name}</span>
                 </label>
               {/each}
+            </div>
+
+            <div class="group-head">Working directory <span class="muted">(folder awareness in the prompt)</span></div>
+            <div class="toollist">
+              <label class="toolrow" title="Prepend a short note telling the model its working directory, so it refers to files by paths relative to it. Counts toward the context budget.">
+                <input type="checkbox" bind:checked={projectShowWorkingDir} />
+                <span class="toolname">Tell the model its working directory</span>
+              </label>
             </div>
 
             <div class="group-head">MCP servers <span class="muted">(this project's .mcp.json — read-only)</span></div>

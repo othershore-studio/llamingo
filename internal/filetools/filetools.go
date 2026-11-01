@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/permission"
@@ -49,11 +50,19 @@ func NewTool(projectRoot string, gate *permission.Gate, reads map[string]bool) *
 }
 
 const (
-	toolListFiles     = "list_files"
-	toolSearchFiles   = "search_files"
-	toolSearchInFiles = "search_in_files"
-	toolReadFile      = "read_file"
-	toolWriteFile     = "write_file"
+	toolListFiles      = "list_files"
+	toolSearchFiles    = "search_files"
+	toolSearchInFiles  = "search_in_files"
+	toolFolderTree     = "folder_tree"
+	toolReadFile       = "read_file"
+	toolFileProperties = "file_properties"
+	toolWriteFile      = "write_file"
+	toolRenameFile     = "rename_file"
+	toolCreateFolder   = "create_folder"
+	toolRenameFolder   = "rename_folder"
+	toolCopyFile       = "copy_file"
+	toolDeleteFile     = "delete_file"
+	toolDeleteFolder   = "delete_folder"
 )
 
 // Tools advertises the file tools to the model.
@@ -87,11 +96,29 @@ func (t *Tool) Tools() []backend.ToolDef {
 				`"limit":{"type":"integer","description":"max matching lines (default 50)"}},"required":["pattern"]}`),
 		},
 		{
+			Name: toolFolderTree,
+			Description: "Show the project's folder tree — files and folders nested — under an optional " +
+				"sub-path, to a depth (default 3). Capped; skips .git and node_modules. Good for seeing the " +
+				"project layout at a glance before listing or reading.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"sub-path to root the tree at; omit for the project root"},` +
+				`"depth":{"type":"integer","description":"how many levels deep (default 3)"},` +
+				`"limit":{"type":"integer","description":"max entries (default 300)"}}}`),
+		},
+		{
 			Name: toolReadFile,
 			Description: "Read a file's contents in the project, by its path (relative to the project " +
 				"root). Returns the text, capped for very large files. Read a file before you overwrite it.",
 			Parameters: json.RawMessage(`{"type":"object","properties":{` +
 				`"path":{"type":"string","description":"the file's path within the project"}},"required":["path"]}`),
+		},
+		{
+			Name: toolFileProperties,
+			Description: "Show a file or folder's properties — its type (file/folder/symlink), size, " +
+				"last-modified time, and permission mode — without reading its contents. Read-only. " +
+				"(Created and accessed times aren't reported; they aren't portable across operating systems.)",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the path within the project"}},"required":["path"]}`),
 		},
 		{
 			Name: toolWriteFile,
@@ -103,6 +130,61 @@ func (t *Tool) Tools() []backend.ToolDef {
 				`"path":{"type":"string","description":"the file's path within the project"},` +
 				`"content":{"type":"string","description":"the full new contents of the file"}},` +
 				`"required":["path","content"]}`),
+		},
+		{
+			Name: toolRenameFile,
+			Description: "Rename or move a file within the project, from one path to another (both " +
+				"relative to the project root). The source must be a file that exists; the destination must " +
+				"not already exist. Asks the user to approve.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"from":{"type":"string","description":"the file's current path within the project"},` +
+				`"to":{"type":"string","description":"the new path within the project"}},` +
+				`"required":["from","to"]}`),
+		},
+		{
+			Name: toolCreateFolder,
+			Description: "Create a folder in the project at the given path (relative to the project " +
+				"root); missing parent folders are created too. Asks the user to approve.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the folder's path within the project"}},` +
+				`"required":["path"]}`),
+		},
+		{
+			Name: toolRenameFolder,
+			Description: "Rename or move a folder within the project, from one path to another (both " +
+				"relative to the project root). The source must be a folder that exists; the destination must " +
+				"not already exist. Asks the user to approve.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"from":{"type":"string","description":"the folder's current path within the project"},` +
+				`"to":{"type":"string","description":"the new path within the project"}},` +
+				`"required":["from","to"]}`),
+		},
+		{
+			Name: toolCopyFile,
+			Description: "Copy a file within the project to a new path (both relative to the project " +
+				"root). The source must be a file that exists; the destination must not already exist. " +
+				"Asks the user to approve.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"from":{"type":"string","description":"the file's path within the project"},` +
+				`"to":{"type":"string","description":"the destination path within the project"}},` +
+				`"required":["from","to"]}`),
+		},
+		{
+			Name: toolDeleteFile,
+			Description: "Delete a file in the project, by its path (relative to the project root). " +
+				"Permanent — asks the user to confirm every time (it can't be undone).",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the file's path within the project"}},` +
+				`"required":["path"]}`),
+		},
+		{
+			Name: toolDeleteFolder,
+			Description: "Delete a folder in the project and everything inside it, by its path " +
+				"(relative to the project root). Permanent and recursive — asks the user to confirm every " +
+				"time, and cannot delete the project root.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the folder's path within the project"}},` +
+				`"required":["path"]}`),
 		},
 	}
 }
@@ -116,10 +198,26 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return t.searchFiles(arguments)
 	case toolSearchInFiles:
 		return t.searchInFiles(arguments)
+	case toolFolderTree:
+		return t.folderTree(arguments)
 	case toolReadFile:
 		return t.readFile(arguments)
+	case toolFileProperties:
+		return t.fileProperties(arguments)
 	case toolWriteFile:
 		return t.writeFile(ctx, arguments)
+	case toolRenameFile:
+		return t.renameWithin(ctx, toolRenameFile, arguments, false)
+	case toolCreateFolder:
+		return t.createFolder(ctx, arguments)
+	case toolRenameFolder:
+		return t.renameWithin(ctx, toolRenameFolder, arguments, true)
+	case toolCopyFile:
+		return t.copyFile(ctx, arguments)
+	case toolDeleteFile:
+		return t.deleteFile(ctx, arguments)
+	case toolDeleteFolder:
+		return t.deleteFolder(ctx, arguments)
 	default:
 		return "", fmt.Errorf("filetools: unknown tool %q", name)
 	}
@@ -163,6 +261,52 @@ func (t *Tool) readFile(arguments string) (string, error) {
 		header += fmt.Sprintf(" — first %s", humanSize(maxBytes))
 	}
 	return header + ":\n" + out, nil
+}
+
+// fileProperties reports a path's type, size, modified time, and mode — the fields
+// os.Stat gives on every OS. Created and accessed times are deliberately omitted:
+// Go's standard library doesn't expose them portably (Windows has a birth time,
+// Linux's ctime is change-not-creation, macOS differs), and per-OS syscall code
+// isn't worth it here. Read-only, so no gate. Uses Lstat, so a symlink reports as
+// one rather than being followed.
+func (t *Tool) fileProperties(arguments string) (string, error) {
+	var a struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &a); err != nil {
+		return "", fmt.Errorf("filetools: arguments: %w", err)
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return "", fmt.Errorf("filetools: path is required")
+	}
+	abs, err := resolveWithin(t.root, a.Path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(abs)
+	if err != nil {
+		return "", fmt.Errorf("filetools: properties %s: %w", displayPath(a.Path), err)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s — %s\n", displayPath(a.Path), fileKind(info.Mode()))
+	fmt.Fprintf(&b, "Size: %s (%d bytes)\n", humanSize(info.Size()), info.Size())
+	fmt.Fprintf(&b, "Modified: %s\n", info.ModTime().Format(time.RFC3339))
+	fmt.Fprintf(&b, "Mode: %s", info.Mode().String())
+	return b.String(), nil
+}
+
+// fileKind names a path's type for file_properties.
+func fileKind(m os.FileMode) string {
+	switch {
+	case m&os.ModeSymlink != 0:
+		return "symlink"
+	case m.IsDir():
+		return "folder"
+	case m.IsRegular():
+		return "file"
+	default:
+		return "other"
+	}
 }
 
 // writeFile creates or overwrites a file. An existing file must have been read
