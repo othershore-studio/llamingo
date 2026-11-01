@@ -96,3 +96,35 @@ func TestProjectToolDefaults(t *testing.T) {
 		t.Errorf("new session DisabledTools = %v, want it to inherit write_memory off", dt)
 	}
 }
+
+// GET /api/project/status reports project membership cheaply: true for a project
+// session, false for a free chat. (The status bar uses it to gate its Project
+// control without opening the full surface.)
+func TestProjectStatus(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := st.OpenProject(t.TempDir(), "Proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := st.NewSession(proj.ID, "Sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(httpapi.New(backend.New("http://unused.invalid"), st))
+	t.Cleanup(api.Close)
+
+	var free, project struct {
+		InProject bool `json:"inProject"`
+	}
+	getJSONInto(t, api.URL+"/api/project/status?conv="+createChat(t, api, "Free"), &free)
+	if free.InProject {
+		t.Error("a free chat should report inProject=false")
+	}
+	getJSONInto(t, api.URL+"/api/project/status?conv="+sess.ID, &project)
+	if !project.InProject {
+		t.Error("a project session should report inProject=true")
+	}
+}

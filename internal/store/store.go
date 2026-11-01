@@ -43,6 +43,10 @@ type ConversationMeta struct {
 	Created       time.Time `json:"created"`
 	Updated       time.Time `json:"updated"`
 	DisabledTools []string  `json:"disabledTools,omitempty"` // tools curated off for this chat (per-chat; see registryFor)
+
+	// LastBudget is the context accounting from this chat's most recent turn,
+	// shown in the status bar on reopen without re-metering. Nil until a turn runs.
+	LastBudget *BudgetStatus `json:"lastBudget,omitempty"`
 }
 
 // ProjectMeta is the per-project metadata persisted as folder/<dir>/meta.json.

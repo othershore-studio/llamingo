@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/filetools"
 	"github.com/othershore-studio/llamingo/internal/imagegen"
 	"github.com/othershore-studio/llamingo/internal/localtools"
@@ -208,6 +209,33 @@ func (s *Server) registryFor(convID string) mcp.Registry {
 		reg = mcp.Curate(reg, toSet(disabled))
 	}
 	return reg
+}
+
+// budgetTools returns the tool definitions to METER for a conversation, curated
+// per chat: the local system tools (memory, location, project files, image gen)
+// plus the user's global MCP servers — whose schemas are a big chunk of the prompt
+// (far larger than the system tools), so a chat with them enabled reads honestly
+// and can warn when they overflow a small context. The global servers connect once
+// and are reused (the same connect a turn does), so the budget counts them from
+// the first open, not only after a turn. Project MCP is left out here (it would
+// trip its per-project gate); its cost lands in the authoritative count once a
+// turn runs and is then persisted (see SetConversationBudget).
+func (s *Server) budgetTools(convID string) []backend.ToolDef {
+	regs := []mcp.Registry{memtool.NewTool(s.st, nil), localtools.NewTool(s.locationSetting)}
+	if g := s.globalServers(); g != nil {
+		regs = append(regs, g)
+	}
+	if root, ok, err := s.st.ProjectRoot(convID); err == nil && ok && root != "" {
+		regs = append(regs, filetools.NewTool(root))
+	}
+	if tool := s.imageTool(convID, nil); tool != nil {
+		regs = append(regs, tool)
+	}
+	reg := mcp.Combine(regs...)
+	if disabled, err := s.st.ConversationTools(convID); err == nil {
+		reg = mcp.Curate(reg, toSet(disabled))
+	}
+	return reg.Tools()
 }
 
 // imageTool builds the image-generation tool for a conversation when a Forge URL

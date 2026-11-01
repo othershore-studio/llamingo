@@ -47,6 +47,34 @@ func TestConversationRoundTrip(t *testing.T) {
 	}
 }
 
+// An assistant turn's generation speed round-trips through the log marker (like
+// the timestamp), while a user message carries none.
+func TestTokPerSecRoundTrip(t *testing.T) {
+	data := marshalEntries("Chat", []Entry{
+		{ID: "a1", Kind: KindMessage, Role: "user", Time: mustTime("2026-10-28T14:02:11Z"), Content: "hi"},
+		{ID: "a2", Kind: KindMessage, Role: "assistant", Time: mustTime("2026-10-28T14:02:19Z"), Content: "hello", TokPerSec: 42.7},
+	})
+	if !strings.Contains(string(data), "tps=42.7") {
+		t.Errorf("assistant marker missing tps=:\n%s", data)
+	}
+	if n := strings.Count(string(data), "tps="); n != 1 {
+		t.Errorf("tps= should appear once (assistant only), got %d:\n%s", n, data)
+	}
+	_, got := parseConversation(data)
+	if len(got) != 2 {
+		t.Fatalf("parsed %d entries, want 2", len(got))
+	}
+	if got[0].TokPerSec != 0 {
+		t.Errorf("user message TokPerSec = %v, want 0", got[0].TokPerSec)
+	}
+	if got[1].TokPerSec != 42.7 {
+		t.Errorf("assistant TokPerSec = %v, want 42.7", got[1].TokPerSec)
+	}
+	if string(marshalEntries("Chat", got)) != string(data) {
+		t.Errorf("tok/s round-trip mismatch:\n--- got ---\n%s\n--- want ---\n%s", marshalEntries("Chat", got), data)
+	}
+}
+
 // The marshaled log shows a visible speaker label before each entry (so a
 // Markdown viewer reveals who said what), while bodies still round-trip.
 func TestVisibleSpeakerLabels(t *testing.T) {

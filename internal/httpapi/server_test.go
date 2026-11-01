@@ -194,9 +194,13 @@ func TestSettings(t *testing.T) {
 	if got["debug"] != true {
 		t.Errorf("after PUT, debug = %v, want true (new field round-trips)", got["debug"])
 	}
-	// A blank url is rejected.
-	if code := put("   "); code != http.StatusBadRequest {
-		t.Errorf("blank-url PUT = %d, want 400", code)
+	// The connection lives in its own card now (/api/connections), so a Settings
+	// save with a blank url is accepted and leaves the active connection untouched.
+	if code := put("   "); code != http.StatusNoContent {
+		t.Errorf("blank-url PUT = %d, want 204 (connection left alone)", code)
+	}
+	if got := get(); got["url"] != "http://example.invalid:9999" {
+		t.Errorf("after a blank-url save, url = %v, want the connection unchanged", got["url"])
 	}
 }
 
@@ -628,6 +632,54 @@ func TestChatStreamReportsSpeed(t *testing.T) {
 	}
 	if body := buf.String(); !strings.Contains(body, "predictPerSecond") {
 		t.Errorf("done event missing tok/s timings:\n%s", body)
+	}
+}
+
+// The budget endpoint reports honest context usage on open — a baseline before
+// any turn (so the status bar isn't blank on a fresh chat), then the last turn's
+// persisted accounting after one (so a reopen shows it without re-metering).
+func TestConversationBudget(t *testing.T) {
+	api := newAPI(t)
+	id := createChat(t, api, "Budget")
+
+	// Before any turn: a metered baseline (memory + system tools + empty history).
+	var baseline struct {
+		Used  int    `json:"used"`
+		NCtx  int    `json:"nCtx"`
+		Level string `json:"level"`
+	}
+	getJSONInto(t, api.URL+"/api/conversations/"+id+"/budget", &baseline)
+	if baseline.NCtx <= 0 || baseline.Used <= 0 {
+		t.Fatalf("baseline budget = %+v, want used and nCtx > 0", baseline)
+	}
+
+	// After a turn: the persisted last-turn status.
+	resp, err := http.Post(api.URL+"/api/chat/stream", "application/json",
+		strings.NewReader(`{"id":"`+id+`","content":"Tell me about Kyoto temples in some detail."}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	var after struct {
+		Used int `json:"used"`
+		NCtx int `json:"nCtx"`
+	}
+	getJSONInto(t, api.URL+"/api/conversations/"+id+"/budget", &after)
+	if after.Used <= 0 || after.NCtx <= 0 {
+		t.Errorf("post-turn budget = %+v, want used and nCtx > 0", after)
+	}
+
+	// ?fresh=1 re-meters instead of returning the persisted count — the path the UI
+	// takes when a chat's active tools change.
+	var fresh struct {
+		Used int `json:"used"`
+		NCtx int `json:"nCtx"`
+	}
+	getJSONInto(t, api.URL+"/api/conversations/"+id+"/budget?fresh=1", &fresh)
+	if fresh.Used <= 0 || fresh.NCtx <= 0 {
+		t.Errorf("fresh budget = %+v, want used and nCtx > 0", fresh)
 	}
 }
 

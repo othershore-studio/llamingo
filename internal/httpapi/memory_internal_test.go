@@ -24,7 +24,7 @@ func TestSegmentsForIncludesMemory(t *testing.T) {
 	msgs := []backend.Message{{Role: backend.RoleUser, Content: "hi"}}
 
 	// Without memory: just the conversation segment.
-	if segs := srv.segmentsFor(msgs); len(segs) != 1 || segs[0].Name != "conversation" {
+	if segs := srv.segmentsFor(msgs, nil); len(segs) != 1 || segs[0].Name != "conversation" {
 		t.Fatalf("no-memory segments = %+v, want [conversation]", segs)
 	}
 
@@ -32,8 +32,27 @@ func TestSegmentsForIncludesMemory(t *testing.T) {
 	if err := st.WriteMemory("remember this"); err != nil {
 		t.Fatal(err)
 	}
-	segs := srv.segmentsFor(msgs)
+	segs := srv.segmentsFor(msgs, nil)
 	if len(segs) != 2 || segs[0].Name != "memory" || segs[1].Name != "conversation" {
 		t.Fatalf("segments = %+v, want [memory conversation]", segs)
+	}
+}
+
+// Offered tools are their own metered segment (a system message of their
+// schemas), so the budget counts the tool cost — which is a real chunk.
+func TestSegmentsForIncludesTools(t *testing.T) {
+	llama := lcpptest.NewServer()
+	defer llama.Close()
+	be := backend.New(llama.URL, backend.WithHTTPClient(llama.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(be, st)
+	msgs := []backend.Message{{Role: backend.RoleUser, Content: "hi"}}
+	tools := []backend.ToolDef{{Name: "write_memory", Description: "save a note"}}
+	segs := srv.segmentsFor(msgs, tools)
+	if len(segs) != 2 || segs[0].Name != "tools" || segs[1].Name != "conversation" {
+		t.Fatalf("segments = %+v, want [tools conversation]", segs)
 	}
 }

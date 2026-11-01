@@ -74,6 +74,7 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("PUT /api/memory", s.handlePutMemory)
 	s.mux.HandleFunc("POST /api/memory/ack", s.handleAckMemory)
 	s.mux.HandleFunc("GET /api/conversations/{id}", s.handleGetConversation)
+	s.mux.HandleFunc("GET /api/conversations/{id}/budget", s.handleGetBudget)
 	s.mux.HandleFunc("PUT /api/conversations/{id}", s.handleRenameConversation)
 	s.mux.HandleFunc("DELETE /api/conversations/{id}", s.handleDeleteConversation)
 	s.mux.HandleFunc("GET /api/conversations/{id}/attachments/{name}", s.handleGetAttachment)
@@ -87,7 +88,11 @@ func New(be backend.Backend, st *store.Store) *Server {
 	s.mux.HandleFunc("GET /api/mcp", s.handleGetMCP)
 	s.mux.HandleFunc("PUT /api/mcp", s.handlePutMCP)
 	s.mux.HandleFunc("GET /api/project", s.handleGetProject)
+	s.mux.HandleFunc("GET /api/project/status", s.handleGetProjectStatus)
 	s.mux.HandleFunc("PUT /api/project", s.handlePutProject)
+	s.mux.HandleFunc("GET /api/connections", s.handleGetConnections)
+	s.mux.HandleFunc("PUT /api/connections", s.handlePutConnections)
+	s.mux.HandleFunc("POST /api/connections/activate", s.handleActivateConnection)
 	s.mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	s.mux.HandleFunc("POST /api/permission/{id}", s.handlePermission)
 	return s
@@ -223,15 +228,16 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	url := strings.TrimSpace(body.URL)
-	if url == "" {
-		http.Error(w, "url is required", http.StatusBadRequest)
-		return
-	}
 	// Read-modify-write so any fields this form does not own survive a settings save.
 	cfg, _ := s.st.Config()
-	cfg.URL = url
-	cfg.Token = body.Token
+	// The connection now lives in its own card (/api/connections); a Settings save
+	// that omits the URL leaves the active connection untouched and updates only the
+	// fields below. A URL is still honored (and hot-swapped) for back-compat.
+	url := strings.TrimSpace(body.URL)
+	if url != "" {
+		cfg.URL = url
+		cfg.Token = body.Token
+	}
 	cfg.Location = strings.TrimSpace(body.Location)
 	cfg.ForgeURL = strings.TrimSpace(body.ForgeURL)
 	cfg.Debug = body.Debug
@@ -239,7 +245,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	rc.SetConnection(url, body.Token)
+	if url != "" {
+		rc.SetConnection(url, body.Token)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -323,6 +331,41 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, entries)
 }
 
+// GET /api/conversations/{id}/budget — the honest context budget for the chat's
+// CURRENT state, with no new turn: memory + the projected history, tokenized by
+// the backend. This is what lets the status bar show usage before the first
+// message and again when a chat is reopened, not only after a turn's `done`. It
+// mirrors handleChatStream's pre-turn estimate, so (as there) tool schemas aren't
+// counted — the authoritative correction only lands once a turn actually runs.
+func (s *Server) handleGetBudget(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	// ?fresh=1 forces a re-meter (e.g. the chat's active tools just changed),
+	// ignoring the persisted last-turn count. Otherwise a chat that has had a turn
+	// shows that authoritative, tool-inclusive count straight from meta — no
+	// re-metering, no MCP connection.
+	if r.URL.Query().Get("fresh") == "" {
+		if b, ok, err := s.st.ConversationBudget(id); err == nil && ok {
+			writeJSON(w, map[string]any{"used": b.Used, "nCtx": b.NCtx, "level": b.Level})
+			return
+		}
+	}
+	// A fresh chat has no turn yet: meter the baseline it would start from —
+	// memory + the local system tools (no MCP, so opening connects nothing) + the
+	// (empty) history — so usage shows before the first message, tools included.
+	prior, err := s.st.LoadConversation(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	messages := messagesFromEntries(store.Project(prior))
+	bud, err := contextbudget.New(s.be).Estimate(r.Context(), s.segmentsFor(messages, s.budgetTools(id)))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]any{"used": bud.Used(), "nCtx": bud.NCtx, "level": string(bud.Level())})
+}
+
 // POST /api/chat/stream {id, content} — the core is the source of truth for
 // history: it loads the conversation's log, appends this turn's user message,
 // streams the reply as SSE ("reasoning" and "delta" chunks, then "done" with
@@ -361,7 +404,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 
 	bld := contextbudget.New(s.be)
-	segs := s.segmentsFor(messages)
+	segs := s.segmentsFor(messages, nil)
 	bud, err := bld.Estimate(r.Context(), segs)
 	if err != nil {
 		writeEvent(w, flusher, "error", map[string]any{"error": err.Error()})
@@ -374,7 +417,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		if res, cerr := s.compactConversation(r.Context(), body.ID); cerr == nil && res.Folded > 0 {
 			if entries, lerr := s.st.LoadConversation(body.ID); lerr == nil {
 				messages = messagesFromEntries(store.Project(entries))
-				segs = s.segmentsFor(messages)
+				segs = s.segmentsFor(messages, nil)
 				if b, eerr := bld.Estimate(r.Context(), segs); eerr == nil {
 					bud = b
 				}
@@ -452,7 +495,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	for _, tc := range toolCallsFrom(out) {
 		_ = s.st.AppendToolUse(body.ID, tc.name, tc.args)
 	}
-	if _, err := s.st.AppendMessage(body.ID, "assistant", answer); err != nil {
+	tps := 0.0
+	if timings != nil {
+		tps = timings.PredictPerSecond
+	}
+	if _, err := s.st.AppendMessageTimed(body.ID, "assistant", answer, tps); err != nil {
 		emit("error", map[string]any{"error": err.Error()})
 		return
 	}
@@ -466,6 +513,10 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			"predictN":         timings.PredictN,
 		}
 	}
+	// Persist this turn's accounting so the status bar shows it again on reopen,
+	// without re-metering (and with the authoritative count folded in). See
+	// handleGetBudget.
+	_ = s.st.SetConversationBudget(body.ID, store.BudgetStatus{Used: bud.Used(), NCtx: bud.NCtx, Level: string(bud.Level())})
 	emit("done", donePayload)
 }
 

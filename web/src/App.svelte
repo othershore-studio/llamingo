@@ -73,6 +73,16 @@
   let streamMessages = null // its live message array, so switching chats mid-stream keeps the turn alive
   let messages = $state([]) // { role, content }
   let input = $state('')
+  let inputEl = $state(null) // the composer textarea, for auto-grow
+  // Grow the composer with its content (capped, then it scrolls), and spring back
+  // to one line after send() clears it — runs on every keystroke and on clear.
+  $effect(() => {
+    input // track the value
+    const el = inputEl
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px'
+  })
   let streaming = $state(false)
   // "Working" indicator: a braille spinner + a themed word while a turn runs.
   let spinnerFrame = $state(0)
@@ -109,7 +119,6 @@
     return workingWord
   }
   let budget = $state(null) // { used, nCtx, level }
-  let speed = $state(null) // last turn's tokens/sec: { promptPerSecond, predictPerSecond, predictN }
   let error = $state(null)
   let convSummaries = $state([]) // compaction summaries, each anchored at its fold point in the thread
   let report = $state(null) // transient compaction report
@@ -130,8 +139,10 @@
   let memoryTampered = $state(false)
 
   let settingsOpen = $state(false) // connection settings modal open?
-  let settingsUrl = $state('') // editable llama-server URL
-  let settingsToken = $state('') // editable bearer token
+  let connections = $state([]) // saved llama-server connections: [{name, url, token, _id}]
+  let activeUrl = $state('') // the connection the backend is pointed at now
+  let connOpen = $state(false) // status-bar connection picker open?
+  let connId = 0
   let settingsLocation = $state('') // editable user location (for place-aware tools)
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
@@ -148,6 +159,7 @@
   let projectInProject = $state(false) // is the active chat a project session?
   let projectSystem = $state([]) // project system-tool defaults: [{name, description, enabled}]
   let projectMcp = $state([]) // project MCP servers (read-only)
+  let budgetOpen = $state(false) // the status-bar Context popover (bar + count + Compact)
 
   let reachable = $state(true)
   let staleNote = $state(null) // transient "server changed" note
@@ -281,7 +293,7 @@
       } else if (e.kind === 'toolcall') {
         tools.push({ name: e.name, arguments: e.content }) // name + args persisted; args drive the hover tooltip
       } else if (e.kind === 'msg') {
-        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', tools: e.role === 'assistant' ? tools : [], time: e.time })
+        msgs.push({ role: e.role, content: e.content, reasoning: e.role === 'assistant' ? trace : '', tools: e.role === 'assistant' ? tools : [], time: e.time, tokPerSec: e.tokPerSec })
         trace = ''
         tools = []
       } else if (e.kind === 'summary') {
@@ -290,6 +302,20 @@
     }
     messages = msgs
     convSummaries = sums
+    loadBudget(id)
+  }
+
+  // The honest context budget for a chat's current state, fetched on open so the
+  // status bar shows usage before the first message and again on reopen — not
+  // only after a turn's `done`. Guarded against a fast switch; a failed fetch
+  // leaves the bar as it was rather than flashing a stale chat's number.
+  async function loadBudget(id, fresh = false) {
+    try {
+      const b = await apiFetch(`/api/conversations/${id}/budget${fresh ? '?fresh=1' : ''}`).then((r) => (r.ok ? r.json() : null))
+      if (b && activeId === id) budget = b
+    } catch {
+      /* leave the bar as-is */
+    }
   }
 
   // Compaction folds the oldest messages into a summary (non-destructive); the
@@ -335,22 +361,19 @@
   // The llama-server connection, persisted to config.json and hot-swapped live.
   async function openSettings() {
     const s = await apiFetch('/api/settings').then((r) => r.json())
-    settingsUrl = s.url ?? ''
-    settingsToken = s.token ?? ''
     settingsLocation = s.location ?? ''
     settingsForgeUrl = s.forgeUrl ?? ''
     settingsDebug = s.debug ?? false
+    await loadConnections()
     await loadImageModels()
     await loadMCP()
     settingsOpen = true
   }
   async function saveSettings() {
-    const url = settingsUrl.trim()
-    if (!url) return
     await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, token: settingsToken, location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), debug: settingsDebug }),
+      body: JSON.stringify({ location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), debug: settingsDebug }),
     })
     // Image models: persist the user's choices, or seed them from Forge on a first
     // connect (an empty list + a Forge URL). See internal/imagegen.
@@ -359,8 +382,49 @@
       else await fetchImageModels()
     }
     await saveMCP()
+    await saveConnections()
     settingsOpen = false
-    checkServer() // re-poll so the status reflects the new connection now
+    checkServer() // re-poll so the status reflects any connection change now
+  }
+
+  // Saved llama-server connections — the Settings "Connections" card and the
+  // status-bar picker. One server = one model, so switching the active connection
+  // is how the user switches model: activating hot-swaps the live backend and
+  // re-reads /props. See /api/connections.
+  async function loadConnections() {
+    try {
+      const d = await apiFetch('/api/connections').then((r) => r.json())
+      activeUrl = d.activeUrl ?? ''
+      connections = (d.connections ?? []).map((c) => ({ ...c, _id: connId++ }))
+    } catch {
+      connections = []
+    }
+  }
+  async function saveConnections() {
+    await apiFetch('/api/connections', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ connections: connections.map((c) => ({ name: (c.name || '').trim(), url: (c.url || '').trim(), token: (c.token || '').trim() })) }),
+    })
+  }
+  function addConnection() {
+    connections = [...connections, { name: '', url: '', token: '', _id: connId++ }]
+  }
+  function removeConnection(c) {
+    connections = connections.filter((x) => x !== c)
+  }
+  async function activateConnection(c) {
+    const url = (c.url || '').trim()
+    if (!url) return
+    await apiFetch('/api/connections/activate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url, token: (c.token || '').trim() }),
+    })
+    activeUrl = url
+    connOpen = false
+    await checkServer() // re-read /props → model, context size, thinking support
+    if (activeId) loadBudget(activeId, true) // re-meter fresh: new model tokenizes differently, and the window changed
   }
 
   // Image models — the Settings "Image generation" section. The list is seeded
@@ -449,6 +513,7 @@
       body: JSON.stringify({ disabled }),
     })
     toolsOpen = false
+    loadBudget(activeId, true) // tools changed — re-meter so the new cost (and any overflow) shows now
   }
   function toggleToolGroup(g, on) {
     for (const t of g.tools) t.enabled = on
@@ -724,9 +789,16 @@
     } else if (event === 'done') {
       toolRunning = false
       pending = null // the turn resolved — dismiss any consent prompt that went unanswered
+      // Tag the turn's assistant bubble with its generation speed, so tok/s rides
+      // the response (beside its timestamp), not one global status-bar number. Done
+      // regardless of which chat is on screen, so a backgrounded turn keeps it too.
+      const tps = payload.timings?.predictPerSecond
+      if (tps && live?.length) {
+        const last = live[live.length - 1]
+        if (last?.role === 'assistant') last.tokPerSec = tps
+      }
       if (onScreen) {
         budget = payload.budget
-        speed = payload.timings ?? null
         reachable = true
       }
       reconcileFinal(streamingChatId, live)
@@ -886,7 +958,16 @@
     return path.split(/[\\/]/).pop().replace(/\.gguf$/, '')
   }
 
-  const pct = $derived(budget && budget.nCtx ? Math.min(100, Math.round((100 * budget.used) / budget.nCtx)) : 0)
+  // Meter the budget against whatever connection is active NOW: switching to a
+  // smaller-context model re-evaluates the same token count against the new window
+  // (and can tip it into overflow) without waiting for the next turn. conn.nCtx
+  // updates on every /props poll, including right after a connection switch.
+  const ctxMax = $derived(conn?.nCtx || budget?.nCtx || 0)
+  const pct = $derived(budget && ctxMax ? Math.min(100, Math.round((100 * budget.used) / ctxMax)) : 0)
+  const ctxOver = $derived(!!(budget && ctxMax && budget.used > ctxMax))
+  const ctxLevel = $derived(
+    !budget || !ctxMax ? 'healthy' : budget.used / ctxMax >= 0.9 ? 'full' : budget.used / ctxMax >= 0.75 ? 'near' : 'healthy'
+  )
 
   // The window title reflects the active conversation — "llaminGO › Chat name" in
   // the desktop title bar / taskbar and the browser tab, or just "llaminGO" at the
@@ -898,6 +979,19 @@
     const t = activeTitle ? `llaminGO › ${activeTitle}` : 'llaminGO'
     document.title = t
     if (isDesktop) window.runtime?.WindowSetTitle?.(t)
+  })
+  // Know eagerly whether the active chat is a project session, so the status bar
+  // can gate its Project control without opening the surface. Uses the cheap
+  // /status probe (no MCP), and discards a stale answer on a fast chat switch.
+  $effect(() => {
+    const id = activeId
+    if (!id) { projectInProject = false; return }
+    let cancelled = false
+    apiFetch(`/api/project/status?conv=${id}`)
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) projectInProject = !!d.inProject })
+      .catch(() => { if (!cancelled) projectInProject = false })
+    return () => { cancelled = true }
   })
 </script>
 
@@ -934,14 +1028,6 @@
     </button>
     <span class="wordmark">llaminGO{activeTitle ? ` › ${activeTitle}` : ''}</span>
     <span class="spacer"></span>
-    {#if conn?.thinkingSupported}
-      <button
-        class="pill-btn"
-        class:on={thinking}
-        onclick={() => (thinking = !thinking)}
-        title="Toggle the model's thinking for new messages"
-      >Thinking {thinking ? 'on' : 'off'}</button>
-    {/if}
     {#if !narrow}
     <button
       class="icon-btn"
@@ -988,8 +1074,6 @@
   {#if actionsMenu}
     <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
     <nav class="sysmenu actionsmenu" class:up={narrow}>
-      <button onclick={() => { actionsMenu = false; openTools() }} disabled={!activeId}>Tools</button>
-      <button onclick={() => { actionsMenu = false; openProject() }} disabled={!activeId}>Project</button>
       <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
       <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
     </nav>
@@ -1137,6 +1221,7 @@
             <div class="meta" class:mine={m.role === 'user'}>
               <button class="metabtn" onclick={() => copyMsg(m.content, i)}>{copiedAt === i ? 'copied' : 'copy'}</button>
               <span>{fmtTime(m.time)}</span>
+              {#if m.tokPerSec}<span title="generation tokens per second">· {Math.round(m.tokPerSec)} tok/s</span>{/if}
             </div>
           {/if}
           {#each convSummaries.filter((s) => s.afterIndex === i) as s}
@@ -1169,18 +1254,25 @@
         </div>
       {/if}
       <div class="composer">
-        <input
-          class="field"
+        <textarea
+          class="field composer-input"
+          rows="1"
           placeholder="Ask something…"
           bind:value={input}
-          onkeydown={(e) => e.key === 'Enter' && send()}
+          bind:this={inputEl}
+          onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send() } }}
           disabled={streaming}
-        />
+        ></textarea>
+        <div class="composer-controls">
+          {#if conn?.thinkingSupported}
+            <button class="pill-btn" class:on={thinking} onclick={() => (thinking = !thinking)} title="Toggle the model's thinking for new messages">Thinking {thinking ? 'on' : 'off'}</button>
+          {/if}
+          <button class="pill-btn" onclick={openTools} disabled={!activeId} title="Trim the tools for this chat">Tools</button>
+          <span class="spacer"></span>
+        </div>
       </div>
-    </main>
-  </div>
 
-  <footer class="statusbar" class:narrow={narrow}>
+      <footer class="statusbar" class:narrow={narrow}>
     {#if narrow}
       <button class="statusbtn icon" onclick={toggleNav} aria-label="Chats" title="Chats">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
@@ -1189,8 +1281,26 @@
       </button>
     {/if}
     {#if conn && reachable}
-      <span class="dot"></span>
-      <span class="statusmodel">{modelName(conn.model)} · {conn.nCtx} ctx</span>
+      <div class="connwrap">
+        <button class="statusmodel connpick" onclick={() => { connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title="Switch connection">
+          <span class="dot"></span>
+          <span class="connpick-label">{modelName(conn.model)} · {conn.nCtx} ctx</span>
+          <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>
+        </button>
+        {#if connOpen}
+          <div class="conn-backdrop" onclick={() => (connOpen = false)}></div>
+          <div class="conn-pop">
+            {#each connections as c (c._id ?? c.url)}
+              <button class="conn-row" class:active={c.url === activeUrl} onclick={() => activateConnection(c)}>
+                <span class="conn-dot" class:on={c.url === activeUrl}></span>
+                <span class="conn-row-name">{c.name}</span>
+                <span class="conn-row-url muted">{c.url}</span>
+              </button>
+            {/each}
+            <button class="conn-manage" onclick={() => { connOpen = false; openSettings() }}>Manage…</button>
+          </div>
+        {/if}
+      </div>
     {:else if !reachable}
       <span class="dot off"></span>
       <span>server unreachable — reconnecting…</span>
@@ -1199,26 +1309,49 @@
     {:else}
       <span>connecting…</span>
     {/if}
+    {#if projectInProject && !narrow}
+      <button class="statusbtn" onclick={openProject} aria-label="Project" title="Project settings">Project</button>
+    {/if}
     <span class="spacer"></span>
     {#if report}<span class="report">{report}</span>{/if}
-    {#if speed}<span title="generation tokens per second">{Math.round(speed.predictPerSecond)} tok/s</span>{/if}
-    {#if budget}
-      <span>context {budget.used} / {budget.nCtx}</span>
-      <span class="bar {budget.level}"><span class="fill" style="width:{pct}%"></span></span>
+    {#if projectInProject && narrow}
+      <button class="statusbtn icon" onclick={openProject} aria-label="Project" title="Project"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z" /></svg></button>
     {/if}
-    {#if activeId}
-      <button class="statusbtn" class:icon={narrow} onclick={compact} disabled={streaming} aria-label="Compact" title="Compact">
-        {#if narrow}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3,3 8,7 13,3" /><polyline points="3,13 8,9 13,13" /></svg>
-        {:else}Compact{/if}
-      </button>
+    {#if budget && activeId}
+      <div class="ctxwrap">
+        <button class="statusbtn ctx-pill {ctxLevel}" onclick={() => (budgetOpen = !budgetOpen)} aria-haspopup="true" aria-expanded={budgetOpen} title={ctxOver ? 'Over the context window' : 'Context usage'}>
+          <svg class="batt" viewBox="0 0 24 12" width="22" height="11" aria-hidden="true">
+            <rect x="1" y="1.5" width="18" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <rect x="20.5" y="4" width="2.5" height="4" rx="1" fill="currentColor" />
+            <rect x="2.6" y="3.1" width={Math.max(0, Math.min(15.8, (pct / 100) * 15.8))} height="5.8" rx="1" fill="currentColor" />
+          </svg>
+          <span class="ctx-pct">{pct}%</span>
+          {#if ctxOver}<span class="ctx-bang" aria-label="over the context window">!</span>{/if}
+          {#if !narrow}<span class="ctx-label">Context</span>{/if}
+        </button>
+        {#if budgetOpen}
+          <div class="ctx-backdrop" onclick={() => (budgetOpen = false)}></div>
+          <div class="ctx-pop">
+            <div class="bar {ctxLevel}"><span class="fill" style="width:{pct}%"></span></div>
+            <div class="ctx-count">{budget.used} / {ctxMax} tokens</div>
+            {#if ctxOver}
+              <div class="ctx-warn">Over this model's {ctxMax}-token window. Trim tools (the Tools button) or switch to a larger-context model.</div>
+            {:else if ctxLevel === 'near'}
+              <div class="ctx-warn soft">Near this model's {ctxMax}-token window.</div>
+            {/if}
+            <button class="statusbtn" onclick={() => { budgetOpen = false; compact() }} disabled={streaming}>Compact</button>
+          </div>
+        {/if}
+      </div>
     {/if}
     {#if narrow}
       <button class="statusbtn icon" aria-label="Menu" aria-haspopup="true" aria-expanded={actionsMenu} title="Memory, Settings" onclick={() => (actionsMenu = !actionsMenu)}>
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="3" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="8" cy="13" r="1.5" /></svg>
       </button>
     {/if}
-  </footer>
+      </footer>
+    </main>
+  </div>
 
   {#if memoryOpen}
     <div class="modal-backdrop" onclick={() => (memoryOpen = false)}>
@@ -1345,20 +1478,33 @@
           <button class="x" onclick={() => (settingsOpen = false)}>✕</button>
         </div>
         <div class="modal-body">
-        <div class="group-head">Connection</div>
-        <label class="setting">
-          <span>llama-server URL</span>
-          <input
-            class="field"
-            bind:value={settingsUrl}
-            placeholder="http://localhost:8080"
-            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
-          />
-        </label>
-        <label class="setting">
-          <span>Bearer token <span class="muted">(optional, for an auth proxy)</span></span>
-          <input class="field" type="password" bind:value={settingsToken} placeholder="leave blank for none" />
-        </label>
+        <div class="group-head">Connections <span class="muted">(llama-servers to switch between)</span></div>
+        <div class="imgmodels">
+          <div class="imgmodels-head">
+            <span class="muted">Servers{connections.length ? ` · ${connections.length}` : ''}</span>
+            <button class="refresh" onclick={addConnection}>+ Add connection</button>
+          </div>
+          {#if connections.length}
+            <div class="imgmodels-hint muted">One server serves one model, so the active connection is your model. Pick it here (the dot) or from the status bar.</div>
+            <ul class="imgmodels-list">
+              {#each connections as c (c._id)}
+                <li class="mcpserver">
+                  <div class="mcpserver-head">
+                    <label class="conn-radio" title={c.url === activeUrl ? 'Active connection' : 'Make this the active connection'}>
+                      <input type="radio" name="activeconn" checked={c.url === activeUrl} onchange={() => activateConnection(c)} />
+                    </label>
+                    <input class="field mcp-name" placeholder="name" bind:value={c.name} />
+                    <button class="imgmodel-exp" title="Remove connection" onclick={() => removeConnection(c)}>✕</button>
+                  </div>
+                  <input class="field" placeholder="http://localhost:8080" bind:value={c.url} />
+                  <input class="field" type="password" placeholder="Bearer token — optional (for an auth proxy)" bind:value={c.token} />
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <div class="imgmodels-hint muted">No saved connections. Add one, or it falls back to $LLAMINGO_URL.</div>
+          {/if}
+        </div>
 
         <div class="group-head">Image generation</div>
         <label class="setting">
@@ -1914,6 +2060,12 @@
     border-top: 0.5px solid var(--border);
     padding: 12px;
   }
+  .composer-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
   .field {
     width: 100%;
     padding: 10px 12px;
@@ -1922,6 +2074,17 @@
     background: var(--paper);
     color: var(--ink);
     font: inherit;
+  }
+  /* The composer grows with its content (Shift+Enter adds a line; Enter sends),
+     up to a cap, then scrolls. Height is driven in JS; these are the bounds. */
+  .composer-input {
+    box-sizing: border-box;
+    display: block;
+    resize: none;
+    overflow-y: auto;
+    min-height: 40px;
+    max-height: 160px;
+    line-height: 1.4;
   }
   .rename {
     padding: 6px 8px;
@@ -2085,6 +2248,183 @@
   }
   .bar.full .fill {
     background: #d64545;
+  }
+  /* Context pill + popover: the budget as one status-bar control. The pill is a
+     battery filled to the usage %, colored by level; pressing it opens a popover
+     with the full bar, the exact count, and Compact. */
+  .ctxwrap {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+  .ctx-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .ctx-pill .ctx-pct {
+    font-variant-numeric: tabular-nums;
+  }
+  .ctx-pill.near {
+    color: #e0932a;
+    border-color: color-mix(in srgb, #e0932a 40%, transparent);
+  }
+  .ctx-pill.full {
+    color: #d64545;
+    border-color: color-mix(in srgb, #d64545 40%, transparent);
+  }
+  .ctx-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+  }
+  .ctx-pop {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    z-index: 21;
+    min-width: 180px;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ctx-pop .bar {
+    width: 100%;
+    display: block;
+    height: 8px;
+  }
+  .ctx-count {
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+  .ctx-pop .statusbtn {
+    align-self: center;
+  }
+  .ctx-bang {
+    color: #d64545;
+    font-weight: 700;
+  }
+  .ctx-warn {
+    font-size: 11px;
+    line-height: 1.35;
+    color: #d64545;
+    background: color-mix(in srgb, #d64545 8%, transparent);
+    border: 0.5px solid color-mix(in srgb, #d64545 30%, transparent);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .ctx-warn.soft {
+    color: #e0932a;
+    background: color-mix(in srgb, #e0932a 8%, transparent);
+    border-color: color-mix(in srgb, #e0932a 30%, transparent);
+  }
+  /* Connection picker: the active llama-server (= model) on the status-bar left;
+     click to switch among saved connections. Opens upward like the ctx popover. */
+  .connwrap {
+    position: relative;
+    display: inline-flex;
+    min-width: 0;
+  }
+  .statusmodel.connpick {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 6px;
+    min-width: 0;
+  }
+  .statusmodel.connpick:hover {
+    background: var(--paper);
+  }
+  .connpick-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .connpick .caret {
+    opacity: 0.6;
+    flex-shrink: 0;
+  }
+  .conn-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+  }
+  .conn-pop {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 21;
+    min-width: 240px;
+    max-width: 360px;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+  }
+  .conn-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-align: left;
+    border: none;
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    font-size: 12px;
+    padding: 7px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .conn-row:hover {
+    background: var(--paper);
+  }
+  .conn-row.active .conn-row-name {
+    color: var(--clay);
+  }
+  .conn-row-name {
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  .conn-row-url {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .conn-manage {
+    text-align: left;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    padding: 7px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    border-top: 0.5px solid var(--border);
+    margin-top: 2px;
+  }
+  .conn-manage:hover {
+    background: var(--paper);
+  }
+  .conn-radio {
+    display: inline-flex;
+    align-items: center;
   }
   .summary-mark summary {
     color: var(--clay);

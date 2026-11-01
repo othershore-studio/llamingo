@@ -39,6 +39,11 @@ type Entry struct {
 	Time    time.Time `json:"time"`
 	Content string    `json:"content"`
 
+	// Message-only (assistant turns): the generation speed of the turn (tokens/sec),
+	// persisted in the marker like the timestamp so the per-response tok/s shows
+	// again on reopen. Zero (omitted) for user/system messages and older logs.
+	TokPerSec float64 `json:"tokPerSec,omitempty"`
+
 	// Summary-only (Kind == KindSummary): the id-range this summary shadows and
 	// the accounting the context builder reports when it substitutes it.
 	CoversFrom    string `json:"coversFrom,omitempty"`
@@ -51,6 +56,13 @@ type Entry struct {
 // AppendMessage appends a message entry to a conversation's log and bumps its
 // Updated time. Append-only: nothing already written is touched.
 func (s *Store) AppendMessage(id, role, content string) (Entry, error) {
+	return s.AppendMessageTimed(id, role, content, 0)
+}
+
+// AppendMessageTimed is AppendMessage with the turn's generation speed
+// (tokens/sec) to persist alongside the message — used for the assistant turn so
+// the per-response tok/s survives a reopen. A tokPerSec of 0 stores nothing.
+func (s *Store) AppendMessageTimed(id, role, content string, tokPerSec float64) (Entry, error) {
 	dir, err := s.conversationDir(id)
 	if err != nil {
 		return Entry{}, err
@@ -59,7 +71,7 @@ func (s *Store) AppendMessage(id, role, content string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	e := Entry{ID: eid, Kind: KindMessage, Role: role, Time: time.Now().UTC(), Content: content}
+	e := Entry{ID: eid, Kind: KindMessage, Role: role, Time: time.Now().UTC(), Content: content, TokPerSec: tokPerSec}
 	if err := appendEntry(filepath.Join(dir, "conversation.md"), e); err != nil {
 		return Entry{}, err
 	}
@@ -335,6 +347,47 @@ func (s *Store) SetConversationTools(id string, disabled []string) error {
 	return writeJSON(metaPath, m)
 }
 
+// BudgetStatus is a chat's context accounting from its last turn (used tokens,
+// the context window, and the health level) — persisted in meta.json so the
+// status bar can show it again on reopen without re-metering the prompt.
+type BudgetStatus struct {
+	Used  int    `json:"used"`
+	NCtx  int    `json:"nCtx"`
+	Level string `json:"level"`
+}
+
+// ConversationBudget returns the chat's last-turn budget (ok=false when no turn
+// has run yet).
+func (s *Store) ConversationBudget(id string) (BudgetStatus, bool, error) {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return BudgetStatus{}, false, err
+	}
+	var m ConversationMeta
+	if err := readJSON(filepath.Join(dir, "meta.json"), &m); err != nil {
+		return BudgetStatus{}, false, fmt.Errorf("store: read meta for budget: %w", err)
+	}
+	if m.LastBudget == nil {
+		return BudgetStatus{}, false, nil
+	}
+	return *m.LastBudget, true, nil
+}
+
+// SetConversationBudget records the chat's last-turn budget for the status bar.
+func (s *Store) SetConversationBudget(id string, b BudgetStatus) error {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return err
+	}
+	metaPath := filepath.Join(dir, "meta.json")
+	var m ConversationMeta
+	if err := readJSON(metaPath, &m); err != nil {
+		return fmt.Errorf("store: read meta for budget: %w", err)
+	}
+	m.LastBudget = &b
+	return writeJSON(metaPath, m)
+}
+
 // Delete removes a conversation (chat or session) and its directory from disk.
 // The listing self-heals from the files, so nothing else needs updating.
 func (s *Store) Delete(id string) error {
@@ -388,8 +441,12 @@ func rawMarker(e Entry) string {
 		return fmt.Sprintf("<!-- llamingo:toolcall id=%s name=%s t=%s -->",
 			e.ID, e.Name, e.Time.UTC().Format(time.RFC3339))
 	}
-	return fmt.Sprintf("<!-- llamingo:msg id=%s role=%s t=%s -->",
+	marker := fmt.Sprintf("<!-- llamingo:msg id=%s role=%s t=%s",
 		e.ID, e.Role, e.Time.UTC().Format(time.RFC3339))
+	if e.TokPerSec > 0 {
+		marker += fmt.Sprintf(" tps=%.1f", e.TokPerSec)
+	}
+	return marker + " -->"
 }
 
 // entryLabel is the bold speaker label shown before an entry's marker.
@@ -454,6 +511,7 @@ func parseConversation(data []byte) (string, []Entry) {
 				e.Name = attrs["name"]
 			} else {
 				e.Role = attrs["role"]
+				e.TokPerSec = atof(attrs["tps"])
 			}
 			cur = &e
 			continue
@@ -497,6 +555,11 @@ func splitCovers(s string) (string, string) {
 func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+func atof(s string) float64 {
+	f, _ := strconv.ParseFloat(s, 64)
+	return f
 }
 
 func newEntryID() (string, error) {
