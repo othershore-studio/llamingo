@@ -73,6 +73,16 @@
   let streamMessages = null // its live message array, so switching chats mid-stream keeps the turn alive
   let messages = $state([]) // { role, content }
   let input = $state('')
+  let inputEl = $state(null) // the composer textarea, for auto-grow
+  // Grow the composer with its content (capped, then it scrolls), and spring back
+  // to one line after send() clears it — runs on every keystroke and on clear.
+  $effect(() => {
+    input // track the value
+    const el = inputEl
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px'
+  })
   let streaming = $state(false)
   // "Working" indicator: a braille spinner + a themed word while a turn runs.
   let spinnerFrame = $state(0)
@@ -1244,13 +1254,15 @@
         </div>
       {/if}
       <div class="composer">
-        <input
-          class="field"
+        <textarea
+          class="field composer-input"
+          rows="1"
           placeholder="Ask something…"
           bind:value={input}
-          onkeydown={(e) => e.key === 'Enter' && send()}
+          bind:this={inputEl}
+          onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send() } }}
           disabled={streaming}
-        />
+        ></textarea>
         <div class="composer-controls">
           {#if conn?.thinkingSupported}
             <button class="pill-btn" class:on={thinking} onclick={() => (thinking = !thinking)} title="Toggle the model's thinking for new messages">Thinking {thinking ? 'on' : 'off'}</button>
@@ -2062,6 +2074,17 @@
     background: var(--paper);
     color: var(--ink);
     font: inherit;
+  }
+  /* The composer grows with its content (Shift+Enter adds a line; Enter sends),
+     up to a cap, then scrolls. Height is driven in JS; these are the bounds. */
+  .composer-input {
+    box-sizing: border-box;
+    display: block;
+    resize: none;
+    overflow-y: auto;
+    min-height: 40px;
+    max-height: 160px;
+    line-height: 1.4;
   }
   .rename {
     padding: 6px 8px;
