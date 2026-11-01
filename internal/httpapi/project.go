@@ -41,7 +41,9 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	pservers, _ := mcp.LoadServers(projectMCPPath(root))
 	pmcp := scopeView(pservers, connectedNames(s.projectServers(root)), "project", false)
 
-	writeJSON(w, map[string]any{"inProject": true, "root": root, "systemTools": system, "mcp": pmcp})
+	show, _ := s.st.ProjectShowWorkingDir(root)
+
+	writeJSON(w, map[string]any{"inProject": true, "root": root, "systemTools": system, "mcp": pmcp, "showWorkingDir": show})
 }
 
 // GET /api/project/status?conv=<id> — a cheap "is this chat a project session?"
@@ -52,8 +54,10 @@ func (s *Server) handleGetProjectStatus(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]any{"inProject": ok && root != ""})
 }
 
-// PUT /api/project?conv=<id> {disabledSystem:[names]} — persist the system tools a
-// new session in this project starts with off (to .llamingo/project.json).
+// PUT /api/project?conv=<id> {disabledSystem:[names], showWorkingDir?} — persist the
+// system tools a new session in this project starts with off, and whether the
+// working-directory note is shown (omit it to leave that unchanged). Stored in
+// .llamingo/project.json.
 func (s *Server) handlePutProject(w http.ResponseWriter, r *http.Request) {
 	root, ok, _ := s.st.ProjectRoot(r.URL.Query().Get("conv"))
 	if !ok || root == "" {
@@ -62,6 +66,7 @@ func (s *Server) handlePutProject(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		DisabledSystem []string `json:"disabledSystem"`
+		ShowWorkingDir *bool    `json:"showWorkingDir"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -70,6 +75,12 @@ func (s *Server) handlePutProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.st.SetProjectToolDefaults(root, body.DisabledSystem); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if body.ShowWorkingDir != nil {
+		if err := s.st.SetProjectShowWorkingDir(root, *body.ShowWorkingDir); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
