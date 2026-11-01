@@ -1,0 +1,6 @@
+# The built SPA is copied here just before `gomobile bind` so the mobile package
+# can //go:embed it (embed can't reach ../../web/dist). Keep this dir present for
+# the embed on a fresh checkout and in CI (where it holds only this file); ignore
+# the copied build output.
+*
+!.gitignore
