@@ -18,7 +18,7 @@ func TestSearchFiles(t *testing.T) {
 	writeFile(t, filepath.Join(root, "internal", "client.go"), "package internal")
 	writeFile(t, filepath.Join(root, "README.md"), "# x")
 	writeFile(t, filepath.Join(root, "node_modules", "dep", "index.go"), "skip me")
-	tool := NewTool(root)
+	tool := NewTool(root, nil, nil)
 
 	out, err := tool.Call(context.Background(), toolSearchFiles, `{"pattern":".go"}`)
 	if err != nil {
@@ -47,7 +47,7 @@ func TestSearchInFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "bin.dat"), []byte("TODO\x00\x00binary"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	tool := NewTool(root)
+	tool := NewTool(root, nil, nil)
 
 	out, err := tool.Call(context.Background(), toolSearchInFiles, `{"pattern":"todo"}`)
 	if err != nil {

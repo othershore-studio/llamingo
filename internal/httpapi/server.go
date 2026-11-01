@@ -47,6 +47,11 @@ type Server struct {
 	// project's working folder and invalidated by the file's mtime — so a project's
 	// servers connect per project, and an edit applies without a restart.
 	projectRegs map[string]*projectReg
+
+	// Per-conversation set of files read via read_file, so write_file can enforce
+	// read-before-overwrite within a chat (a new file is exempt). In-memory only.
+	fileReadsMu sync.Mutex
+	fileReads   map[string]map[string]bool
 }
 
 // New wires the API over the given backend and store.
@@ -61,6 +66,7 @@ func New(be backend.Backend, st *store.Store) *Server {
 		grants:      permission.NewMemoryGrantStore(),
 		gates:       map[string]*permission.Gate{},
 		projectRegs: map[string]*projectReg{},
+		fileReads:   map[string]map[string]bool{},
 	}
 	s.mux.HandleFunc("GET /api/props", s.handleProps)
 	s.mux.HandleFunc("GET /api/chats", s.handleListChats)

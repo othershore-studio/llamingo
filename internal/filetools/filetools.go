@@ -3,12 +3,14 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Package filetools holds the project file tools: listing, finding files by
-// name, and searching their contents. Like memtool and localtools, the bundle
-// satisfies the MCP loop's Registry. Every tool is confined to one project
-// folder (the root passed to NewTool) — a path argument that would escape it, by
-// "..", an absolute path, or a symlink, is rejected — so these are offered only
-// in a project session. Reads only; no permission gate. Results are capped so a
-// large tree never floods the model's context.
+// name, searching their contents, reading a file, and writing one. Like memtool
+// and localtools, the bundle satisfies the MCP loop's Registry. Every tool is
+// confined to one project folder (the root passed to NewTool) — a path argument
+// that would escape it, by "..", an absolute path, or a symlink, is rejected — so
+// these are offered only in a project session. Reads are ungated; write_file is
+// gated (the user approves each write) and may overwrite an existing file only
+// after it has been read this chat. Results are capped so a large tree or file
+// never floods the model's context.
 package filetools
 
 import (
@@ -21,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
+	"github.com/othershore-studio/llamingo/internal/permission"
 )
 
 const (
@@ -30,16 +33,27 @@ const (
 
 // Tool is the bundle of project file tools, confined to root.
 type Tool struct {
-	root string
+	root  string
+	gate  *permission.Gate // write_file's consent prompt (nil when only listing tools)
+	reads map[string]bool  // files read this chat (confined abs paths) — write_file's read-before-overwrite guard
 }
 
-// NewTool returns the file tools confined to the given project folder.
-func NewTool(projectRoot string) *Tool { return &Tool{root: projectRoot} }
+// NewTool returns the file tools confined to the given project folder. gate
+// mediates write_file (nil is fine when the tools are only being listed); reads
+// is the per-conversation set of files read so far (nil starts an empty one).
+func NewTool(projectRoot string, gate *permission.Gate, reads map[string]bool) *Tool {
+	if reads == nil {
+		reads = map[string]bool{}
+	}
+	return &Tool{root: projectRoot, gate: gate, reads: reads}
+}
 
 const (
 	toolListFiles     = "list_files"
 	toolSearchFiles   = "search_files"
 	toolSearchInFiles = "search_in_files"
+	toolReadFile      = "read_file"
+	toolWriteFile     = "write_file"
 )
 
 // Tools advertises the file tools to the model.
@@ -72,6 +86,24 @@ func (t *Tool) Tools() []backend.ToolDef {
 				`"path":{"type":"string","description":"sub-path to search under; omit for the root"},` +
 				`"limit":{"type":"integer","description":"max matching lines (default 50)"}},"required":["pattern"]}`),
 		},
+		{
+			Name: toolReadFile,
+			Description: "Read a file's contents in the project, by its path (relative to the project " +
+				"root). Returns the text, capped for very large files. Read a file before you overwrite it.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the file's path within the project"}},"required":["path"]}`),
+		},
+		{
+			Name: toolWriteFile,
+			Description: "Write a file in the project — create a new one, or overwrite an existing one " +
+				"with the given content (a full-file write, not a patch). You must read_file an existing file " +
+				"first, so you don't clobber content you haven't seen; a new file needs no read. Asks the user " +
+				"to approve the write.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the file's path within the project"},` +
+				`"content":{"type":"string","description":"the full new contents of the file"}},` +
+				`"required":["path","content"]}`),
+		},
 	}
 }
 
@@ -84,9 +116,118 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return t.searchFiles(arguments)
 	case toolSearchInFiles:
 		return t.searchInFiles(arguments)
+	case toolReadFile:
+		return t.readFile(arguments)
+	case toolWriteFile:
+		return t.writeFile(ctx, arguments)
 	default:
 		return "", fmt.Errorf("filetools: unknown tool %q", name)
 	}
+}
+
+// readFile returns a file's contents (capped) and records that it was read, so a
+// later write_file may overwrite it.
+func (t *Tool) readFile(arguments string) (string, error) {
+	var a struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &a); err != nil {
+		return "", fmt.Errorf("filetools: arguments: %w", err)
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return "", fmt.Errorf("filetools: path is required")
+	}
+	abs, err := resolveWithin(t.root, a.Path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("filetools: read %s: %w", displayPath(a.Path), err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("filetools: %s is a folder — use list_files", displayPath(a.Path))
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", fmt.Errorf("filetools: read %s: %w", displayPath(a.Path), err)
+	}
+	t.reads[abs] = true
+	const maxBytes = 128 * 1024
+	out, truncated := string(data), false
+	if len(out) > maxBytes {
+		out, truncated = out[:maxBytes], true
+	}
+	header := fmt.Sprintf("%s (%s)", displayPath(a.Path), humanSize(info.Size()))
+	if truncated {
+		header += fmt.Sprintf(" — first %s", humanSize(maxBytes))
+	}
+	return header + ":\n" + out, nil
+}
+
+// writeFile creates or overwrites a file. An existing file must have been read
+// this chat first (read-before-overwrite); a new one need not be. Either way the
+// user approves the write through the gate.
+func (t *Tool) writeFile(ctx context.Context, arguments string) (string, error) {
+	if t.gate == nil {
+		return "", fmt.Errorf("filetools: write_file is unavailable here")
+	}
+	var a struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &a); err != nil {
+		return "", fmt.Errorf("filetools: arguments: %w", err)
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return "", fmt.Errorf("filetools: path is required")
+	}
+	abs, err := resolveWithin(t.root, a.Path)
+	if err != nil {
+		return "", err
+	}
+	info, statErr := os.Stat(abs)
+	exists := statErr == nil
+	if exists && info.IsDir() {
+		return "", fmt.Errorf("filetools: %s is a folder", displayPath(a.Path))
+	}
+	// Read-before-overwrite: a file the model hasn't seen can't be clobbered by a
+	// full-file write. A new file is exempt.
+	if exists && !t.reads[abs] {
+		return fmt.Sprintf("Refused: read %s with read_file before overwriting it (so unseen content isn't lost), then write again.", displayPath(a.Path)), nil
+	}
+	// Confine the parent too (resolveWithin skips the symlink check for a path that
+	// does not exist yet), so a symlinked folder can't lead a new file out of root.
+	if real, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		if rootReal, err := filepath.EvalSymlinks(filepath.Clean(t.root)); err == nil && escapes(rootReal, real) {
+			return "", fmt.Errorf("filetools: %s is outside the project folder", displayPath(a.Path))
+		}
+	}
+
+	verb := "create"
+	if exists {
+		verb = "overwrite"
+	}
+	allow, err := t.gate.Allow(ctx, permission.Request{
+		ToolID: "native:" + toolWriteFile,
+		Label:  verb + " " + displayPath(a.Path),
+		Detail: a.Content,
+		Risk:   permission.RiskMedium,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !allow {
+		return fmt.Sprintf("Not written: you declined to %s %s. Do not tell the user it was saved.", verb, displayPath(a.Path)), nil
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return "", fmt.Errorf("filetools: write %s: %w", displayPath(a.Path), err)
+	}
+	if err := os.WriteFile(abs, []byte(a.Content), 0o644); err != nil {
+		return "", fmt.Errorf("filetools: write %s: %w", displayPath(a.Path), err)
+	}
+	t.reads[abs] = true // now seen → further overwrites this chat are fine
+	return fmt.Sprintf("Wrote %s (%d bytes).", displayPath(a.Path), len(a.Content)), nil
 }
 
 func (t *Tool) listFiles(arguments string) (string, error) {

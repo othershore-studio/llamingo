@@ -27,7 +27,7 @@ func TestListFiles(t *testing.T) {
 	writeFile(t, filepath.Join(root, "main.go"), "package main")
 	writeFile(t, filepath.Join(root, "README.md"), "# project")
 	writeFile(t, filepath.Join(root, "internal", "a.go"), "package internal")
-	tool := NewTool(root)
+	tool := NewTool(root, nil, nil)
 
 	// Root listing: the subdir sorts first (dirs before files), both files present.
 	out, err := tool.Call(context.Background(), toolListFiles, "{}")
@@ -63,7 +63,7 @@ func TestListFilesLimit(t *testing.T) {
 	for _, n := range []string{"a", "b", "c", "d", "e"} {
 		writeFile(t, filepath.Join(root, n+".txt"), "x")
 	}
-	out, err := NewTool(root).Call(context.Background(), toolListFiles, `{"limit":2}`)
+	out, err := NewTool(root, nil, nil).Call(context.Background(), toolListFiles, `{"limit":2}`)
 	if err != nil {
 		t.Fatal(err)
 	}

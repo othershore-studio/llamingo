@@ -32,7 +32,7 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	system := make([]toolItem, 0, 6)
 	system = append(system, toolItemsOf(memtool.NewTool(s.st, nil), disabled)...)
 	system = append(system, toolItemsOf(localtools.NewTool(s.locationSetting), disabled)...)
-	system = append(system, toolItemsOf(filetools.NewTool(root), disabled)...)
+	system = append(system, toolItemsOf(filetools.NewTool(root, nil, nil), disabled)...)
 	if tool := s.imageTool(conv, nil); tool != nil {
 		system = append(system, toolItemsOf(tool, disabled)...)
 	}
