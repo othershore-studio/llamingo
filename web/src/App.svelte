@@ -1325,36 +1325,31 @@
         </svg>
       </button>
     {/if}
-    {#if conn && reachable}
-      <div class="connwrap">
-        <button class="statusmodel connpick" onclick={() => { connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title="Switch connection">
-          <span class="dot"></span>
-          <span class="connpick-label">{activeConnName ? `${activeConnName} (${modelName(conn.model)})` : `${modelName(conn.model)} · ${conn.nCtx} ctx`}</span>
-          <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>
-        </button>
-        {#if connOpen}
-          <div class="conn-backdrop" onclick={() => (connOpen = false)}></div>
-          <div class="conn-pop">
-            {#each connections as c (c._id ?? c.url)}
-              <button class="conn-row" class:active={isActiveConn(c)} onclick={() => activateConnection(c)}>
-                <span class="conn-dot" class:on={isActiveConn(c)}></span>
-                <span class="conn-row-name">{c.name}</span>
-                <span class="conn-row-url muted">{c.url}</span>
-                {#if c.temperature != null}<span class="conn-temp muted">temp {c.temperature}</span>{/if}
-              </button>
-            {/each}
-            <button class="conn-manage" onclick={() => { connOpen = false; openSettings() }}>Manage…</button>
-          </div>
-        {/if}
-      </div>
-    {:else if !reachable}
-      <span class="dot off"></span>
-      <span>server unreachable — reconnecting…</span>
-    {:else if error}
-      <span>couldn't reach the server</span>
-    {:else}
-      <span>connecting…</span>
-    {/if}
+    <!-- The connection picker stays available even when the active server is
+         unreachable, so a dead connection never traps the user — they can still
+         open this and switch to a live one (or reach Manage… / Settings). The
+         state shows in the label and the dot rather than hiding the control. -->
+    <div class="connwrap">
+      <button class="statusmodel connpick" onclick={() => { connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title="Switch connection">
+        <span class="dot" class:off={!reachable}></span>
+        <span class="connpick-label">{#if conn && reachable}{activeConnName ? `${activeConnName} (${modelName(conn.model)})` : `${modelName(conn.model)} · ${conn.nCtx} ctx`}{:else if !reachable}server unreachable — reconnecting…{:else if error}couldn't reach the server{:else}connecting…{/if}</span>
+        <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>
+      </button>
+      {#if connOpen}
+        <div class="conn-backdrop" onclick={() => (connOpen = false)}></div>
+        <div class="conn-pop">
+          {#each connections as c (c._id ?? c.url)}
+            <button class="conn-row" class:active={isActiveConn(c)} onclick={() => activateConnection(c)}>
+              <span class="conn-dot" class:on={isActiveConn(c)}></span>
+              <span class="conn-row-name">{c.name}</span>
+              <span class="conn-row-url muted">{c.url}</span>
+              {#if c.temperature != null}<span class="conn-temp muted">temp {c.temperature}</span>{/if}
+            </button>
+          {/each}
+          <button class="conn-manage" onclick={() => { connOpen = false; openSettings() }}>Manage…</button>
+        </div>
+      {/if}
+    </div>
     {#if projectInProject && !narrow}
       <button class="statusbtn" onclick={openProject} aria-label="Project" title="Project settings">Project</button>
     {/if}
