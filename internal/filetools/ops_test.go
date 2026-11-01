@@ -110,6 +110,60 @@ func TestRenameFile(t *testing.T) {
 	}
 }
 
+// copy_file duplicates a file (both source and copy end up present with the same
+// content), won't clobber an existing destination, refuses a folder, and a decline
+// writes nothing.
+func TestCopyFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "orig.txt"), "payload")
+	writeFile(t, filepath.Join(root, "taken.txt"), "other")
+	tool := NewTool(root, gate(true), map[string]bool{})
+	ctx := context.Background()
+
+	if _, err := tool.Call(ctx, toolCopyFile, `{"from":"orig.txt","to":"sub/copy.txt"}`); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "orig.txt")); err != nil || string(b) != "payload" {
+		t.Errorf("copy_file should leave the source in place: %q err=%v", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "sub", "copy.txt")); err != nil || string(b) != "payload" {
+		t.Fatalf("copy wrong: %q err=%v", b, err)
+	}
+
+	// Won't overwrite an existing destination.
+	if out, err := tool.Call(ctx, toolCopyFile, `{"from":"orig.txt","to":"taken.txt"}`); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(strings.ToLower(out), "already exists") {
+		t.Errorf("copy over an existing file = %q, want a refusal", out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "taken.txt")); string(b) != "other" {
+		t.Error("a refused copy must not change the destination")
+	}
+
+	// Refuses a folder.
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Call(ctx, toolCopyFile, `{"from":"dir","to":"dir2"}`); err == nil {
+		t.Error("copy_file on a folder should error")
+	}
+	// Escaping path rejected.
+	if _, err := tool.Call(ctx, toolCopyFile, `{"from":"orig.txt","to":"../out.txt"}`); err == nil {
+		t.Error("copy_file should reject an escaping destination")
+	}
+
+	// A declined copy makes nothing.
+	denied := NewTool(root, gate(false), map[string]bool{})
+	if out, err := denied.Call(ctx, toolCopyFile, `{"from":"orig.txt","to":"nope.txt"}`); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(strings.ToLower(out), "declin") {
+		t.Errorf("declined copy = %q", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "nope.txt")); !os.IsNotExist(err) {
+		t.Error("a declined copy must not create the file")
+	}
+}
+
 // rename_folder moves a folder, refuses a file (pointing at rename_file), and will
 // not rename the project root.
 func TestRenameFolder(t *testing.T) {

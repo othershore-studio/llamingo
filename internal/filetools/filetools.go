@@ -58,6 +58,7 @@ const (
 	toolRenameFile    = "rename_file"
 	toolCreateFolder  = "create_folder"
 	toolRenameFolder  = "rename_folder"
+	toolCopyFile      = "copy_file"
 	toolDeleteFile    = "delete_file"
 	toolDeleteFolder  = "delete_folder"
 )
@@ -149,6 +150,16 @@ func (t *Tool) Tools() []backend.ToolDef {
 				`"required":["from","to"]}`),
 		},
 		{
+			Name: toolCopyFile,
+			Description: "Copy a file within the project to a new path (both relative to the project " +
+				"root). The source must be a file that exists; the destination must not already exist. " +
+				"Asks the user to approve.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"from":{"type":"string","description":"the file's path within the project"},` +
+				`"to":{"type":"string","description":"the destination path within the project"}},` +
+				`"required":["from","to"]}`),
+		},
+		{
 			Name: toolDeleteFile,
 			Description: "Delete a file in the project, by its path (relative to the project root). " +
 				"Permanent — asks the user to confirm every time (it can't be undone).",
@@ -189,6 +200,8 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return t.createFolder(ctx, arguments)
 	case toolRenameFolder:
 		return t.renameWithin(ctx, toolRenameFolder, arguments, true)
+	case toolCopyFile:
+		return t.copyFile(ctx, arguments)
 	case toolDeleteFile:
 		return t.deleteFile(ctx, arguments)
 	case toolDeleteFolder:

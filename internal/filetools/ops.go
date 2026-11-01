@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,6 +144,89 @@ func (t *Tool) createFolder(ctx context.Context, arguments string) (string, erro
 		return "", fmt.Errorf("filetools: create folder %s: %w", displayPath(a.Path), err)
 	}
 	return fmt.Sprintf("Created folder %s.", displayPath(a.Path)), nil
+}
+
+// copyFile duplicates a file to a new path within the project. Like rename_file
+// it won't clobber an existing destination; the copy is a new, unseen file, so
+// the read-before-overwrite guard still applies to it afterwards. RiskMedium.
+func (t *Tool) copyFile(ctx context.Context, arguments string) (string, error) {
+	if t.gate == nil {
+		return "", fmt.Errorf("filetools: copy_file is unavailable here")
+	}
+	var a struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &a); err != nil {
+		return "", fmt.Errorf("filetools: arguments: %w", err)
+	}
+	if strings.TrimSpace(a.From) == "" || strings.TrimSpace(a.To) == "" {
+		return "", fmt.Errorf("filetools: copy_file needs both from and to")
+	}
+	fromAbs, err := resolveWithin(t.root, a.From)
+	if err != nil {
+		return "", err
+	}
+	toAbs, err := resolveWithin(t.root, a.To)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(fromAbs)
+	if err != nil {
+		return "", fmt.Errorf("filetools: copy %s: %w", displayPath(a.From), err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("filetools: %s is a folder — copy_file copies a single file", displayPath(a.From))
+	}
+	if _, err := os.Stat(toAbs); err == nil {
+		return fmt.Sprintf("Refused: %s already exists — pick a destination that doesn't, or remove it first.", displayPath(a.To)), nil
+	}
+	if err := confineParent(t.root, toAbs); err != nil {
+		return "", err
+	}
+
+	allow, err := t.gate.Allow(ctx, permission.Request{
+		ToolID: "native:" + toolCopyFile,
+		Label:  fmt.Sprintf("copy %s → %s", displayPath(a.From), displayPath(a.To)),
+		Risk:   permission.RiskMedium,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !allow {
+		return fmt.Sprintf("Not copied: you declined to copy %s. Do not tell the user it was copied.", displayPath(a.From)), nil
+	}
+	if err := copyFileContents(fromAbs, toAbs, info.Mode().Perm()); err != nil {
+		return "", fmt.Errorf("filetools: copy %s: %w", displayPath(a.From), err)
+	}
+	return fmt.Sprintf("Copied %s to %s (%s).", displayPath(a.From), displayPath(a.To), humanSize(info.Size())), nil
+}
+
+// copyFileContents streams src to a freshly created dst (parents made as needed),
+// refusing to overwrite (O_EXCL closes the stat→create gap). On a mid-copy error
+// it removes the partial dst so a failed copy leaves nothing behind.
+func copyFileContents(src, dst string, perm os.FileMode) error {
+	if perm == 0 {
+		perm = 0o644
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	return out.Close()
 }
 
 // confineParent re-confirms that abs's parent directory stays within root once
