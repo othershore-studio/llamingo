@@ -47,6 +47,17 @@ llaminGO is developed openly with the help of Claude (Anthropic). We state this 
 carry a `Co-Authored-By: Claude` trailer. The code and design are open source so the work can be inspected, reused, and
 given back.
 
+## Contributing
+
+Contributions are welcome, but llaminGO is a solo-maintained, opinionated project.
+Please **open an issue to discuss before sending a non-trivial change** — every
+change is reviewed before merging, and this is a side project, so replies may be
+slow. The GPU-free test suite must stay green. See [CONTRIBUTING.md](CONTRIBUTING.md);
+report security issues privately via [SECURITY.md](SECURITY.md).
+
 ## License
 
-**MPL-2.0** (to be added at publication).
+Mozilla Public License 2.0 (MPL-2.0). See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Commercial use is allowed, but modifications to llaminGO's own source files must be
+published. The project name and branding are handled separately as trademarks.
