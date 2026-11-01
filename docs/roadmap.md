@@ -118,6 +118,11 @@ configuration niceties.
 - **tokens/sec readout** — llama.cpp returns `timings` in the `/v1/chat/completions` final chunk (prompt/predict
   tokens + ms + per-second rates); surface it beside the budget. Shares the terminal-`Delta` plumbing with the tools
   work. Honest metering extended to speed.
+- **Tool status on a new chat** — a chat's per-chat tool curation (and the composer **Tools** button) is gated on
+  `activeId`, which only exists once the first message creates the chat. So a fresh chat shows no tool status until you
+  send something — even though the toolset is already determined by the defaults (system tools + project/global
+  curation), which the pre-message budget already meters. Show the prospective default toolset on a draft chat (and make
+  **Tools** openable) so the status is certain from message zero. Desktop + mobile. (Surfaced on mobile, 2026-11-01.)
 
 **Model / backend**
 
