@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- System bar tint = the top/bottom bar surface (matches, not the chat body), dark. -->
+    <color name="systemBar">#211e18</color>
+</resources>

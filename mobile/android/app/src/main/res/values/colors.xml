@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The logo's cream badge, as the adaptive-icon background. -->
+    <color name="ic_launcher_background">#f3ecdd</color>
+    <!-- System bar tint = the top/bottom bar surface (matches, not the chat body), light. -->
+    <color name="systemBar">#fbf9f3</color>
+</resources>
