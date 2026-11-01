@@ -44,6 +44,12 @@ var trayIcon []byte
 // app; the embedded webview fetches it directly (see web/src: window.runtime).
 const apiAddr = "127.0.0.1:8766"
 
+// webviewOrigins are the origins the webview itself uses, which the CORS gate
+// allowlists so a web page you happen to visit cannot reach the loopback API.
+// Verified against Wails v2: Windows serves the app at http://wails.localhost,
+// macOS/Linux at wails://wails, and `wails dev` runs the Vite server at :5173.
+var webviewOrigins = []string{"http://wails.localhost", "wails://wails", "http://localhost:5173"}
+
 // Close-to-tray state. Closing the window hides it to the system tray instead of
 // quitting; the app really exits only via the tray's Quit, which sets quitting
 // so OnBeforeClose lets the close through. Wails v2 has no native tray, so the
@@ -91,7 +97,7 @@ func main() {
 	// fall through to wails.Run, whose SingleInstanceLock hands off to the running
 	// instance (surfacing its window) and exits this one.
 	if ln, lnErr := net.Listen("tcp", apiAddr); lnErr == nil {
-		go func() { _ = http.Serve(ln, withCORS(httpapi.New(be, st))) }()
+		go func() { _ = http.Serve(ln, httpapi.CORS(httpapi.New(be, st), webviewOrigins...)) }()
 	} else {
 		log.Printf("API port %s busy (%v); deferring to the already-running instance", apiAddr, lnErr)
 	}
@@ -166,22 +172,6 @@ func showWindow() {
 	}
 	runtime.WindowShow(appCtx)
 	runtime.WindowUnminimise(appCtx)
-}
-
-// withCORS lets the webview (a wails:// origin) call the loopback API.
-func withCORS(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		// List every method the API uses (see internal/httpapi routes) — the
-		// webview is cross-origin, so a method missing here fails its preflight.
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "content-type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
 }
 
 // firstNonEmpty returns the first non-empty string, or "" if all are empty.
