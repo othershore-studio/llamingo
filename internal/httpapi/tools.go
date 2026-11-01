@@ -95,7 +95,7 @@ func (s *Server) handleGetConversationTools(w http.ResponseWriter, r *http.Reque
 	sys.Tools = append(sys.Tools, toolItemsOf(memtool.NewTool(s.st, nil), disabled)...)
 	sys.Tools = append(sys.Tools, toolItemsOf(localtools.NewTool(s.locationSetting), disabled)...)
 	if hasRoot && root != "" {
-		sys.Tools = append(sys.Tools, toolItemsOf(filetools.NewTool(root), disabled)...)
+		sys.Tools = append(sys.Tools, toolItemsOf(filetools.NewTool(root, nil, nil), disabled)...)
 	}
 	if tool := s.imageTool(id, nil); tool != nil {
 		sys.Tools = append(sys.Tools, toolItemsOf(tool, disabled)...)

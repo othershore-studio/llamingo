@@ -192,7 +192,7 @@ func (s *Server) registryFor(convID string) mcp.Registry {
 	// they are offered only in a project session (a free chat has no root); the
 	// project's own MCP servers (its .mcp.json) are offered there too.
 	if root, ok, err := s.st.ProjectRoot(convID); err == nil && ok && root != "" {
-		regs = append(regs, filetools.NewTool(root))
+		regs = append(regs, filetools.NewTool(root, gate, s.fileReadsFor(convID)))
 		if pr := s.projectServers(root); pr != nil {
 			regs = append(regs, pr)
 		}
@@ -211,6 +211,19 @@ func (s *Server) registryFor(convID string) mcp.Registry {
 	return reg
 }
 
+// fileReadsFor returns the per-conversation set of files read via read_file,
+// creating it on first use. write_file consults it for read-before-overwrite.
+func (s *Server) fileReadsFor(convID string) map[string]bool {
+	s.fileReadsMu.Lock()
+	defer s.fileReadsMu.Unlock()
+	m := s.fileReads[convID]
+	if m == nil {
+		m = map[string]bool{}
+		s.fileReads[convID] = m
+	}
+	return m
+}
+
 // budgetTools returns the tool definitions to METER for a conversation, curated
 // per chat: the local system tools (memory, location, project files, image gen)
 // plus the user's global MCP servers — whose schemas are a big chunk of the prompt
@@ -226,7 +239,7 @@ func (s *Server) budgetTools(convID string) []backend.ToolDef {
 		regs = append(regs, g)
 	}
 	if root, ok, err := s.st.ProjectRoot(convID); err == nil && ok && root != "" {
-		regs = append(regs, filetools.NewTool(root))
+		regs = append(regs, filetools.NewTool(root, nil, nil))
 	}
 	if tool := s.imageTool(convID, nil); tool != nil {
 		regs = append(regs, tool)
