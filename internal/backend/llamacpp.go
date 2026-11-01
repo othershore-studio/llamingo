@@ -26,6 +26,8 @@ type LlamaCppNative struct {
 	mu          sync.RWMutex
 	baseURL     string
 	token       string
+	temperature *float64
+	minP        *float64
 	http        *http.Client
 	idleTimeout time.Duration
 }
@@ -78,6 +80,10 @@ var _ Backend = (*LlamaCppNative)(nil)
 // settings endpoint hot-swaps the llama-server URL and token.
 type Reconfigurable interface {
 	SetConnection(baseURL, token string)
+	// SetSampling sets the sampling applied to every turn — the active connection's
+	// temperature and min_p. A nil pointer means "leave it to the server/model
+	// default": it is omitted from the request, not sent as a value.
+	SetSampling(temperature, minP *float64)
 	BaseURL() string
 	Token() string
 }
@@ -90,6 +96,15 @@ func (l *LlamaCppNative) SetConnection(baseURL, token string) {
 	l.mu.Lock()
 	l.baseURL = strings.TrimRight(baseURL, "/")
 	l.token = token
+	l.mu.Unlock()
+}
+
+// SetSampling sets the sampling knobs sent with every turn (nil = omit, i.e. the
+// server/model default). Safe for concurrent use with in-flight requests.
+func (l *LlamaCppNative) SetSampling(temperature, minP *float64) {
+	l.mu.Lock()
+	l.temperature = temperature
+	l.minP = minP
 	l.mu.Unlock()
 }
 
@@ -165,6 +180,16 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn fun
 	}
 	if len(req.TemplateKwargs) > 0 {
 		body["chat_template_kwargs"] = req.TemplateKwargs
+	}
+	// The active connection's sampling (nil = leave it to the server/model default).
+	l.mu.RLock()
+	temp, minP := l.temperature, l.minP
+	l.mu.RUnlock()
+	if temp != nil {
+		body["temperature"] = *temp
+	}
+	if minP != nil {
+		body["min_p"] = *minP
 	}
 	// Watchdog against a silently dead backend: a shared-GPU image load can OOM
 	// llama-server mid-turn, after which the stream read below would block forever

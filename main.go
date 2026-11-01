@@ -67,6 +67,7 @@ func main() {
 		opts = append(opts, backend.WithToken(tok))
 	}
 	be := backend.New(url, opts...)
+	be.SetSampling(cfg.Temperature, cfg.MinP) // the active connection's sampling (nil = server default)
 
 	dist, err := fs.Sub(assets, "web/dist")
 	if err != nil {

@@ -143,6 +143,12 @@
   let activeUrl = $state('') // the connection the backend is pointed at now
   let connOpen = $state(false) // status-bar connection picker open?
   let connId = 0
+  let activeConnId = $state('') // id of the active connection (NOT the active chat — that's activeId)
+  const numOrNull = (v) => (v === '' || v == null ? null : Number(v))
+  const newConnId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2))
+  // A connection is "active" by its stable id, so two personas on the same url are
+  // told apart — and the match survives editing a connection's url or name.
+  const isActiveConn = (c) => !!activeConnId && c.id === activeConnId
   let settingsLocation = $state('') // editable user location (for place-aware tools)
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
@@ -188,6 +194,7 @@
 
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
+    loadConnections() // so the status bar can show the active connection's name
     const t = setInterval(checkServer, 15000)
     // On resize: keep the sidebar from crowding out the conversation, and track
     // whether the window is maximized (drives the maximize/restore icon).
@@ -395,7 +402,8 @@
     try {
       const d = await apiFetch('/api/connections').then((r) => r.json())
       activeUrl = d.activeUrl ?? ''
-      connections = (d.connections ?? []).map((c) => ({ ...c, _id: connId++ }))
+      activeConnId = d.activeId ?? ''
+      connections = (d.connections ?? []).map((c) => ({ ...c, id: c.id || newConnId(), _id: connId++ }))
     } catch {
       connections = []
     }
@@ -404,11 +412,11 @@
     await apiFetch('/api/connections', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ connections: connections.map((c) => ({ name: (c.name || '').trim(), url: (c.url || '').trim(), token: (c.token || '').trim() })) }),
+      body: JSON.stringify({ connections: connections.map((c) => ({ id: c.id, name: (c.name || '').trim(), url: (c.url || '').trim(), token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP), systemPrompt: (c.systemPrompt || '').trim() })) }),
     })
   }
   function addConnection() {
-    connections = [...connections, { name: '', url: '', token: '', _id: connId++ }]
+    connections = [...connections, { id: newConnId(), name: '', url: '', token: '', temperature: null, minP: null, systemPrompt: '', _id: connId++ }]
   }
   function removeConnection(c) {
     connections = connections.filter((x) => x !== c)
@@ -419,8 +427,9 @@
     await apiFetch('/api/connections/activate', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, token: (c.token || '').trim() }),
+      body: JSON.stringify({ id: c.id, url, token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP), systemPrompt: (c.systemPrompt || '').trim() }),
     })
+    activeConnId = c.id
     activeUrl = url
     connOpen = false
     await checkServer() // re-read /props → model, context size, thinking support
@@ -963,6 +972,9 @@
   // (and can tip it into overflow) without waiting for the next turn. conn.nCtx
   // updates on every /props poll, including right after a connection switch.
   const ctxMax = $derived(conn?.nCtx || budget?.nCtx || 0)
+  // The active connection's name (alias), for the status bar. Empty until the
+  // connections load (on mount / picker open), then "Alias (model)" shows.
+  const activeConnName = $derived(connections.find((c) => c.id === activeConnId)?.name ?? '')
   const pct = $derived(budget && ctxMax ? Math.min(100, Math.round((100 * budget.used) / ctxMax)) : 0)
   const ctxOver = $derived(!!(budget && ctxMax && budget.used > ctxMax))
   const ctxLevel = $derived(
@@ -1284,17 +1296,18 @@
       <div class="connwrap">
         <button class="statusmodel connpick" onclick={() => { connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title="Switch connection">
           <span class="dot"></span>
-          <span class="connpick-label">{modelName(conn.model)} · {conn.nCtx} ctx</span>
+          <span class="connpick-label">{activeConnName ? `${activeConnName} (${modelName(conn.model)})` : `${modelName(conn.model)} · ${conn.nCtx} ctx`}</span>
           <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>
         </button>
         {#if connOpen}
           <div class="conn-backdrop" onclick={() => (connOpen = false)}></div>
           <div class="conn-pop">
             {#each connections as c (c._id ?? c.url)}
-              <button class="conn-row" class:active={c.url === activeUrl} onclick={() => activateConnection(c)}>
-                <span class="conn-dot" class:on={c.url === activeUrl}></span>
+              <button class="conn-row" class:active={isActiveConn(c)} onclick={() => activateConnection(c)}>
+                <span class="conn-dot" class:on={isActiveConn(c)}></span>
                 <span class="conn-row-name">{c.name}</span>
                 <span class="conn-row-url muted">{c.url}</span>
+                {#if c.temperature != null}<span class="conn-temp muted">temp {c.temperature}</span>{/if}
               </button>
             {/each}
             <button class="conn-manage" onclick={() => { connOpen = false; openSettings() }}>Manage…</button>
@@ -1485,19 +1498,24 @@
             <button class="refresh" onclick={addConnection}>+ Add connection</button>
           </div>
           {#if connections.length}
-            <div class="imgmodels-hint muted">One server serves one model, so the active connection is your model. Pick it here (the dot) or from the status bar.</div>
+            <div class="imgmodels-hint muted">One server serves one model, so the active connection is your model. Set temp / min_p to turn one server into personas — a low-temp "Coder", a high-temp "Creative"; blank = the model's default. Pick the active one (the dot) here or from the status bar.</div>
             <ul class="imgmodels-list">
               {#each connections as c (c._id)}
                 <li class="mcpserver">
                   <div class="mcpserver-head">
-                    <label class="conn-radio" title={c.url === activeUrl ? 'Active connection' : 'Make this the active connection'}>
-                      <input type="radio" name="activeconn" checked={c.url === activeUrl} onchange={() => activateConnection(c)} />
+                    <label class="conn-radio" title={isActiveConn(c) ? 'Active connection' : 'Make this the active connection'}>
+                      <input type="radio" name="activeconn" checked={isActiveConn(c)} onchange={() => activateConnection(c)} />
                     </label>
                     <input class="field mcp-name" placeholder="name" bind:value={c.name} />
                     <button class="imgmodel-exp" title="Remove connection" onclick={() => removeConnection(c)}>✕</button>
                   </div>
                   <input class="field" placeholder="http://localhost:8080" bind:value={c.url} />
                   <input class="field" type="password" placeholder="Bearer token — optional (for an auth proxy)" bind:value={c.token} />
+                  <div class="conn-sampling">
+                    <label>temp <input class="field conn-num" type="number" step="0.1" min="0" max="2" placeholder="default" bind:value={c.temperature} /></label>
+                    <label>min_p <input class="field conn-num" type="number" step="0.01" min="0" max="1" placeholder="default" bind:value={c.minP} /></label>
+                  </div>
+                  <textarea class="field conn-prompt" rows="2" placeholder="System prompt — optional (this persona's instructions)" bind:value={c.systemPrompt}></textarea>
                 </li>
               {/each}
             </ul>
@@ -2421,6 +2439,32 @@
   }
   .conn-manage:hover {
     background: var(--paper);
+  }
+  .conn-temp {
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .conn-sampling {
+    display: flex;
+    gap: 12px;
+    margin-top: 2px;
+  }
+  .conn-sampling label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .conn-num {
+    width: 84px;
+    padding: 6px 8px;
+  }
+  .conn-prompt {
+    resize: vertical;
+    min-height: 42px;
+    line-height: 1.4;
+    font-family: inherit;
   }
   .conn-radio {
     display: inline-flex;
