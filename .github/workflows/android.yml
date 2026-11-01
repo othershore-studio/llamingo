@@ -1,0 +1,135 @@
+# Builds the SIGNED Android release APK and attaches it to the GitHub Release.
+#
+# Runs only when you ask for it — on a version tag (`git tag v0.1.0 && git push
+# --tags`), which attaches the APK to the matching Release, or via the "Run
+# workflow" button (Actions tab). Nothing runs on ordinary pushes.
+#
+# The job is pinned to the `android-release` Environment, which you configure with
+# yourself as a REQUIRED REVIEWER — so the run pauses for one approval click before
+# the upload keystore is ever decoded. A signed build never happens without a
+# deliberate human go-ahead (important once the repo is public: it blocks a sneaky
+# workflow edit from exfiltrating the key on a tag push).
+#
+# One-time setup (repo Settings):
+#   Secrets and variables -> Actions -> New repository secret:
+#     ANDROID_KEYSTORE_BASE64    base64 of llamingo-release.jks (see below)
+#     ANDROID_KEYSTORE_PASSWORD  the store password
+#     ANDROID_KEY_PASSWORD       the key password
+#     ANDROID_KEY_ALIAS          llamingo
+#   Environments -> New environment `android-release` -> add yourself under
+#     "Required reviewers".
+#
+# Make the base64 secret value on the dev machine (PowerShell):
+#   [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\Code\.keys\llamingo-release.jks"))
+name: Android release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    # The approval gate: this run waits here until a required reviewer approves,
+    # so the keystore is only used on a build you deliberately let through.
+    environment: android-release
+    # Needed so a tagged run can attach the APK to the GitHub Release.
+    permissions:
+      contents: write
+    env:
+      # NDK pinned to the dev-machine version; gomobile reads it from ANDROID_NDK_HOME.
+      ANDROID_NDK_VERSION: '28.2.13676358'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin Go to the toolchain go.mod declares, so CI matches the dev machine.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Android Gradle here compiles against Java 17 (build.gradle.kts).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install the pinned NDK + compile platform
+        run: |
+          sdkmanager "ndk;$ANDROID_NDK_VERSION" "platforms;android-36"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+      # gomobile + gobind at the version pinned in go.mod (tool dependencies),
+      # installed to GOPATH/bin and put on PATH.
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile golang.org/x/mobile/cmd/gobind
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Mirrors mobile/build-apk.sh (debug -> release). vite's emptyOutDir=false
+      # keeps stale hashed assets, so clean before the build.
+      - name: Build the web UI
+        run: |
+          npm --prefix web ci
+          rm -rf web/dist/assets
+          npm --prefix web run build
+
+      - name: Embed the SPA for the bind
+        run: |
+          find mobile/web/dist -mindepth 1 ! -name .gitignore -delete
+          cp -r web/dist/* mobile/web/dist/
+
+      - name: gomobile bind -> the .aar
+        run: |
+          gomobile bind -target=android/arm64 -androidapi 21 \
+            -javapkg=studio.annoyances.llamingo \
+            -o mobile/android/app/libs/llamingo.aar ./mobile
+
+      # Recreate the keystore from secrets. (Absent secrets, build.gradle.kts falls
+      # back to an unsigned release; the Environment gate means we only reach here
+      # for a real, approved signed release.)
+      - name: Decode the keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+
+      # build.gradle.kts reads these LLAMINGO_* env vars for the signingConfig.
+      - name: Build the signed APK
+        working-directory: mobile/android
+        env:
+          LLAMINGO_KEYSTORE: ${{ runner.temp }}/release.jks
+          LLAMINGO_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          LLAMINGO_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          LLAMINGO_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Name the artifact
+        run: cp mobile/android/app/build/outputs/apk/release/app-release.apk llamingo-android.apk
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llamingo-android
+          path: llamingo-android.apk
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: llamingo-android.apk
+
+      # Never leave key material on the runner, even if a step above failed.
+      - name: Clean up the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"

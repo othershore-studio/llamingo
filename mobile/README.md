@@ -24,6 +24,9 @@ Install by sideloading the file — no Developer Options needed. On first launch
 your `llama-server` URL in Settings to a LAN-reachable address (not `localhost`,
 which on the phone is the phone).
 
+For **signed release** APKs published to GitHub Releases (CI, on a version tag), see
+[`docs/releasing.md`](../docs/releasing.md). `build-apk.sh` is for local debug testing.
+
 ## Notes
 - **`targetSdk` is 34 on purpose** — it sidesteps Android 15/16 forced edge-to-edge,
   so classic insets + `adjustResize` handle the status bar and keyboard. Before
