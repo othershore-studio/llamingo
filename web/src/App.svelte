@@ -152,6 +152,9 @@
   let settingsLocation = $state('') // editable user location (for place-aware tools)
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
+  let autostartSupported = $state(false) // this build can manage login autostart (desktop, per-OS)
+  let autostartEnabled = $state(false) // launch llaminGO at login
+  let autostartMinimized = $state(false) // the login launch starts hidden in the tray
   let imageModels = $state([]) // image models: [{name, autoPick, default, promptStyle, note}]
   let imageDefault = $state('') // chosen default model name
   let imageFetching = $state(false) // a fetch-from-Forge is in flight
@@ -372,10 +375,37 @@
     settingsLocation = s.location ?? ''
     settingsForgeUrl = s.forgeUrl ?? ''
     settingsDebug = s.debug ?? false
+    // Login autostart is a desktop-only, per-OS setting (the OS entry is the source
+    // of truth); the browser skips it and the controls stay hidden.
+    if (isDesktop) {
+      try {
+        const a = await apiFetch('/api/autostart').then((r) => r.json())
+        autostartSupported = !!a.supported
+        autostartEnabled = !!a.enabled
+        autostartMinimized = !!a.minimized
+      } catch {
+        autostartSupported = false
+      }
+    }
     await loadConnections()
     await loadImageModels()
     await loadMCP()
     settingsOpen = true
+  }
+  // Apply an autostart change immediately (it's an OS write, independent of the
+  // connection Save), reflecting back whatever state actually took.
+  async function setAutostart(enabled, minimized) {
+    try {
+      const a = await apiFetch('/api/autostart', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled, minimized }),
+      }).then((r) => r.json())
+      autostartEnabled = !!a.enabled
+      autostartMinimized = !!a.minimized
+    } catch {
+      // Leave the toggles showing the last known good state on failure.
+    }
   }
   async function saveSettings() {
     await apiFetch('/api/settings', {
@@ -1658,6 +1688,20 @@
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
         </label>
+
+        {#if isDesktop && autostartSupported}
+          <div class="group-head">Startup</div>
+          <label class="setting">
+            <span>Start llaminGO when I log in</span>
+            <input type="checkbox" checked={autostartEnabled} onchange={(e) => setAutostart(e.currentTarget.checked, autostartMinimized)} style="width:auto" />
+          </label>
+          {#if autostartEnabled}
+            <label class="setting">
+              <span>Start minimized to the tray <span class="muted">(only when launched at login)</span></span>
+              <input type="checkbox" checked={autostartMinimized} onchange={(e) => setAutostart(true, e.currentTarget.checked)} style="width:auto" />
+            </label>
+          {/if}
+        {/if}
 
         <div class="group-head">Display</div>
         <label class="setting">
