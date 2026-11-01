@@ -30,6 +30,11 @@ type Config struct {
 	ForgeURL string `json:"forgeUrl,omitempty"` // Forge Neo image server (empty = image generation off)
 	Debug    bool   `json:"debug,omitempty"`    // write raw llama/Forge/tool payloads to each chat's logs/ (debug mode)
 
+	// ActiveID is which saved Connection is active (stable across url/name edits),
+	// so two connections on the same url are distinguishable. URL/Token and
+	// Temperature/MinP below mirror the active connection for the backend + startup.
+	ActiveID string `json:"activeConnectionId,omitempty"`
+
 	// Temperature and MinP are the ACTIVE connection's sampling, applied to every
 	// turn (nil = the server/model default). Set when a connection is activated.
 	Temperature *float64 `json:"temperature,omitempty"`
@@ -44,6 +49,7 @@ type Config struct {
 // URL and optional bearer token. One server serves one model, so switching the
 // connection is how the user switches model; the active one is Config.URL/Token.
 type Connection struct {
+	ID    string `json:"id"` // stable, survives url/name edits — how the active one is tracked
 	Name  string `json:"name"`
 	URL   string `json:"url"`
 	Token string `json:"token,omitempty"`

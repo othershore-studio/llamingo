@@ -11,9 +11,10 @@ import (
 )
 
 type connectionsResp struct {
-	ActiveURL         string   `json:"activeUrl"`
-	ActiveTemperature *float64 `json:"activeTemperature"`
-	Connections       []struct {
+	ActiveID    string `json:"activeId"`
+	ActiveURL   string `json:"activeUrl"`
+	Connections []struct {
+		ID          string   `json:"id"`
 		Name        string   `json:"name"`
 		URL         string   `json:"url"`
 		Token       string   `json:"token"`
@@ -21,8 +22,9 @@ type connectionsResp struct {
 	} `json:"connections"`
 }
 
-// The connections list round-trips, always includes the active connection, and
-// /activate hot-swaps which one is live.
+// The connections list round-trips (with per-connection sampling), always includes
+// the active connection, and /activate hot-swaps which one is live — tracked by a
+// stable id so same-url personas are distinct.
 func TestConnections(t *testing.T) {
 	api := newAPI(t)
 
@@ -36,7 +38,7 @@ func TestConnections(t *testing.T) {
 		t.Fatalf("connections = %+v, want the active one synthesized in", g.Connections)
 	}
 
-	// Save a named list.
+	// Save a named list; Lab carries a persona temperature.
 	put := `{"connections":[{"name":"Lab","url":"http://lab.invalid:8080","token":"abc","temperature":0.2},{"name":"Local","url":"http://localhost:8080"}]}`
 	req, _ := http.NewRequest(http.MethodPut, api.URL+"/api/connections", strings.NewReader(put))
 	resp, err := http.DefaultClient.Do(req)
@@ -49,23 +51,27 @@ func TestConnections(t *testing.T) {
 	}
 
 	// The active (fake) url isn't among the saved two, so it's still surfaced → 3.
+	// Each saved connection got a stable id; Lab's sampling round-trips.
 	getJSONInto(t, api.URL+"/api/connections", &g)
 	if len(g.Connections) != 3 {
 		t.Fatalf("after save, connections = %+v, want 3 (2 saved + active)", g.Connections)
 	}
-	// Lab's per-connection sampling round-trips (the persona knob).
+	var labID string
 	var labTemp *float64
 	for _, c := range g.Connections {
 		if c.Name == "Lab" {
-			labTemp = c.Temperature
+			labID, labTemp = c.ID, c.Temperature
 		}
+	}
+	if labID == "" {
+		t.Fatal("Lab did not get a stable id")
 	}
 	if labTemp == nil || *labTemp != 0.2 {
 		t.Errorf("Lab temperature did not round-trip: %v", labTemp)
 	}
 
-	// Activate the Lab connection → it becomes live and is persisted as active.
-	req2, _ := http.NewRequest(http.MethodPost, api.URL+"/api/connections/activate", strings.NewReader(`{"url":"http://lab.invalid:8080","token":"abc","temperature":0.2}`))
+	// Activate Lab by id → it becomes live and is persisted as active.
+	req2, _ := http.NewRequest(http.MethodPost, api.URL+"/api/connections/activate", strings.NewReader(`{"id":"`+labID+`","url":"http://lab.invalid:8080","token":"abc","temperature":0.2}`))
 	resp2, err := http.DefaultClient.Do(req2)
 	if err != nil {
 		t.Fatal(err)
@@ -76,11 +82,11 @@ func TestConnections(t *testing.T) {
 	}
 
 	getJSONInto(t, api.URL+"/api/connections", &g)
+	if g.ActiveID != labID {
+		t.Errorf("after activate, activeId = %q, want Lab's id %q", g.ActiveID, labID)
+	}
 	if g.ActiveURL != "http://lab.invalid:8080" {
 		t.Errorf("after activate, activeUrl = %q, want the Lab url", g.ActiveURL)
-	}
-	if g.ActiveTemperature == nil || *g.ActiveTemperature != 0.2 {
-		t.Errorf("after activate, activeTemperature = %v, want 0.2", g.ActiveTemperature)
 	}
 	// Lab is now both active and saved, so no synthesized row → the saved 2.
 	if len(g.Connections) != 2 {

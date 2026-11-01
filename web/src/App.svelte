@@ -143,12 +143,12 @@
   let activeUrl = $state('') // the connection the backend is pointed at now
   let connOpen = $state(false) // status-bar connection picker open?
   let connId = 0
-  let activeTemperature = $state(null) // the active connection's sampling (null = server default)
-  let activeMinP = $state(null)
+  let activeConnId = $state('') // id of the active connection (NOT the active chat — that's activeId)
   const numOrNull = (v) => (v === '' || v == null ? null : Number(v))
-  // A connection is "active" when its url AND its sampling match the live backend,
-  // so two personas on the same url (different temperatures) are told apart.
-  const isActiveConn = (c) => c.url === activeUrl && numOrNull(c.temperature) === activeTemperature && numOrNull(c.minP) === activeMinP
+  const newConnId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2))
+  // A connection is "active" by its stable id, so two personas on the same url are
+  // told apart — and the match survives editing a connection's url or name.
+  const isActiveConn = (c) => !!activeConnId && c.id === activeConnId
   let settingsLocation = $state('') // editable user location (for place-aware tools)
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
@@ -194,6 +194,7 @@
 
   onMount(() => {
     refresh().catch((e) => (error = String(e)))
+    loadConnections() // so the status bar can show the active connection's name
     const t = setInterval(checkServer, 15000)
     // On resize: keep the sidebar from crowding out the conversation, and track
     // whether the window is maximized (drives the maximize/restore icon).
@@ -401,9 +402,8 @@
     try {
       const d = await apiFetch('/api/connections').then((r) => r.json())
       activeUrl = d.activeUrl ?? ''
-      activeTemperature = d.activeTemperature ?? null
-      activeMinP = d.activeMinP ?? null
-      connections = (d.connections ?? []).map((c) => ({ ...c, _id: connId++ }))
+      activeConnId = d.activeId ?? ''
+      connections = (d.connections ?? []).map((c) => ({ ...c, id: c.id || newConnId(), _id: connId++ }))
     } catch {
       connections = []
     }
@@ -412,11 +412,11 @@
     await apiFetch('/api/connections', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ connections: connections.map((c) => ({ name: (c.name || '').trim(), url: (c.url || '').trim(), token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP) })) }),
+      body: JSON.stringify({ connections: connections.map((c) => ({ id: c.id, name: (c.name || '').trim(), url: (c.url || '').trim(), token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP) })) }),
     })
   }
   function addConnection() {
-    connections = [...connections, { name: '', url: '', token: '', temperature: null, minP: null, _id: connId++ }]
+    connections = [...connections, { id: newConnId(), name: '', url: '', token: '', temperature: null, minP: null, _id: connId++ }]
   }
   function removeConnection(c) {
     connections = connections.filter((x) => x !== c)
@@ -427,11 +427,10 @@
     await apiFetch('/api/connections/activate', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP) }),
+      body: JSON.stringify({ id: c.id, url, token: (c.token || '').trim(), temperature: numOrNull(c.temperature), minP: numOrNull(c.minP) }),
     })
+    activeConnId = c.id
     activeUrl = url
-    activeTemperature = numOrNull(c.temperature)
-    activeMinP = numOrNull(c.minP)
     connOpen = false
     await checkServer() // re-read /props → model, context size, thinking support
     if (activeId) loadBudget(activeId, true) // re-meter fresh: new model tokenizes differently, and the window changed
@@ -973,6 +972,9 @@
   // (and can tip it into overflow) without waiting for the next turn. conn.nCtx
   // updates on every /props poll, including right after a connection switch.
   const ctxMax = $derived(conn?.nCtx || budget?.nCtx || 0)
+  // The active connection's name (alias), for the status bar. Empty until the
+  // connections load (on mount / picker open), then "Alias (model)" shows.
+  const activeConnName = $derived(connections.find((c) => c.id === activeConnId)?.name ?? '')
   const pct = $derived(budget && ctxMax ? Math.min(100, Math.round((100 * budget.used) / ctxMax)) : 0)
   const ctxOver = $derived(!!(budget && ctxMax && budget.used > ctxMax))
   const ctxLevel = $derived(
@@ -1294,7 +1296,7 @@
       <div class="connwrap">
         <button class="statusmodel connpick" onclick={() => { connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title="Switch connection">
           <span class="dot"></span>
-          <span class="connpick-label">{modelName(conn.model)} · {conn.nCtx} ctx</span>
+          <span class="connpick-label">{activeConnName ? `${activeConnName} (${modelName(conn.model)})` : `${modelName(conn.model)} · ${conn.nCtx} ctx`}</span>
           <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>
         </button>
         {#if connOpen}
