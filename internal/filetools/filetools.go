@@ -55,6 +55,9 @@ const (
 	toolFolderTree    = "folder_tree"
 	toolReadFile      = "read_file"
 	toolWriteFile     = "write_file"
+	toolRenameFile    = "rename_file"
+	toolCreateFolder  = "create_folder"
+	toolRenameFolder  = "rename_folder"
 )
 
 // Tools advertises the file tools to the model.
@@ -115,6 +118,34 @@ func (t *Tool) Tools() []backend.ToolDef {
 				`"content":{"type":"string","description":"the full new contents of the file"}},` +
 				`"required":["path","content"]}`),
 		},
+		{
+			Name: toolRenameFile,
+			Description: "Rename or move a file within the project, from one path to another (both " +
+				"relative to the project root). The source must be a file that exists; the destination must " +
+				"not already exist. Asks the user to approve.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"from":{"type":"string","description":"the file's current path within the project"},` +
+				`"to":{"type":"string","description":"the new path within the project"}},` +
+				`"required":["from","to"]}`),
+		},
+		{
+			Name: toolCreateFolder,
+			Description: "Create a folder in the project at the given path (relative to the project " +
+				"root); missing parent folders are created too. Asks the user to approve.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"path":{"type":"string","description":"the folder's path within the project"}},` +
+				`"required":["path"]}`),
+		},
+		{
+			Name: toolRenameFolder,
+			Description: "Rename or move a folder within the project, from one path to another (both " +
+				"relative to the project root). The source must be a folder that exists; the destination must " +
+				"not already exist. Asks the user to approve.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{` +
+				`"from":{"type":"string","description":"the folder's current path within the project"},` +
+				`"to":{"type":"string","description":"the new path within the project"}},` +
+				`"required":["from","to"]}`),
+		},
 	}
 }
 
@@ -133,6 +164,12 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return t.readFile(arguments)
 	case toolWriteFile:
 		return t.writeFile(ctx, arguments)
+	case toolRenameFile:
+		return t.renameWithin(ctx, toolRenameFile, arguments, false)
+	case toolCreateFolder:
+		return t.createFolder(ctx, arguments)
+	case toolRenameFolder:
+		return t.renameWithin(ctx, toolRenameFolder, arguments, true)
 	default:
 		return "", fmt.Errorf("filetools: unknown tool %q", name)
 	}
