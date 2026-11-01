@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- DayNight follows the system light/dark setting; no title bar (the WebView
+         is the whole UI, so the default ActionBar's "llaminGO" bar just wasted space). -->
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <!-- Tint the system bars to the UI's background, with icon contrast per mode
+             (night-qualified @color/@bool). targetSdk 34 honours statusBarColor. -->
+        <item name="android:statusBarColor">@color/systemBar</item>
+        <item name="android:navigationBarColor">@color/systemBar</item>
+        <item name="android:windowLightStatusBar">@bool/lightSystemBars</item>
+        <item name="android:windowLightNavigationBar">@bool/lightSystemBars</item>
+    </style>
+</resources>
