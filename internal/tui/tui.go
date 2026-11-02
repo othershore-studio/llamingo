@@ -48,6 +48,7 @@ const helpText = "\n[::d]commands:\n" +
 	"  /tools    turn tools on/off for this chat\n" +
 	"  /memory   show what's in saved memory\n" +
 	"  /prompt   show the system prompt sent to the model\n" +
+	"  /thought  show the model's thinking for the last turn\n" +
 	"  /image    view the last generated image\n" +
 	"  /clear    clear the view\n" +
 	"  /help     this list\n" +
@@ -71,7 +72,8 @@ type Session struct {
 	servers    []*mcp.ServerRegistry // connected MCP servers, closed on exit
 	notes      []string              // startup notices (MCP / image status), shown once
 	images     []image.Image         // all images generated this session, for the viewer
-	turnImages int                   // how many were generated this turn (auto-show them)
+	turnImages int                   // how many were generated this turn
+	lastThink  string                // the most recent turn's thinking, for /thought
 }
 
 // Open anchors a new session to dir's project (the same project the desktop opens) and
@@ -262,8 +264,20 @@ func (s *Session) Load(convID string) error {
 	s.convID = convID
 	s.msgs = messagesFrom(store.Project(entries))
 	s.lastTools = nil
+	s.lastThink = lastReasoning(entries)
 	s.loadImages(convID)
 	return nil
+}
+
+// lastReasoning is the most recent captured thinking in a conversation (for /thought after
+// a resume), or empty if none.
+func lastReasoning(entries []store.Entry) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == store.KindReasoning {
+			return entries[i].Content
+		}
+	}
+	return ""
 }
 
 // loadImages recovers a conversation's saved images from its attachments folder into the
@@ -315,6 +329,7 @@ func (s *Session) New() error {
 	s.msgs = nil
 	s.lastTools = nil
 	s.images = nil
+	s.lastThink = ""
 	s.budget = contextbudget.Budget{}
 	return nil
 }
@@ -419,6 +434,7 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 	if err != nil {
 		return err
 	}
+	s.lastThink = think.String()
 
 	// Shape the saved answer like the desktop does (internal/toolreply): strip ReAct
 	// scratch, and recover an image from the tool result when the model forgot to show it —
@@ -847,6 +863,21 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		app.SetFocus(viewer)
 	}
 
+	// showThought overlays a scrollable window of the last turn's captured thinking, so you
+	// can read what the model reasoned before answering. Esc closes it.
+	showThought := func() {
+		if strings.TrimSpace(sess.lastThink) == "" {
+			v.notice("[::d]no thinking captured for the last turn[-]")
+			v.render()
+			return
+		}
+		tv := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true).SetWordWrap(true)
+		tv.SetBorder(true).SetTitle(" thinking — Esc closes · ↑/↓ scroll ")
+		fmt.Fprintf(tv, "[::d]%s[-]", tview.Escape(sess.lastThink))
+		pages.AddPage("thought", centeredModal(tv), true, true)
+		app.SetFocus(tv)
+	}
+
 	submit := func() {
 		if busy {
 			return
@@ -882,6 +913,9 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				} else {
 					showImages(sess.images, len(sess.images)-1)
 				}
+				return
+			case "/thought", "/thinking":
+				showThought()
 				return
 			case "/memory":
 				mem, tampered, err := sess.Memory()
@@ -926,7 +960,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		v.render()
 		// Stream the reply raw as it arrives, for responsiveness; the completion repaint
 		// upgrades it to rendered markdown.
-		fmt.Fprint(transcript, "\n[green::b]llama[-:-:-]  ")
+		fmt.Fprint(transcript, "[green::b]♦[-:-:-]  ")
 		transcript.ScrollToEnd()
 
 		// Animate a "thinking…" spinner until the reply lands, so the pre-token gap
@@ -946,7 +980,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 					for _, tc := range d.ToolCalls {
 						name := tc.Function.Name
 						app.QueueUpdateDraw(func() {
-							fmt.Fprintf(transcript, "\n[yellow::d]▸ used %s[-:-:-]\n[green::b]llama[-:-:-]  ", tview.Escape(name))
+							fmt.Fprintf(transcript, "\n[yellow::d]▸ used %s[-:-:-]\n[green::b]♦[-:-:-]  ", tview.Escape(name))
 						})
 					}
 				}
@@ -1001,9 +1035,9 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 			app.Stop()
 			return nil
 		case tcell.KeyEscape:
-			// The image viewer has no key handling of its own; close it here.
-			if name, _ := pages.GetFrontPage(); name == "image" {
-				pages.RemovePage("image")
+			// The image and thought views have no key handling of their own; close here.
+			if name, _ := pages.GetFrontPage(); name == "image" || name == "thought" {
+				pages.RemovePage(name)
 				app.SetFocus(input)
 				return nil
 			}
@@ -1047,11 +1081,23 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		return ev
 	})
 
-	flex := tview.NewFlex().SetDirection(tview.FlexRow).
+	// A thin full-width rule above and below the composer to set it off.
+	rule := func() *tview.TextView {
+		r := tview.NewTextView().SetDynamicColors(true)
+		r.SetWrap(false).SetText("[#3a3a3a]" + strings.Repeat("─", 500) + "[-]")
+		return r
+	}
+	rows := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(transcript, 0, 1, false).
+		AddItem(rule(), 1, 0, false).
 		AddItem(input, 1, 0, true).
+		AddItem(rule(), 1, 0, false).
 		AddItem(status, 1, 0, false)
-	pages.AddPage("main", flex, true, true)
+	// A one-column left margin so content isn't flush against the window edge.
+	main := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(nil, 1, 0, false).
+		AddItem(rows, 0, 1, true)
+	pages.AddPage("main", main, true, true)
 
 	// Grow the composer with its content (newlines) up to a cap, so a multi-line message
 	// stays visible as you type.
@@ -1060,7 +1106,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		if lines > 8 {
 			lines = 8
 		}
-		flex.ResizeItem(input, lines, 0)
+		rows.ResizeItem(input, lines, 0)
 	})
 
 	reload()
@@ -1190,14 +1236,16 @@ func (v *view) render() {
 		case itemNotice:
 			fmt.Fprintf(v.tv, "%s\n", it.text)
 		case itemUser:
-			fmt.Fprintf(v.tv, "\n[blue::b]you[-:-:-]  %s\n", tview.Escape(it.text))
+			// The user turn: a › marker and the message on a subtle highlight, then a blank
+			// line to let it breathe before the reply.
+			fmt.Fprintf(v.tv, "\n[#e6edf3:#2d3f5e] › %s [-:-]\n\n", tview.Escape(it.text))
 		case itemTool:
 			fmt.Fprintf(v.tv, "[yellow::d]▸ used %s[-:-:-]\n", tview.Escape(it.text))
 		case itemAssistant:
 			if body := renderMarkdown(it.text); body != "" {
-				fmt.Fprintf(v.tv, "[green::b]llama[-:-:-]  %s\n", body)
+				fmt.Fprintf(v.tv, "[green::b]♦[-:-:-]  %s\n", body)
 			} else {
-				fmt.Fprint(v.tv, "[green::b]llama[-:-:-]\n")
+				fmt.Fprint(v.tv, "[green::b]♦[-:-:-]\n")
 			}
 		case itemImage:
 			v.drawImage(it.text)
