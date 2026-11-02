@@ -46,6 +46,7 @@ const maxToolRounds = 8
 const helpText = "\n[::d]commands:\n" +
 	"  /new      start a fresh session\n" +
 	"  /resume   open a past session\n" +
+	"  /model    switch connection / model\n" +
 	"  /tools    turn tools on/off for this chat\n" +
 	"  /memory   show what's in saved memory\n" +
 	"  /prompt   show the system prompt sent to the model\n" +
@@ -804,7 +805,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		// the real size without blocking on the tokenize round-trip.
 		segs := sess.budgetSegments()
 		go func() {
-			if b, err := contextbudget.New(be).Estimate(context.Background(), segs); err == nil {
+			if b, err := contextbudget.New(sess.be).Estimate(context.Background(), segs); err == nil {
 				app.QueueUpdateDraw(func() {
 					if !busy { // a turn would re-meter; don't clobber one in flight
 						sess.budget = b
@@ -813,6 +814,80 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				})
 			}
 		}()
+	}
+
+	// switchConnection points this session at another saved connection for the rest of the
+	// run — a fresh backend (its URL, token, sampling) and persona, then re-probe the model
+	// and re-meter. It doesn't change which connection is active globally (that stays the
+	// desktop's to set); it's a per-session switch.
+	switchConnection := func(c store.Connection) {
+		var opts []backend.Option
+		if c.Token != "" {
+			opts = append(opts, backend.WithToken(c.Token))
+		}
+		nbe := backend.New(c.URL, opts...)
+		nbe.SetSampling(c.Temperature, c.MinP)
+		sess.be = nbe
+		sess.system = c.SystemPrompt
+		label = c.Name
+		v.notice("[::d]switched to " + tview.Escape(c.Name) + "[-]")
+		v.render()
+		setStatus()
+		go func() {
+			if props, err := nbe.Props(context.Background()); err == nil {
+				app.QueueUpdateDraw(func() {
+					model, nctx = modelName(props.ModelID), props.NCtx
+					if strings.TrimSpace(label) == "" {
+						label = model
+					}
+					setStatus()
+				})
+			}
+			if b, err := contextbudget.New(nbe).Estimate(context.Background(), sess.budgetSegments()); err == nil {
+				app.QueueUpdateDraw(func() {
+					if !busy {
+						sess.budget = b
+						setStatus()
+					}
+				})
+			}
+		}()
+	}
+
+	// showModels overlays a picker of the saved connections (the desktop's named personas);
+	// Enter switches this session to one, Esc cancels.
+	showModels := func() {
+		cfg, err := st.Config()
+		if err != nil || len(cfg.Connections) == 0 {
+			v.notice("[::d]no saved connections — add them in the desktop app[-]")
+			v.render()
+			return
+		}
+		conns := cfg.Connections
+		list := tview.NewList().ShowSecondaryText(true)
+		list.SetBorder(true).SetTitle(" connection — Enter switches · Esc cancels ")
+		for _, c := range conns {
+			marker := "  "
+			if c.Name == label {
+				marker = "▸ "
+			}
+			secondary := c.URL
+			if strings.TrimSpace(c.SystemPrompt) != "" {
+				secondary += " · persona"
+			}
+			list.AddItem(marker+tview.Escape(c.Name), tview.Escape(secondary), 0, nil)
+		}
+		list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
+			pages.RemovePage("models")
+			app.SetFocus(input)
+			switchConnection(conns[i])
+		})
+		list.SetDoneFunc(func() {
+			pages.RemovePage("models")
+			app.SetFocus(input)
+		})
+		pages.AddPage("models", centeredModal(list), true, true)
+		app.SetFocus(list)
 	}
 
 	// showResume overlays a picker of the project's saved sessions (newest first); Enter
@@ -937,6 +1012,9 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				return
 			case "/resume":
 				showResume()
+				return
+			case "/model", "/connection":
+				showModels()
 				return
 			case "/image":
 				if len(sess.images) == 0 {
