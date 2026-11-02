@@ -11,8 +11,13 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	_ "image/jpeg" // register decoders so a generated image can be shown
+	_ "image/png"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -24,19 +29,24 @@ import (
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
 	"github.com/othershore-studio/llamingo/internal/filetools"
+	"github.com/othershore-studio/llamingo/internal/imagegen"
 	"github.com/othershore-studio/llamingo/internal/localtools"
 	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/memtool"
 	"github.com/othershore-studio/llamingo/internal/permission"
 	"github.com/othershore-studio/llamingo/internal/store"
+	"github.com/othershore-studio/llamingo/internal/toolreply"
 )
 
 const maxToolRounds = 8
 
 const helpText = "\n[::d]commands:\n" +
+	"  /new      start a fresh session\n" +
+	"  /resume   open a past session\n" +
 	"  /tools    turn tools on/off for this chat\n" +
 	"  /memory   show what's in saved memory\n" +
 	"  /prompt   show the system prompt sent to the model\n" +
+	"  /image    view the last generated image\n" +
 	"  /clear    clear the view\n" +
 	"  /help     this list\n" +
 	"  /exit     quit (or Ctrl+C)[-]\n"
@@ -50,34 +60,271 @@ type Session struct {
 	convID string
 	title  string
 	dir    string
+	projID store.ProjectID
 
-	msgs      []backend.Message
-	budget    contextbudget.Budget
-	system    string
-	lastTools []string // tool names from the most recent turn, for the display trail
+	msgs       []backend.Message
+	budget     contextbudget.Budget
+	system     string
+	lastTools  []string              // tool names from the most recent turn, for the display trail
+	servers    []*mcp.ServerRegistry // connected MCP servers, closed on exit
+	notes      []string              // startup notices (MCP / image status), shown once
+	images     []image.Image         // all images generated this session, for the viewer
+	turnImages int                   // how many were generated this turn (auto-show them)
 }
 
 // Open anchors a new session to dir's project (the same project the desktop opens) and
 // wires the native tool registry — memory, time/location, and the project file tools
 // (dir is the project root) — behind the permission gate, whose prompter is the
 // caller's: a tview consent modal live, a fake in tests.
-func Open(be backend.Backend, st *store.Store, dir string, prompter permission.Prompter) (*Session, error) {
+func Open(be backend.Backend, st *store.Store, dir string, prompter permission.Prompter, resume bool) (*Session, error) {
 	dir = filepath.Clean(dir)
 	proj, err := st.OpenProject(dir, filepath.Base(dir))
 	if err != nil {
 		return nil, fmt.Errorf("open project for %s: %w", dir, err)
 	}
-	sess, err := st.NewSession(proj.ID, "New session")
-	if err != nil {
-		return nil, fmt.Errorf("new session: %w", err)
-	}
+	s := &Session{be: be, st: st, title: filepath.Base(dir), dir: dir, projID: proj.ID}
+
+	// The native tools, then the user's MCP servers and image generation — the same
+	// toolset the desktop assembles (see httpapi.registryFor), so a tool works in both.
+	// One gate (prompter + grants) is shared across the gated tools; global MCP servers
+	// are user-authored and run trusted (nil gate), project .mcp.json is gated.
 	gate := permission.New(prompter, permission.NewMemoryGrantStore())
-	reg := mcp.Combine(
+	regs := []mcp.Registry{
 		memtool.NewTool(st, gate),
-		localtools.NewTool(func() string { return "" }),
+		localtools.NewTool(func() string { c, _ := st.Config(); return c.Location }),
 		filetools.NewTool(dir, gate, map[string]bool{}),
-	)
-	return &Session{be: be, st: st, reg: reg, convID: sess.ID, title: filepath.Base(dir), dir: dir}, nil
+	}
+	if g := s.connectServers(mcp.NewRegistry(nil), globalMCPPath(st.Root()), ""); g != nil {
+		regs = append(regs, g)
+	}
+	if p := s.connectServers(mcp.NewRegistry(gate), "", projectMCPPath(dir)); p != nil {
+		regs = append(regs, p)
+	}
+	imageOn := false
+	if img := imageTool(st, s, gate); img != nil {
+		regs = append(regs, img)
+		imageOn = true
+	}
+	s.reg = mcp.Combine(regs...)
+	s.summarizeTools(imageOn)
+
+	// -c resumes the project's most recent session that has content, skipping the empty
+	// shells a launch used to leave behind. Otherwise the session is created lazily on the
+	// first message (ensureSession), so opening the TUI without chatting leaves nothing.
+	if resume {
+		if sessions, err := st.ListSessions(proj.ID); err == nil {
+			for _, m := range sessions { // newest first
+				if hasContent(m) {
+					return s, s.Load(m.ID)
+				}
+			}
+		}
+	}
+	return s, nil
+}
+
+// hasContent reports whether a session has been written to — an untouched one keeps
+// Updated == Created, so this skips empty shells on resume and in the picker.
+func hasContent(m store.ConversationMeta) bool { return !m.Updated.Equal(m.Created) }
+
+// ensureSession creates the backing session on first use (lazy creation), so launching the
+// TUI without sending a message leaves no empty session behind.
+func (s *Session) ensureSession() error {
+	if s.convID != "" {
+		return nil
+	}
+	sess, err := s.st.NewSession(s.projID, "New session")
+	if err != nil {
+		return err
+	}
+	s.convID = sess.ID
+	return nil
+}
+
+// connectServers loads one MCP config (global XOR project — pass "" for the other) and
+// connects each declared server into reg, tracking it for Close. A server that won't
+// start is noted and skipped, never fatal. Returns nil when none connected, so an empty
+// registry isn't combined in.
+func (s *Session) connectServers(reg *mcp.ServerRegistry, globalPath, projectPath string) *mcp.ServerRegistry {
+	servers, err := mcp.Load(globalPath, projectPath)
+	if err != nil {
+		s.notes = append(s.notes, "[red]mcp: config error: "+tview.Escape(err.Error())+"[-]")
+	}
+	n := 0
+	for _, srv := range servers {
+		c, err := mcp.Connect(srv)
+		if err != nil {
+			s.notes = append(s.notes, "[yellow]mcp: couldn't start "+tview.Escape(srv.Name)+"[-]")
+			continue
+		}
+		if err := reg.Add(context.Background(), srv, c); err != nil {
+			s.notes = append(s.notes, "[yellow]mcp: "+tview.Escape(srv.Name)+" — "+tview.Escape(err.Error())+"[-]")
+			_ = c.Close()
+			continue
+		}
+		n++
+	}
+	if n == 0 {
+		reg.Close()
+		return nil
+	}
+	s.servers = append(s.servers, reg)
+	return reg
+}
+
+// summarizeTools adds a one-line startup note of the MCP tools available and whether image
+// generation is on, so parity is visible at a glance (the detail is in /tools).
+func (s *Session) summarizeTools(imageOn bool) {
+	mcpTools := 0
+	for _, sr := range s.servers {
+		mcpTools += len(sr.Tools())
+	}
+	if mcpTools == 0 && !imageOn {
+		return
+	}
+	img := "off"
+	if imageOn {
+		img = "on"
+	}
+	s.notes = append(s.notes, fmt.Sprintf("[::d]tools: %d from MCP · image generation %s[-]", mcpTools, img))
+}
+
+// Close shuts the session's MCP server connections. Called once, on exit.
+func (s *Session) Close() {
+	for _, sr := range s.servers {
+		sr.Close()
+	}
+	s.servers = nil
+}
+
+// imageTool builds the image-generation tool when a Forge URL (config or
+// LLAMINGO_FORGE_URL) and at least one model are configured, else nil. Its sink saves into
+// the session's current conversation, resolved per call so /new and /resume follow.
+func imageTool(st *store.Store, s *Session, gate *permission.Gate) mcp.Registry {
+	cfg, _ := st.Config()
+	url := cfg.ForgeURL
+	if url == "" {
+		url = os.Getenv("LLAMINGO_FORGE_URL")
+	}
+	if url == "" {
+		return nil
+	}
+	imgCfg, err := imagegen.LoadConfig(filepath.Join(st.Root(), "imagegen.json"))
+	if err != nil || len(imgCfg.Models) == 0 {
+		return nil
+	}
+	return imagegen.NewTool(imagegen.NewForgeNeo(url), sessionSink{s}, gate, imgCfg)
+}
+
+// sessionSink saves generated image bytes into the session's current conversation.
+type sessionSink struct{ s *Session }
+
+func (k sessionSink) Save(ctx context.Context, name string, data []byte) (string, error) {
+	ref, err := k.s.st.SaveAttachment(k.s.convID, name, data)
+	if err == nil {
+		// Keep the decoded image in memory for the terminal viewer (/image, and the
+		// auto-show after a generating turn). A non-image or undecodable payload is just
+		// saved, not shown.
+		if img, _, derr := image.Decode(bytes.NewReader(data)); derr == nil {
+			k.s.images = append(k.s.images, img)
+			k.s.turnImages++
+		}
+	}
+	return ref, err
+}
+
+// globalMCPPath is the global MCP config in the store root (mcp.json, or a copied-in
+// .mcp.json), mirroring httpapi so the TUI and desktop read the same servers.
+func globalMCPPath(root string) string {
+	plain := filepath.Join(root, "mcp.json")
+	if _, err := os.Stat(plain); err == nil {
+		return plain
+	}
+	dotted := filepath.Join(root, ".mcp.json")
+	if _, err := os.Stat(dotted); err == nil {
+		return dotted
+	}
+	return plain
+}
+
+func projectMCPPath(root string) string { return filepath.Join(root, ".mcp.json") }
+
+// Load replaces the session's conversation with an existing one's stored history — the
+// folded messages for context (store.Project drops display-only reasoning and the tool
+// trail, so thinking never re-enters the prompt).
+func (s *Session) Load(convID string) error {
+	entries, err := s.st.LoadConversation(convID)
+	if err != nil {
+		return err
+	}
+	s.convID = convID
+	s.msgs = messagesFrom(store.Project(entries))
+	s.lastTools = nil
+	return nil
+}
+
+// New starts a fresh session: lazily, so nothing is written to disk until the first
+// message (ensureSession), keeping empty sessions out of the project.
+func (s *Session) New() error {
+	s.convID = ""
+	s.msgs = nil
+	s.lastTools = nil
+	s.budget = contextbudget.Budget{}
+	return nil
+}
+
+// Sessions lists this project's saved sessions, newest first — for the /resume picker.
+func (s *Session) Sessions() ([]store.ConversationMeta, error) {
+	return s.st.ListSessions(s.projID)
+}
+
+// HistoryItems renders the current session's stored conversation as display items —
+// user/assistant messages, the tool trail, and any compaction summary — for repainting
+// on resume. Reasoning traces are display-only thinking and left out.
+func (s *Session) HistoryItems() []item {
+	entries, err := s.st.LoadConversation(s.convID)
+	if err != nil {
+		return nil
+	}
+	return historyItems(entries)
+}
+
+// messagesFrom projects stored entries to model messages (mirrors httpapi's
+// messagesFromEntries): a compaction summary stands in as a system note, the rest carry
+// their role. Call it with store.Project(entries) so folded and display-only entries drop.
+func messagesFrom(entries []store.Entry) []backend.Message {
+	msgs := make([]backend.Message, 0, len(entries))
+	for _, e := range entries {
+		if e.Kind == store.KindSummary {
+			msgs = append(msgs, backend.Message{Role: backend.RoleSystem, Content: "Summary of earlier conversation:\n" + e.Content})
+			continue
+		}
+		msgs = append(msgs, backend.Message{Role: backend.Role(e.Role), Content: e.Content})
+	}
+	return msgs
+}
+
+// historyItems maps a conversation's raw entries to display items: user/assistant
+// messages, the tool trail (name in Content), and a compaction summary as a dim notice.
+// Reasoning traces are display-only thinking and skipped on reload.
+func historyItems(entries []store.Entry) []item {
+	var items []item
+	for _, e := range entries {
+		switch e.Kind {
+		case store.KindMessage:
+			switch e.Role {
+			case "user":
+				items = append(items, item{itemUser, e.Content})
+			case "assistant":
+				items = append(items, item{itemAssistant, e.Content})
+			}
+		case store.KindToolCall:
+			items = append(items, item{itemTool, e.Content})
+		case store.KindSummary:
+			items = append(items, item{itemNotice, "[::d]— summary of earlier conversation —[-]\n[::d]" + tview.Escape(e.Content) + "[-]"})
+		}
+	}
+	return items
 }
 
 // Turn runs one exchange through mcp.Run: the model may call the native tools, each
@@ -89,7 +336,11 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 	if input == "" {
 		return nil
 	}
+	if err := s.ensureSession(); err != nil {
+		return err
+	}
 	s.lastTools = nil
+	s.turnImages = 0
 	s.msgs = append(s.msgs, backend.Message{Role: backend.RoleUser, Content: input})
 	if _, err := s.st.AppendMessage(s.convID, "user", input); err != nil {
 		return err
@@ -123,7 +374,10 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 		return err
 	}
 
-	answer := finalAssistant(out)
+	// Shape the saved answer like the desktop does (internal/toolreply): strip ReAct
+	// scratch, and recover an image from the tool result when the model forgot to show it —
+	// so the image reference lands in the log and the picture also shows in the desktop.
+	answer := toolreply.SurfaceImageDenial(toolreply.RecoverToolImages(toolreply.StripLeadingToolBlob(finalAssistant(out)), out), out)
 	s.msgs = append(s.msgs, backend.Message{Role: backend.RoleAssistant, Content: answer})
 
 	if think.Len() > 0 {
@@ -182,6 +436,42 @@ func (s *Session) Budget() contextbudget.Budget { return s.budget }
 // the set the /tools view toggles over.
 func (s *Session) Tools() []backend.ToolDef { return s.reg.Tools() }
 
+// toolGroup is a tool paired with where it comes from, for the /tools view.
+type toolGroup struct {
+	def   backend.ToolDef
+	label string // "system" or "mcp · <server>"
+}
+
+// GroupedTools returns the toolset labeled by source and ordered System-first, then each
+// MCP server's — so /tools makes clear what is native and what a server provides.
+func (s *Session) GroupedTools() []toolGroup {
+	mcpOf := map[string]string{}
+	for _, sr := range s.servers {
+		for _, g := range sr.ToolsByServer() {
+			for _, t := range g.Tools {
+				mcpOf[t.Name] = g.Server
+			}
+		}
+	}
+	tools := s.reg.Tools()
+	out := make([]toolGroup, len(tools))
+	for i, t := range tools {
+		label := "system"
+		if srv := mcpOf[t.Name]; srv != "" {
+			label = "mcp · " + srv
+		}
+		out[i] = toolGroup{def: t, label: label}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		si, sj := out[i].label == "system", out[j].label == "system"
+		if si != sj {
+			return si // System tools first
+		}
+		return out[i].label < out[j].label // then grouped by MCP server name
+	})
+	return out
+}
+
 // Memory is the personal memory and whether it was last edited outside the app.
 func (s *Session) Memory() (string, bool, error) { return s.st.Memory() }
 
@@ -214,6 +504,9 @@ func (s *Session) disabledSet() map[string]bool {
 // ToggleTool flips one tool's curation for this chat and persists it, reporting
 // whether the tool is now disabled.
 func (s *Session) ToggleTool(name string) (disabled bool, err error) {
+	if err := s.ensureSession(); err != nil { // curation is per-chat, so it needs a chat
+		return false, err
+	}
 	set := s.disabledSet()
 	if set == nil {
 		set = map[string]bool{}
@@ -312,18 +605,20 @@ func scopeLabel(s permission.Scope) string {
 
 // Run opens a session for dir and runs the interactive tview app until the user quits.
 // system, when non-empty (the -system flag), is the persona system prompt prepended to
-// every turn — shown by /prompt.
-func Run(be backend.Backend, st *store.Store, dir, system string) error {
+// every turn — shown by /prompt. resume (-c) opens the project's most recent session
+// instead of a fresh one.
+func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) error {
 	app := tview.NewApplication()
 	pages := tview.NewPages()
 	transcript := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	status := tview.NewTextView().SetDynamicColors(true)
 	input := tview.NewInputField().SetLabel("› ")
 
-	sess, err := Open(be, st, dir, &prompter{app: app, pages: pages, restore: input})
+	sess, err := Open(be, st, dir, &prompter{app: app, pages: pages, restore: input}, resume)
 	if err != nil {
 		return err
 	}
+	defer sess.Close()
 	sess.system = system
 	model, nctx := "unknown model", 0
 	if props, perr := be.Props(context.Background()); perr == nil {
@@ -345,41 +640,146 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 	// toggles (persisted per-chat, applied next turn); Esc closes. The terminal face of
 	// the desktop Tools panel.
 	showTools := func() {
-		tools := sess.Tools()
-		if len(tools) == 0 {
+		groups := sess.GroupedTools()
+		if len(groups) == 0 {
 			v.notice("[::d]no tools in this project[-]")
 			v.render()
 			return
 		}
+		// Each row's secondary line names the source — "system" or "mcp · <server>" — so
+		// it's clear what's native and what a server provides; the list is System-first.
+		secondary := func(g toolGroup) string {
+			s := g.label
+			if d := firstLine(g.def.Description); d != "" {
+				s += " · " + truncate(d, 44)
+			}
+			return tview.Escape(s)
+		}
 		list := tview.NewList().ShowSecondaryText(true)
-		list.SetBorder(true).SetTitle(" tools — Enter toggles · Esc closes ")
-		for _, t := range tools {
-			list.AddItem(mark(sess.disabledSet()[t.Name])+" "+t.Name, tview.Escape(truncate(firstLine(t.Description), 64)), 0, nil)
+		list.SetBorder(true).SetTitle(" tools — system / mcp · Enter toggles · Esc closes ")
+		for _, g := range groups {
+			list.AddItem(mark(sess.disabledSet()[g.def.Name])+" "+g.def.Name, secondary(g), 0, nil)
 		}
 		list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
-			nowDisabled, _ := sess.ToggleTool(tools[i].Name)
-			list.SetItemText(i, mark(nowDisabled)+" "+tools[i].Name, tview.Escape(truncate(firstLine(tools[i].Description), 64)))
+			nowDisabled, _ := sess.ToggleTool(groups[i].def.Name)
+			list.SetItemText(i, mark(nowDisabled)+" "+groups[i].def.Name, secondary(groups[i]))
 		})
 		list.SetDoneFunc(func() {
 			pages.RemovePage("tools")
 			app.SetFocus(input)
 			off := len(sess.disabledSet())
-			v.notice(fmt.Sprintf("[::d]tools: %d of %d on[-]", len(tools)-off, len(tools)))
+			v.notice(fmt.Sprintf("[::d]tools: %d of %d on[-]", len(groups)-off, len(groups)))
 			v.render()
 		})
-		// Near-fullscreen with a small margin; the list scrolls inside its border.
-		layout := tview.NewFlex().
-			AddItem(nil, 2, 0, false).
-			AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-				AddItem(nil, 1, 0, false).
-				AddItem(list, 0, 1, true).
-				AddItem(nil, 1, 0, false), 0, 1, true).
-			AddItem(nil, 2, 0, false)
-		pages.AddPage("tools", layout, true, true)
+		pages.AddPage("tools", centeredModal(list), true, true)
 		app.SetFocus(list)
 	}
 
 	busy := false
+
+	// reload repaints the transcript from the current session's stored history (after a
+	// /new or /resume, and on startup) and re-meters the budget in the background, so the
+	// status bar reflects the loaded context without blocking on a tokenize round-trip.
+	reload := func() {
+		v.items = sess.HistoryItems()
+		setStatus()
+		v.render()
+		if len(sess.msgs) == 0 {
+			return
+		}
+		segs := sess.segments()
+		go func() {
+			if b, err := contextbudget.New(be).Estimate(context.Background(), segs); err == nil {
+				app.QueueUpdateDraw(func() {
+					if !busy { // a turn would re-meter; don't clobber one in flight
+						sess.budget = b
+						setStatus()
+					}
+				})
+			}
+		}()
+	}
+
+	// showResume overlays a picker of the project's saved sessions (newest first); Enter
+	// opens one, Esc cancels. The terminal face of the desktop session list.
+	showResume := func() {
+		all, err := sess.Sessions()
+		if err != nil {
+			v.notice("[red]resume: " + tview.Escape(err.Error()) + "[-]")
+			v.render()
+			return
+		}
+		var sessions []store.ConversationMeta
+		for _, m := range all {
+			if hasContent(m) { // skip the empty shells
+				sessions = append(sessions, m)
+			}
+		}
+		if len(sessions) == 0 {
+			v.notice("[::d]no saved sessions yet[-]")
+			v.render()
+			return
+		}
+		list := tview.NewList().ShowSecondaryText(true)
+		list.SetBorder(true).SetTitle(" resume — Enter opens · Esc cancels ")
+		for _, m := range sessions {
+			title := strings.TrimSpace(m.Title)
+			if title == "" {
+				title = "(untitled)"
+			}
+			marker := "  "
+			if m.ID == sess.convID {
+				marker = "▸ " // the session open now
+			}
+			list.AddItem(marker+tview.Escape(title), tview.Escape(m.Updated.Local().Format("Jan 2 15:04")), 0, nil)
+		}
+		list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
+			pages.RemovePage("resume")
+			app.SetFocus(input)
+			if err := sess.Load(sessions[i].ID); err != nil {
+				v.notice("[red]resume: " + tview.Escape(err.Error()) + "[-]")
+				v.render()
+				return
+			}
+			reload()
+		})
+		list.SetDoneFunc(func() {
+			pages.RemovePage("resume")
+			app.SetFocus(input)
+		})
+		pages.AddPage("resume", centeredModal(list), true, true)
+		app.SetFocus(list)
+	}
+
+	// Image viewer: a reused Image primitive over a slice of images, navigated with ←/→
+	// from the global key capture (the primitive has no key handling of its own). Drawn as
+	// colored blocks, or sixel where the terminal supports it.
+	viewer := tview.NewImage().SetColors(tview.TrueColor)
+	viewer.SetBorder(true)
+	var viewerImgs []image.Image
+	viewerIdx := 0
+	drawViewer := func() {
+		viewer.SetImage(viewerImgs[viewerIdx])
+		hint := "Esc closes"
+		if len(viewerImgs) > 1 {
+			hint = "←/→ browse · Esc closes"
+		}
+		viewer.SetTitle(fmt.Sprintf(" image %d/%d — %s ", viewerIdx+1, len(viewerImgs), hint))
+	}
+	showImages := func(imgs []image.Image, start int) {
+		if len(imgs) == 0 {
+			return
+		}
+		viewerImgs = imgs
+		viewerIdx = start
+		if viewerIdx < 0 || viewerIdx >= len(imgs) {
+			viewerIdx = len(imgs) - 1
+		}
+		drawViewer()
+		pages.AddPage("image", centeredModal(viewer), true, true)
+		app.SetFocus(viewer)
+	}
+
 	input.SetDoneFunc(func(key tcell.Key) {
 		if key != tcell.KeyEnter || busy {
 			return
@@ -396,6 +796,25 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 				return
 			case "/tools":
 				showTools()
+				return
+			case "/new":
+				if err := sess.New(); err != nil {
+					v.notice("[red]new session: " + tview.Escape(err.Error()) + "[-]")
+					v.render()
+					return
+				}
+				reload()
+				return
+			case "/resume":
+				showResume()
+				return
+			case "/image":
+				if len(sess.images) == 0 {
+					v.notice("[::d]no image yet — ask the model to generate one[-]")
+					v.render()
+				} else {
+					showImages(sess.images, len(sess.images)-1)
+				}
 				return
 			case "/memory":
 				mem, tampered, err := sess.Memory()
@@ -482,6 +901,17 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 				v.render()
 				setStatus()
 				busy = false
+				// Images were generated this turn: note it and pop the viewer at the first
+				// new one (←/→ browses any others).
+				if sess.turnImages > 0 {
+					label := "image generated"
+					if sess.turnImages > 1 {
+						label = fmt.Sprintf("%d images generated", sess.turnImages)
+					}
+					v.notice("[::d]" + label + " · /image to view again[-]")
+					v.render()
+					showImages(sess.images, len(sess.images)-sess.turnImages)
+				}
 			})
 		}()
 	})
@@ -491,6 +921,27 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 		case tcell.KeyCtrlC:
 			app.Stop()
 			return nil
+		case tcell.KeyEscape:
+			// The image viewer has no key handling of its own; close it here.
+			if name, _ := pages.GetFrontPage(); name == "image" {
+				pages.RemovePage("image")
+				app.SetFocus(input)
+				return nil
+			}
+			return ev
+		case tcell.KeyLeft, tcell.KeyRight:
+			// Browse the open image viewer; otherwise the input field keeps its cursor keys.
+			if name, _ := pages.GetFrontPage(); name == "image" {
+				if ev.Key() == tcell.KeyLeft && viewerIdx > 0 {
+					viewerIdx--
+					drawViewer()
+				} else if ev.Key() == tcell.KeyRight && viewerIdx < len(viewerImgs)-1 {
+					viewerIdx++
+					drawViewer()
+				}
+				return nil
+			}
+			return ev
 		case tcell.KeyPgUp, tcell.KeyPgDn:
 			// Scroll the transcript a page while the input keeps focus — but only on the
 			// main view, so a modal's own paging (the tools list) still works.
@@ -523,7 +974,13 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 		AddItem(status, 1, 0, false)
 	pages.AddPage("main", flex, true, true)
 
-	v.render()
+	reload()
+	for _, n := range sess.notes {
+		v.notice(n)
+	}
+	if len(sess.notes) > 0 {
+		v.render()
+	}
 	return app.SetRoot(pages, true).SetFocus(input).Run()
 }
 
@@ -569,6 +1026,19 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// centeredModal frames a primitive near-fullscreen with a small margin; the inner
+// primitive (a scrollable list) handles overflow within its border. Shared by the tools
+// and resume pickers.
+func centeredModal(p tview.Primitive) tview.Primitive {
+	return tview.NewFlex().
+		AddItem(nil, 2, 0, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 1, 0, false).
+			AddItem(p, 0, 1, true).
+			AddItem(nil, 1, 0, false), 0, 1, true).
+		AddItem(nil, 2, 0, false)
 }
 
 // blockString is a dimmed, titled block for the inspection commands (/memory, /prompt),

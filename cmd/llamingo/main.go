@@ -37,6 +37,7 @@ func run() error {
 	system := flag.String("system", "", "system prompt (default: the active connection's persona)")
 	msg := flag.String("m", "", "user message (default: read from stdin)")
 	dataDir := flag.String("data-dir", env("LLAMINGO_DATA_DIR", defaultDataDir()), "data directory for projects, chats, and config")
+	resumeLast := flag.Bool("c", false, "resume this project's most recent session (interactive)")
 	flag.Parse()
 	set := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
@@ -61,7 +62,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return tui.Run(be, st, cwd, conn.system)
+		return tui.Run(be, st, cwd, conn.system, *resumeLast)
 	}
 
 	prompt := *msg

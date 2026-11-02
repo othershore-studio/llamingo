@@ -21,6 +21,7 @@ import (
 	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/permission"
 	"github.com/othershore-studio/llamingo/internal/store"
+	"github.com/othershore-studio/llamingo/internal/toolreply"
 )
 
 // Server is the HTTP handler for the core API.
@@ -495,8 +496,8 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// tool result, so the picture always shows in a consistent place. Finally,
 	// persist any linked image and rewrite it to a local ref. See toolblob.go and
 	// attachment.go.
-	answer := recoverToolImages(stripLeadingToolBlob(finalAssistant(out)), out)
-	answer = surfaceImageDenial(answer, out) // a declined/timed-out image isn't left as a blank reply
+	answer := toolreply.RecoverToolImages(toolreply.StripLeadingToolBlob(finalAssistant(out)), out)
+	answer = toolreply.SurfaceImageDenial(answer, out) // a declined/timed-out image isn't left as a blank reply
 	answer = s.imageAttachments(r.Context(), body.ID, answer)
 	// Persist the turn's trail so it survives a reopen: the thinking, the tools it
 	// used, then the answer. The trail entries are display-only (Project drops them,

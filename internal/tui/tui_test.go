@@ -5,12 +5,19 @@
 package tui
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"image"
+	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
+	"github.com/othershore-studio/llamingo/internal/imagegen"
 	"github.com/othershore-studio/llamingo/internal/lcpptest"
 	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/permission"
@@ -36,7 +43,7 @@ func TestSessionTurnAgainstFake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := Open(be, st, t.TempDir(), allowPrompter{})
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +105,7 @@ func TestSessionToolCuration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := Open(be, st, t.TempDir(), allowPrompter{})
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +176,7 @@ func TestSessionSystemSegments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := Open(be, st, t.TempDir(), allowPrompter{})
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,4 +224,148 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// Resume reopens the project's most recent session with its history loaded (into both the
+// model context and the display), /new starts a distinct empty session, and both show up
+// in the session list — the terminal analogue of the desktop's multi-session loop.
+func TestSessionResumeAndNew(t *testing.T) {
+	srv := lcpptest.NewServer()
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	// First session: one turn, persisted.
+	s1, err := Open(be, st, dir, allowPrompter{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Turn(context.Background(), "Hi", nil); err != nil {
+		t.Fatal(err)
+	}
+	firstID := s1.convID
+
+	// Reopen with resume: the same session, its prior exchange loaded for context and
+	// display.
+	s2, err := Open(be, st, dir, allowPrompter{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.convID != firstID {
+		t.Errorf("resume opened %q, want the last session %q", s2.convID, firstID)
+	}
+	if len(s2.msgs) < 2 {
+		t.Errorf("resumed msgs = %d, want the prior user + assistant", len(s2.msgs))
+	}
+	if len(s2.HistoryItems()) == 0 {
+		t.Error("resumed history produced no display items")
+	}
+
+	// /new starts a fresh session lazily — nothing on disk until the first message.
+	if err := s2.New(); err != nil {
+		t.Fatal(err)
+	}
+	if s2.convID != "" {
+		t.Errorf("New left convID=%q, want empty (lazy)", s2.convID)
+	}
+	if len(s2.msgs) != 0 {
+		t.Errorf("new session msgs = %d, want 0", len(s2.msgs))
+	}
+	if ss, _ := s2.Sessions(); len(ss) != 1 {
+		t.Errorf("sessions after lazy /new = %d, want 1 (New created nothing yet)", len(ss))
+	}
+
+	// A message creates the new session — now two distinct sessions.
+	if err := s2.Turn(context.Background(), "Second", nil); err != nil {
+		t.Fatal(err)
+	}
+	if s2.convID == "" || s2.convID == firstID {
+		t.Errorf("new session convID=%q, want a fresh non-empty id", s2.convID)
+	}
+	sessions, err := s2.Sessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("sessions = %d, want 2", len(sessions))
+	}
+}
+
+// With a Forge URL and at least one image model configured, Open wires the
+// image-generation tool into the registry — generate_image is offered in the TUI exactly
+// as in the desktop. No Forge connection happens until the tool is called, so a fake URL
+// is fine here.
+func TestSessionWiresImageTool(t *testing.T) {
+	srv := lcpptest.NewServer()
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetConfig(store.Config{ForgeURL: "http://forge.invalid:7860"}); err != nil {
+		t.Fatal(err)
+	}
+	cfgJSON, err := json.Marshal(imagegen.Config{Default: "m", Models: []imagegen.ModelConfig{{Name: "m"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(st.Root(), "imagegen.json"), cfgJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	found := false
+	for _, tl := range sess.Tools() {
+		if tl.Name == imagegen.ToolName {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("image tool %q not wired; registry has %d tools", imagegen.ToolName, len(sess.Tools()))
+	}
+}
+
+// The image sink keeps the decoded image in memory (for /image and the auto-show) while
+// still persisting it to the conversation's attachments.
+func TestSessionSinkCapturesImage(t *testing.T) {
+	srv := lcpptest.NewServer()
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if err := sess.ensureSession(); err != nil { // the sink saves into a conversation
+		t.Fatal(err)
+	}
+
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := (sessionSink{s: sess}).Save(context.Background(), "gen.png", pngBuf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref != "attachments/gen.png" {
+		t.Errorf("ref = %q, want attachments/gen.png", ref)
+	}
+	if len(sess.images) != 1 || sess.turnImages != 1 {
+		t.Errorf("image not captured: images=%d turnImages=%d, want 1 each", len(sess.images), sess.turnImages)
+	}
 }
