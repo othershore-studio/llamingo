@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ import (
 
 const maxToolRounds = 8
 
-const helpText = "\n[::d]commands:  /help — this list  ·  /clear — clear the view  ·  /exit — quit (or Ctrl+C)[-]\n"
+const helpText = "\n[::d]commands:  /tools — turn tools on/off  ·  /clear — clear the view  ·  /help — this list  ·  /exit — quit (or Ctrl+C)[-]\n"
 
 // Session is a TUI chat anchored to a directory's project, driving turns over the core
 // directly through the client-owned tool loop.
@@ -93,7 +94,8 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 
 	var think strings.Builder
 	var timings *backend.Timings
-	out, err := mcp.Run(ctx, s.be, s.reg, bld.Messages(segs), func(d backend.Delta) error {
+	reg := mcp.Curate(s.reg, s.disabledSet())
+	out, err := mcp.Run(ctx, s.be, reg, bld.Messages(segs), func(d backend.Delta) error {
 		if d.Reasoning != "" {
 			think.WriteString(d.Reasoning)
 		}
@@ -142,6 +144,45 @@ func (s *Session) segments() []contextbudget.Segment {
 
 // Budget is the latest metered budget (for the status bar).
 func (s *Session) Budget() contextbudget.Budget { return s.budget }
+
+// Tools is the full native toolset offered in this project, before per-chat curation —
+// the set the /tools view toggles over.
+func (s *Session) Tools() []backend.ToolDef { return s.reg.Tools() }
+
+// disabledSet reads the tools curated off for this chat, fresh from the store, so a
+// toggle in the /tools view takes effect on the next turn (matching the desktop; see
+// mcp.Curate, which expects the disabled set supplied per turn).
+func (s *Session) disabledSet() map[string]bool {
+	cur, _ := s.st.ConversationTools(s.convID)
+	if len(cur) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(cur))
+	for _, n := range cur {
+		set[n] = true
+	}
+	return set
+}
+
+// ToggleTool flips one tool's curation for this chat and persists it, reporting
+// whether the tool is now disabled.
+func (s *Session) ToggleTool(name string) (disabled bool, err error) {
+	set := s.disabledSet()
+	if set == nil {
+		set = map[string]bool{}
+	}
+	if set[name] {
+		delete(set, name)
+	} else {
+		set[name] = true
+	}
+	out := make([]string, 0, len(set))
+	for n := range set {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return set[name], s.st.SetConversationTools(s.convID, out)
+}
 
 // finalAssistant is the last assistant message's text in a turn's output.
 func finalAssistant(msgs []backend.Message) string {
@@ -248,6 +289,45 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 
 	welcome := fmt.Sprintf("[::d]llaminGO · %s · %s — type a message, /help for commands, Ctrl+C or /exit to quit[-]\n", sess.title, model)
 
+	// showTools overlays a scrollable toggle list of the project's native tools — a
+	// filled dot is on, hollow off — so a small model's toolset can be trimmed. Enter
+	// toggles (persisted per-chat, applied next turn); Esc closes. The terminal face of
+	// the desktop Tools panel.
+	showTools := func() {
+		tools := sess.Tools()
+		if len(tools) == 0 {
+			fmt.Fprint(transcript, "\n[::d]no tools in this project[-]\n")
+			transcript.ScrollToEnd()
+			return
+		}
+		list := tview.NewList().ShowSecondaryText(true)
+		list.SetBorder(true).SetTitle(" tools — Enter toggles · Esc closes ")
+		for _, t := range tools {
+			list.AddItem(mark(sess.disabledSet()[t.Name])+" "+t.Name, tview.Escape(truncate(firstLine(t.Description), 64)), 0, nil)
+		}
+		list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
+			nowDisabled, _ := sess.ToggleTool(tools[i].Name)
+			list.SetItemText(i, mark(nowDisabled)+" "+tools[i].Name, tview.Escape(truncate(firstLine(tools[i].Description), 64)))
+		})
+		list.SetDoneFunc(func() {
+			pages.RemovePage("tools")
+			app.SetFocus(input)
+			off := len(sess.disabledSet())
+			fmt.Fprintf(transcript, "\n[::d]tools: %d of %d on[-]\n", len(tools)-off, len(tools))
+			transcript.ScrollToEnd()
+		})
+		// Near-fullscreen with a small margin; the list scrolls inside its border.
+		layout := tview.NewFlex().
+			AddItem(nil, 2, 0, false).
+			AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+				AddItem(nil, 1, 0, false).
+				AddItem(list, 0, 1, true).
+				AddItem(nil, 1, 0, false), 0, 1, true).
+			AddItem(nil, 2, 0, false)
+		pages.AddPage("tools", layout, true, true)
+		app.SetFocus(list)
+	}
+
 	busy := false
 	input.SetDoneFunc(func(key tcell.Key) {
 		if key != tcell.KeyEnter || busy {
@@ -262,6 +342,9 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 			switch strings.ToLower(strings.Fields(text)[0]) {
 			case "/exit", "/quit", "/q":
 				app.Stop()
+			case "/tools":
+				showTools()
+				return
 			case "/help", "/?":
 				fmt.Fprint(transcript, helpText)
 			case "/clear":
@@ -349,6 +432,30 @@ func spinner(app *tview.Application, status *tview.TextView, model string, stop 
 			})
 		}
 	}
+}
+
+// mark is the on/off glyph for a tool row: a filled dot when enabled, hollow when
+// curated off.
+func mark(disabled bool) string {
+	if disabled {
+		return "○"
+	}
+	return "●"
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return strings.TrimSpace(s)
+}
+
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }
 
 func modelName(path string) string {

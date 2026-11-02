@@ -11,6 +11,7 @@ import (
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/lcpptest"
+	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/permission"
 	"github.com/othershore-studio/llamingo/internal/store"
 )
@@ -81,5 +82,77 @@ func TestSessionTurnAgainstFake(t *testing.T) {
 	// The authoritative budget comes back from the stream's usage.
 	if b := sess.Budget(); b.Authoritative != 12 {
 		t.Errorf("budget authoritative = %d, want 12", b.Authoritative)
+	}
+}
+
+// The /tools view toggles a tool's curation per-chat: it persists to the store and the
+// turn's registry is curated fresh from that set, so a disabled tool is no longer
+// offered to the model. This drives the same Session accessors the view does, without
+// the UI.
+func TestSessionToolCuration(t *testing.T) {
+	srv := lcpptest.NewServer()
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tools := sess.Tools()
+	if len(tools) == 0 {
+		t.Fatal("expected native tools in the base registry")
+	}
+	first := tools[0].Name
+
+	// A fresh chat curates nothing off — the whole set is offered.
+	if d := sess.disabledSet(); len(d) != 0 {
+		t.Fatalf("fresh chat disabled set = %v, want empty", d)
+	}
+
+	// Toggle one off: now-disabled, persisted, and dropped from the curated registry a
+	// turn would use.
+	nowDisabled, err := sess.ToggleTool(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !nowDisabled {
+		t.Fatalf("ToggleTool(%q) = false, want now-disabled", first)
+	}
+	if d := sess.disabledSet(); !d[first] {
+		t.Errorf("disabled set %v missing %q after toggle", d, first)
+	}
+	curated := mcp.Curate(sess.reg, sess.disabledSet()).Tools()
+	if len(curated) != len(tools)-1 {
+		t.Errorf("curated tools = %d, want %d", len(curated), len(tools)-1)
+	}
+	for _, tl := range curated {
+		if tl.Name == first {
+			t.Errorf("curated registry still offers disabled tool %q", first)
+		}
+	}
+
+	// Persisted to meta.json (survives a reopen).
+	got, err := st.ConversationTools(sess.convID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != first {
+		t.Errorf("persisted disabled = %v, want [%q]", got, first)
+	}
+
+	// Toggle back on: the set empties.
+	nowDisabled, err = sess.ToggleTool(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nowDisabled {
+		t.Errorf("second ToggleTool(%q) = true, want now-enabled", first)
+	}
+	if d := sess.disabledSet(); len(d) != 0 {
+		t.Errorf("disabled set %v, want empty after toggling back", d)
 	}
 }
