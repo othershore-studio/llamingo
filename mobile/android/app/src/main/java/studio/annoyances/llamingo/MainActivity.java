@@ -37,7 +37,10 @@ public class MainActivity extends Activity {
 
         try {
             long port = Mobile.start(getFilesDir().getAbsolutePath(), "");
-            web.loadUrl("http://127.0.0.1:" + port + "/");
+            // The `?app=android` marker tells the UI this is the mobile app, so it
+            // reliably hides Projects (desktop-minus-Projects) without guessing from
+            // touch/pointer heuristics.
+            web.loadUrl("http://127.0.0.1:" + port + "/?app=android");
         } catch (Exception e) {
             web.loadData("<h1>core failed to start</h1><pre>" + e + "</pre>",
                     "text/html; charset=utf-8", null);
