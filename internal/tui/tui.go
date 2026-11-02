@@ -612,7 +612,8 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	pages := tview.NewPages()
 	transcript := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	status := tview.NewTextView().SetDynamicColors(true)
-	input := tview.NewInputField().SetLabel("› ")
+	input := tview.NewTextArea().SetLabel("› ").SetPlaceholder("message — Enter sends · Ctrl+J for a newline")
+	input.SetWrap(true).SetWordWrap(true)
 
 	sess, err := Open(be, st, dir, &prompter{app: app, pages: pages, restore: input}, resume)
 	if err != nil {
@@ -780,15 +781,15 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		app.SetFocus(viewer)
 	}
 
-	input.SetDoneFunc(func(key tcell.Key) {
-		if key != tcell.KeyEnter || busy {
+	submit := func() {
+		if busy {
 			return
 		}
 		text := strings.TrimSpace(input.GetText())
 		if text == "" {
 			return
 		}
-		input.SetText("")
+		input.SetText("", false)
 		if strings.HasPrefix(text, "/") {
 			switch strings.ToLower(strings.Fields(text)[0]) {
 			case "/exit", "/quit", "/q":
@@ -914,6 +915,22 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				}
 			})
 		}()
+	}
+
+	// Composer keys: Enter sends; Ctrl+J (and Shift/Alt+Enter where the terminal reports
+	// the modifier) inserts a newline. The composer is a multi-line tview TextArea.
+	input.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Key() {
+		case tcell.KeyEnter:
+			if ev.Modifiers()&(tcell.ModShift|tcell.ModAlt) != 0 {
+				return tcell.NewEventKey(tcell.KeyEnter, '\n', tcell.ModNone) // newline
+			}
+			submit()
+			return nil // plain Enter sends
+		case tcell.KeyCtrlJ:
+			return tcell.NewEventKey(tcell.KeyEnter, '\n', tcell.ModNone) // newline
+		}
+		return ev
 	})
 
 	app.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
@@ -974,6 +991,16 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		AddItem(status, 1, 0, false)
 	pages.AddPage("main", flex, true, true)
 
+	// Grow the composer with its content (newlines) up to a cap, so a multi-line message
+	// stays visible as you type.
+	input.SetChangedFunc(func() {
+		lines := strings.Count(input.GetText(), "\n") + 1
+		if lines > 8 {
+			lines = 8
+		}
+		flex.ResizeItem(input, lines, 0)
+	})
+
 	reload()
 	for _, n := range sess.notes {
 		v.notice(n)
@@ -981,6 +1008,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	if len(sess.notes) > 0 {
 		v.render()
 	}
+	app.EnableMouse(true) // wheel-scroll the transcript; click to position the cursor or pick a list item
 	return app.SetRoot(pages, true).SetFocus(input).Run()
 }
 
