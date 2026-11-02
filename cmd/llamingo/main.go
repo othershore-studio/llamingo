@@ -55,7 +55,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return tui.Run(backend.New(*url, opts...), st, cwd)
+		return tui.Run(backend.New(*url, opts...), st, cwd, *system)
 	}
 
 	prompt := *msg

@@ -33,7 +33,13 @@ import (
 
 const maxToolRounds = 8
 
-const helpText = "\n[::d]commands:  /tools — turn tools on/off  ·  /clear — clear the view  ·  /help — this list  ·  /exit — quit (or Ctrl+C)[-]\n"
+const helpText = "\n[::d]commands:\n" +
+	"  /tools    turn tools on/off for this chat\n" +
+	"  /memory   show what's in saved memory\n" +
+	"  /prompt   show the system prompt sent to the model\n" +
+	"  /clear    clear the view\n" +
+	"  /help     this list\n" +
+	"  /exit     quit (or Ctrl+C)[-]\n"
 
 // Session is a TUI chat anchored to a directory's project, driving turns over the core
 // directly through the client-owned tool loop.
@@ -43,6 +49,7 @@ type Session struct {
 	reg    mcp.Registry
 	convID string
 	title  string
+	dir    string
 
 	msgs   []backend.Message
 	budget contextbudget.Budget
@@ -69,7 +76,7 @@ func Open(be backend.Backend, st *store.Store, dir string, prompter permission.P
 		localtools.NewTool(func() string { return "" }),
 		filetools.NewTool(dir, gate, map[string]bool{}),
 	)
-	return &Session{be: be, st: st, reg: reg, convID: sess.ID, title: filepath.Base(dir)}, nil
+	return &Session{be: be, st: st, reg: reg, convID: sess.ID, title: filepath.Base(dir), dir: dir}, nil
 }
 
 // Turn runs one exchange through mcp.Run: the model may call the native tools, each
@@ -132,14 +139,35 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 }
 
 func (s *Session) segments() []contextbudget.Segment {
+	return append(s.systemSegments(), contextbudget.Segment{Name: "conversation", Messages: s.msgs})
+}
+
+// systemSegments is the system context prepended before the conversation: the persona
+// system prompt (when set), the working-directory note, and the personal memory (when
+// non-empty) — each a metered segment. It mirrors the desktop's segmentsFor (httpapi)
+// so a terminal turn gets the same framing — the model knows its cwd and recalls saved
+// memory — and /prompt can show exactly what's sent.
+func (s *Session) systemSegments() []contextbudget.Segment {
 	var segs []contextbudget.Segment
-	if s.system != "" {
-		segs = append(segs, contextbudget.Segment{
-			Name:     "system",
-			Messages: []backend.Message{{Role: backend.RoleSystem, Content: s.system}},
-		})
+	if strings.TrimSpace(s.system) != "" {
+		segs = append(segs, contextbudget.Segment{Name: "system", Messages: []backend.Message{{Role: backend.RoleSystem, Content: s.system}}})
 	}
-	return append(segs, contextbudget.Segment{Name: "conversation", Messages: s.msgs})
+	if note := s.workdirNote(); note != "" {
+		segs = append(segs, contextbudget.Segment{Name: "workdir", Messages: []backend.Message{{Role: backend.RoleSystem, Content: note}}})
+	}
+	if mem, _, err := s.st.Memory(); err == nil && strings.TrimSpace(mem) != "" {
+		segs = append(segs, contextbudget.Segment{Name: "memory", Messages: []backend.Message{{Role: backend.RoleSystem, Content: "Personal memory:\n" + mem}}})
+	}
+	return segs
+}
+
+// workdirNote tells the model its working directory so it refers to files by relative
+// paths (the file tools are confined to it). Empty when the project opts out.
+func (s *Session) workdirNote() string {
+	if show, err := s.st.ProjectShowWorkingDir(s.dir); err == nil && !show {
+		return ""
+	}
+	return "Your working directory is " + s.dir + " — refer to files by paths relative to it."
 }
 
 // Budget is the latest metered budget (for the status bar).
@@ -148,6 +176,20 @@ func (s *Session) Budget() contextbudget.Budget { return s.budget }
 // Tools is the full native toolset offered in this project, before per-chat curation —
 // the set the /tools view toggles over.
 func (s *Session) Tools() []backend.ToolDef { return s.reg.Tools() }
+
+// Memory is the personal memory and whether it was last edited outside the app.
+func (s *Session) Memory() (string, bool, error) { return s.st.Memory() }
+
+// OfferedTools is the curated tool names a turn would actually offer the model (after
+// /tools curation) — what /prompt lists as going out with the request.
+func (s *Session) OfferedTools() []string {
+	tools := mcp.Curate(s.reg, s.disabledSet()).Tools()
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	return names
+}
 
 // disabledSet reads the tools curated off for this chat, fresh from the store, so a
 // toggle in the /tools view takes effect on the next turn (matching the desktop; see
@@ -264,7 +306,9 @@ func scopeLabel(s permission.Scope) string {
 }
 
 // Run opens a session for dir and runs the interactive tview app until the user quits.
-func Run(be backend.Backend, st *store.Store, dir string) error {
+// system, when non-empty (the -system flag), is the persona system prompt prepended to
+// every turn — shown by /prompt.
+func Run(be backend.Backend, st *store.Store, dir, system string) error {
 	app := tview.NewApplication()
 	pages := tview.NewPages()
 	transcript := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
@@ -275,6 +319,7 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 	if err != nil {
 		return err
 	}
+	sess.system = system
 	model, nctx := "unknown model", 0
 	if props, perr := be.Props(context.Background()); perr == nil {
 		model, nctx = modelName(props.ModelID), props.NCtx
@@ -345,6 +390,36 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 			case "/tools":
 				showTools()
 				return
+			case "/memory":
+				mem, tampered, err := sess.Memory()
+				if err != nil {
+					fmt.Fprintf(transcript, "\n[red]memory: %s[-]\n", tview.Escape(err.Error()))
+				} else {
+					title := "saved memory"
+					if tampered {
+						title += " — edited outside the app"
+					}
+					printBlock(transcript, title, mem)
+				}
+				transcript.ScrollToEnd()
+				return
+			case "/prompt", "/system":
+				segs := sess.systemSegments()
+				if len(segs) == 0 {
+					fmt.Fprint(transcript, "\n[::d]system prompt: none — the model sees only the conversation[-]\n")
+				} else {
+					fmt.Fprint(transcript, "\n[::d]system prompt sent before the conversation:[-]\n")
+					for _, seg := range segs {
+						for _, m := range seg.Messages {
+							printBlock(transcript, seg.Name, m.Content)
+						}
+					}
+				}
+				if names := sess.OfferedTools(); len(names) > 0 {
+					fmt.Fprintf(transcript, "[::d]── tools offered ──[-]\n[::d]%s[-]\n", tview.Escape(strings.Join(names, ", ")))
+				}
+				transcript.ScrollToEnd()
+				return
 			case "/help", "/?":
 				fmt.Fprint(transcript, helpText)
 			case "/clear":
@@ -377,7 +452,7 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 					for _, tc := range d.ToolCalls {
 						name := tc.Function.Name
 						app.QueueUpdateDraw(func() {
-							fmt.Fprintf(transcript, "\n[yellow::d]⚙ used %s[-:-:-]\n[green::b]llama[-:-:-]  ", tview.Escape(name))
+							fmt.Fprintf(transcript, "\n[yellow::d]▸ used %s[-:-:-]\n[green::b]llama[-:-:-]  ", tview.Escape(name))
 						})
 					}
 				}
@@ -397,8 +472,31 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 	})
 
 	app.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-		if ev.Key() == tcell.KeyCtrlC {
+		switch ev.Key() {
+		case tcell.KeyCtrlC:
 			app.Stop()
+			return nil
+		case tcell.KeyPgUp, tcell.KeyPgDn:
+			// Scroll the transcript a page while the input keeps focus — but only on the
+			// main view, so a modal's own paging (the tools list) still works.
+			if name, _ := pages.GetFrontPage(); name != "main" {
+				return ev
+			}
+			row, col := transcript.GetScrollOffset()
+			_, _, _, h := transcript.GetInnerRect()
+			page := h - 1
+			if page < 1 {
+				page = 1
+			}
+			if ev.Key() == tcell.KeyPgUp {
+				row -= page
+			} else {
+				row += page
+			}
+			if row < 0 {
+				row = 0
+			}
+			transcript.ScrollTo(row, col)
 			return nil
 		}
 		return ev
@@ -456,6 +554,17 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// printBlock writes a dimmed, titled block to the transcript — used by the inspection
+// commands (/memory, /prompt) to show what the model is given, set off from the chat.
+func printBlock(tv *tview.TextView, title, body string) {
+	fmt.Fprintf(tv, "\n[::d]── %s ──[-]\n", title)
+	if strings.TrimSpace(body) == "" {
+		fmt.Fprint(tv, "[::d](empty)[-]\n")
+		return
+	}
+	fmt.Fprintf(tv, "[::d]%s[-]\n", tview.Escape(body))
 }
 
 func modelName(path string) string {
