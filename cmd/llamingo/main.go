@@ -32,30 +32,36 @@ func main() {
 }
 
 func run() error {
-	url := flag.String("url", env("LLAMINGO_URL", "http://localhost:8080"), "llama-server base URL")
-	token := flag.String("token", os.Getenv("LLAMINGO_TOKEN"), "optional bearer token for an auth-fronted proxy")
-	system := flag.String("system", "", "optional system prompt")
+	url := flag.String("url", "", "llama-server base URL (default: the active saved connection, else http://localhost:8080)")
+	token := flag.String("token", "", "bearer token for an auth-fronted proxy (default: the active connection's)")
+	system := flag.String("system", "", "system prompt (default: the active connection's persona)")
 	msg := flag.String("m", "", "user message (default: read from stdin)")
 	dataDir := flag.String("data-dir", env("LLAMINGO_DATA_DIR", defaultDataDir()), "data directory for projects, chats, and config")
 	flag.Parse()
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	st, err := store.Open(*dataDir)
+	if err != nil {
+		return err
+	}
+	conn := resolveConnection(st, *url, set["url"], *token, set["token"], *system, set["system"])
 
 	var opts []backend.Option
-	if *token != "" {
-		opts = append(opts, backend.WithToken(*token))
+	if conn.token != "" {
+		opts = append(opts, backend.WithToken(conn.token))
 	}
+	be := backend.New(conn.url, opts...)
+	be.SetSampling(conn.temperature, conn.minP) // nil/nil = the server default
 
 	// No message and an interactive terminal: launch the TUI, anchored to the cwd's
 	// project. A piped or -m message stays the scriptable one-shot.
 	if *msg == "" && term.IsTerminal(int(os.Stdin.Fd())) {
-		st, err := store.Open(*dataDir)
-		if err != nil {
-			return err
-		}
 		cwd, err := os.Getwd()
 		if err != nil {
 			return err
 		}
-		return tui.Run(backend.New(*url, opts...), st, cwd, *system)
+		return tui.Run(be, st, cwd, conn.system)
 	}
 
 	prompt := *msg
@@ -69,7 +75,52 @@ func run() error {
 	if prompt == "" {
 		return fmt.Errorf("no message: pass -m or pipe text on stdin")
 	}
-	return chat(context.Background(), backend.New(*url, opts...), *url, *system, prompt, os.Stdout, os.Stderr)
+	return chat(context.Background(), be, conn.url, conn.system, prompt, os.Stdout, os.Stderr)
+}
+
+// connection is the resolved llama-server to talk to for this run.
+type connection struct {
+	url, token, system string
+	temperature, minP  *float64
+}
+
+// resolveConnection decides which llama-server to use, sharing the desktop's config.
+// Precedence: an explicit -url flag or LLAMINGO_URL wins; otherwise the active saved
+// connection (config.json, the one picked in the app); otherwise localhost. When the
+// active connection is used, its token, sampling, and persona come along — so `llamingo`
+// with no flags is exactly the connection (and persona) you selected in the app. An
+// explicit flag always overrides its counterpart.
+func resolveConnection(st *store.Store, urlFlag string, urlSet bool, tokenFlag string, tokenSet bool, systemFlag string, systemSet bool) connection {
+	cfg, _ := st.Config() // a missing/unreadable config is the zero value: fall back to localhost
+
+	envURL := os.Getenv("LLAMINGO_URL")
+	useConn := !urlSet && envURL == "" && cfg.URL != ""
+
+	c := connection{url: urlFlag, token: tokenFlag, system: systemFlag}
+	if c.url == "" {
+		c.url = envURL
+	}
+	if useConn {
+		c.url = cfg.URL
+	}
+	if c.url == "" {
+		c.url = "http://localhost:8080"
+	}
+
+	if c.token == "" {
+		c.token = os.Getenv("LLAMINGO_TOKEN")
+	}
+	if useConn && !tokenSet && os.Getenv("LLAMINGO_TOKEN") == "" {
+		c.token = cfg.Token
+	}
+
+	if useConn {
+		if !systemSet {
+			c.system = cfg.SystemPrompt
+		}
+		c.temperature, c.minP = cfg.Temperature, cfg.MinP
+	}
+	return c
 }
 
 // chat connects, meters the pre-flight budget, streams one reply to out, and
