@@ -97,6 +97,37 @@ display toggle too. *Configuring* (global / project) is kept separate from *acti
 Model / connection selection is a v2 concern (a plain `llama-server` serves one model — see
 [`architecture.md`](architecture.md)).
 
+## Status (2026-11-01)
+
+A burst of consolidation, then the **first public release**. Merged to `main` since the 10-31 snapshot:
+
+- **Connections & personas** (#61–#62) — saved `llama-server` connections, each carrying temperature + min_p + a
+  system prompt, so two connections on the *same* URL are distinct personas; the active alias shows in the status bar.
+  A **Model/Connection picker** (status bar + Settings) switches among them, and the **context budget** became
+  model-aware (tracks the active window, warns on overflow, re-meters on a tool/model change).
+- **Composer rework** (#61) — the input grows with content (Shift+Enter for a newline) and gained a **Send button**
+  with Enter-to-send gated to non-touch (the mobile chat-app feel).
+- **File coding tools** (#63, #65) — `read_file` + gated `write_file`, then `folder_tree`,
+  `rename`/`create`/`copy`/`delete` for files and folders and `file_properties`, all **project-confined** and
+  **risk-tiered** (reads ungated, writes/renames/copy gated, deletes always-ask); a project session is told its
+  working directory. Deliberately minimal — "local = light tasks and code."
+- **Autostart** (#66) — launch at login, optionally minimized to the tray.
+- **Hardened loopback** (#69) — the local API is **Origin-allowlisted** (not `ACAO:*`), closing a browser drive-by on
+  the backend token; plus a reconnect-escape fix (#68) keeping the connection switcher reachable when the server is
+  down.
+- **Android app** (#70–#72) — the **same Go core + Svelte UI**, with the core **bound in-process via gomobile** behind
+  a WebView serving the embedded SPA on a loopback port. Projects are hidden on mobile (desktop minus Projects); the
+  release build signs from Gradle props / env.
+- **Open-sourced** (#67) — MPL-2.0 LICENSE + NOTICE + CONTRIBUTING + SECURITY; the repo is now **public**, with branch
+  protection, private vulnerability reporting, and a developer-verified Android signing key.
+- **CI + releases** (#64, #73–#75) — `go vet` / `go test` + web and Windows builds on push; **tag-driven release
+  workflows** publish a signed Android APK and a Windows build to a GitHub Release, the Android signing gated behind a
+  required-reviewer Environment. **v0.1.0 shipped** — the first public release.
+
+Still v1, still single-machine. Mobile here is **local-only** (the Android app runs the core on-device and reaches a
+LAN `llama-server`); shared history across devices, and model-within-one-server selection, remain the v2 gateway
+(**Taita**) line — v1 switches among saved connections/personas, not models behind one endpoint.
+
 ## Backlog — surfaced by real-model testing (2026-10)
 
 Captured while using the app against the real model; none blocking, ordered loosely. **Most of the UI/UX items below
