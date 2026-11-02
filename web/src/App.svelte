@@ -282,7 +282,13 @@
     }
     chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
     projects = (await apiFetch('/api/projects').then((r) => r.json())) ?? []
-    if (!activeId && chats.length) await selectChat(chats[0].id)
+    if (!activeId) {
+      if (chats.length) await selectChat(chats[0].id)
+      // No chats yet: land in a ready one so the toolset + budget show from message
+      // zero (they're gated on activeId). Only when reachable, so a down backend
+      // leaves the calm empty state rather than erroring on create.
+      else if (reachable) await newChat()
+    }
   }
 
   // Open a conversation: the core owns history, so load its log from disk.
@@ -319,7 +325,7 @@
         trace = ''
         tools = []
       } else if (e.kind === 'summary') {
-        sums.push({ content: e.content, time: e.time, afterIndex: msgs.length - 1 })
+        sums.push({ content: e.content, time: e.time, afterIndex: msgs.length - 1, saved: Math.max(0, (e.replaced ?? 0) - (e.summaryTokens ?? 0)) })
       }
     }
     messages = msgs
@@ -835,7 +841,7 @@
     } else if (event === 'compacted') {
       if (onScreen) {
         report = `Auto-compacted: folded ${payload.folded}, saved ~${payload.saved} tokens`
-        if (payload.summary) convSummaries = [...convSummaries, { content: payload.summary, time: new Date().toISOString(), afterIndex: messages.length - 1 }]
+        if (payload.summary) convSummaries = [...convSummaries, { content: payload.summary, time: new Date().toISOString(), afterIndex: messages.length - 1, saved: payload.saved }]
       }
     } else if (event === 'permission') {
       pending = payload // always surface: a blocking approval, shown whichever chat is active (answered by id)
@@ -1284,7 +1290,7 @@
           {/if}
           {#each convSummaries.filter((s) => s.afterIndex === i) as s}
             <details class="thinking summary-mark">
-              <summary>Compacted · {fmtTime(s.time)}</summary>
+              <summary>Compacted · {fmtTime(s.time)}{#if s.saved} · saved ~{s.saved} tokens{/if}</summary>
               <div class="rtext prose">{@html md.render(s.content)}</div>
             </details>
           {/each}
