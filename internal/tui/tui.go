@@ -260,7 +260,34 @@ func (s *Session) Load(convID string) error {
 	s.convID = convID
 	s.msgs = messagesFrom(store.Project(entries))
 	s.lastTools = nil
+	s.loadImages(convID)
 	return nil
+}
+
+// loadImages recovers a conversation's saved images from its attachments folder into the
+// in-memory viewer list, so /image works after a resume (the sink only fills the list
+// during live turns). Non-image files and decode failures are skipped.
+func (s *Session) loadImages(convID string) {
+	s.images = nil
+	names, err := s.st.ListAttachments(convID)
+	if err != nil {
+		return
+	}
+	for _, name := range names {
+		p, err := s.st.AttachmentPath(convID, name)
+		if err != nil {
+			continue
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		img, _, derr := image.Decode(f)
+		_ = f.Close()
+		if derr == nil {
+			s.images = append(s.images, img)
+		}
+	}
 }
 
 // New starts a fresh session: lazily, so nothing is written to disk until the first
@@ -269,6 +296,7 @@ func (s *Session) New() error {
 	s.convID = ""
 	s.msgs = nil
 	s.lastTools = nil
+	s.images = nil
 	s.budget = contextbudget.Budget{}
 	return nil
 }
@@ -683,6 +711,13 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	// status bar reflects the loaded context without blocking on a tokenize round-trip.
 	reload := func() {
 		v.items = sess.HistoryItems()
+		if n := len(sess.images); n > 0 { // a resumed chat's saved images are viewable
+			noun := "image"
+			if n > 1 {
+				noun = "images"
+			}
+			v.notice(fmt.Sprintf("[::d]%d %s in this chat · /image to view[-]", n, noun))
+		}
 		setStatus()
 		v.render()
 		if len(sess.msgs) == 0 {

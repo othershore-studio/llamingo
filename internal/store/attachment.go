@@ -8,8 +8,34 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
+
+// ListAttachments returns the base names of the files in a conversation's attachments/
+// folder (none → empty, not an error). Each name resolves through AttachmentPath. Used to
+// recover a resumed conversation's images for the terminal viewer.
+func (s *Store) ListAttachments(convID string) ([]string, error) {
+	dir, err := s.conversationDir(convID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "attachments"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: list attachments: %w", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
 
 // SaveAttachment writes bytes into a conversation's attachments/ folder under a
 // plain base name and returns the reference stored in the log: "attachments/<name>".

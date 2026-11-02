@@ -369,3 +369,44 @@ func TestSessionSinkCapturesImage(t *testing.T) {
 		t.Errorf("image not captured: images=%d turnImages=%d, want 1 each", len(sess.images), sess.turnImages)
 	}
 }
+
+// Resuming a session recovers its saved images from the attachments folder into the viewer
+// list — so /image works on a reopened chat, even one whose images predate the log-ref fix.
+func TestSessionLoadsImagesOnResume(t *testing.T) {
+	srv := lcpptest.NewServer()
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	// A session with content and a saved image.
+	s1, err := Open(be, st, dir, allowPrompter{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Turn(context.Background(), "hi", nil); err != nil {
+		t.Fatal(err)
+	}
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 3, 3))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveAttachment(s1.convID, "pic.png", pngBuf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume: the saved image is recovered, so /image has something to show.
+	s2, err := Open(be, st, dir, allowPrompter{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.convID != s1.convID {
+		t.Fatalf("resume opened %q, want %q", s2.convID, s1.convID)
+	}
+	if len(s2.images) != 1 {
+		t.Errorf("resumed images = %d, want 1 (recovered from attachments)", len(s2.images))
+	}
+}
