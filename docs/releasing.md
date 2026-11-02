@@ -36,10 +36,18 @@ ever decoded on a run you explicitly approve.
    [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\Code\.keys\llamingo-release.jks"))
    ```
 
-2. **Repo → Settings → Environments → New environment → `android-release`**, and add
-   yourself under **Required reviewers**. Every Android release run then pauses for
-   your one-click approval before the keystore is decoded — so a sneaky workflow edit
+2. **Repo → Settings → Environments → New environment → `android-release`.** Then add
+   yourself under **Required reviewers** so every Android release run pauses for your
+   one-click approval before the keystore is decoded — a sneaky workflow edit then
    can't exfiltrate the key on a tag push.
+
+   **Plan limitation:** environment *protection rules* (required reviewers) are only
+   available on **public** repos, or private repos on GitHub Pro/Team/Enterprise. On a
+   free **private** repo you can create the environment but not the required-reviewer
+   rule, so the job runs **ungated**. That's acceptable while private — only
+   collaborators can push a tag to trigger it, and fork PRs never receive secrets —
+   so **turn the required reviewer on as part of making the repo public**, which is
+   exactly when the gate starts to matter. (Or GitHub Pro to gate it while private.)
 
 Windows needs no secrets.
 

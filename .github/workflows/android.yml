@@ -17,7 +17,8 @@
 #     ANDROID_KEY_PASSWORD       the key password
 #     ANDROID_KEY_ALIAS          llamingo
 #   Environments -> New environment `android-release` -> add yourself under
-#     "Required reviewers".
+#     "Required reviewers". (Required reviewers need a PUBLIC repo or Pro/Team; on a
+#     free private repo the env runs ungated — enable the reviewer when you go public.)
 #
 # Make the base64 secret value on the dev machine (PowerShell):
 #   [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\Code\.keys\llamingo-release.jks"))
@@ -37,9 +38,6 @@ jobs:
     # Needed so a tagged run can attach the APK to the GitHub Release.
     permissions:
       contents: write
-    env:
-      # NDK pinned to the dev-machine version; gomobile reads it from ANDROID_NDK_HOME.
-      ANDROID_NDK_VERSION: '28.2.13676358'
     steps:
       - uses: actions/checkout@v4
 
@@ -60,12 +58,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install the pinned NDK + compile platform
+      # Use the runner's preinstalled Android SDK + NDK. (The android-actions/
+      # setup-android action's internal sdkmanager step failed on the hosted runner,
+      # and gomobile only needs a working NDK toolchain.) The compile platform
+      # android-36 is preinstalled on ubuntu-latest; AGP auto-provisions any gaps.
+      - name: Point gomobile at the preinstalled NDK
         run: |
-          sdkmanager "ndk;$ANDROID_NDK_VERSION" "platforms;android-36"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+          echo "SDK: $ANDROID_SDK_ROOT  NDK: $ANDROID_NDK_LATEST_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
 
       # gomobile + gobind at the version pinned in go.mod (tool dependencies),
       # installed to GOPATH/bin and put on PATH.
