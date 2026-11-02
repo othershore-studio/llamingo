@@ -3,10 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // Package tui is the terminal face of llaminGO: a tview app that anchors a session
-// to the current directory's project and streams a chat over the shared core,
-// CLI-direct (no HTTP server). This is the floor — an anchored streaming chat with
-// the honest budget; the client-owned tool loop (mcp.Run) and the terminal
-// permission modal are the next increment.
+// to the current directory's project and runs the client-owned tool loop over the
+// shared core, CLI-direct (no HTTP server). Turns stream a reply, the model may call
+// the native tools (memory, time/location, project files) behind the permission gate
+// — surfaced as a blocking terminal consent modal — and the trail is persisted like
+// the desktop.
 package tui
 
 import (
@@ -21,25 +22,35 @@ import (
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
+	"github.com/othershore-studio/llamingo/internal/filetools"
+	"github.com/othershore-studio/llamingo/internal/localtools"
+	"github.com/othershore-studio/llamingo/internal/mcp"
+	"github.com/othershore-studio/llamingo/internal/memtool"
+	"github.com/othershore-studio/llamingo/internal/permission"
 	"github.com/othershore-studio/llamingo/internal/store"
 )
 
-// Session is a TUI chat anchored to a directory's project. It drives turns over the
-// core directly: persist the user message, stream the reply, persist it, re-meter.
+const maxToolRounds = 8
+
+// Session is a TUI chat anchored to a directory's project, driving turns over the core
+// directly through the client-owned tool loop.
 type Session struct {
 	be     backend.Backend
 	st     *store.Store
+	reg    mcp.Registry
 	convID string
 	title  string
-	system string
 
 	msgs   []backend.Message
 	budget contextbudget.Budget
+	system string
 }
 
-// Open anchors a new session to dir's project (creating the project if new) and
-// returns it ready for turns — the same project the desktop opens for that folder.
-func Open(be backend.Backend, st *store.Store, dir string) (*Session, error) {
+// Open anchors a new session to dir's project (the same project the desktop opens) and
+// wires the native tool registry — memory, time/location, and the project file tools
+// (dir is the project root) — behind the permission gate, whose prompter is the
+// caller's: a tview consent modal live, a fake in tests.
+func Open(be backend.Backend, st *store.Store, dir string, prompter permission.Prompter) (*Session, error) {
 	dir = filepath.Clean(dir)
 	proj, err := st.OpenProject(dir, filepath.Base(dir))
 	if err != nil {
@@ -49,12 +60,19 @@ func Open(be backend.Backend, st *store.Store, dir string) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new session: %w", err)
 	}
-	return &Session{be: be, st: st, convID: sess.ID, title: filepath.Base(dir)}, nil
+	gate := permission.New(prompter, permission.NewMemoryGrantStore())
+	reg := mcp.Combine(
+		memtool.NewTool(st, gate),
+		localtools.NewTool(func() string { return "" }),
+		filetools.NewTool(dir, gate, map[string]bool{}),
+	)
+	return &Session{be: be, st: st, reg: reg, convID: sess.ID, title: filepath.Base(dir)}, nil
 }
 
-// Turn runs one exchange: persist the user message, stream the reply (reporting each
-// delta to onDelta), persist the reply, and re-meter the budget. Engine-agnostic, so
-// it runs against the fake backend in tests.
+// Turn runs one exchange through mcp.Run: the model may call the native tools, each
+// mediated by the gate. It persists the trail (thinking, tool uses, answer) like the
+// desktop — thinking and uses are display-only, the answer is the durable turn — and
+// reports each delta to onDelta for rendering.
 func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.Delta) error) error {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -71,26 +89,41 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 		s.budget = b
 	}
 
-	var reply strings.Builder
-	err := s.be.ChatStream(ctx, backend.ChatRequest{Messages: bld.Messages(segs)}, func(d backend.Delta) error {
-		if d.Content != "" {
-			reply.WriteString(d.Content)
+	var think strings.Builder
+	var timings *backend.Timings
+	out, err := mcp.Run(ctx, s.be, s.reg, bld.Messages(segs), func(d backend.Delta) error {
+		if d.Reasoning != "" {
+			think.WriteString(d.Reasoning)
 		}
 		if d.Usage != nil && d.Usage.PromptTokens > s.budget.Authoritative {
 			s.budget.Authoritative = d.Usage.PromptTokens
+		}
+		if d.Timings != nil {
+			timings = d.Timings
 		}
 		if onDelta != nil {
 			return onDelta(d)
 		}
 		return nil
-	})
+	}, maxToolRounds, nil)
 	if err != nil {
 		return err
 	}
 
-	answer := reply.String()
+	answer := finalAssistant(out)
 	s.msgs = append(s.msgs, backend.Message{Role: backend.RoleAssistant, Content: answer})
-	_, err = s.st.AppendMessage(s.convID, "assistant", answer)
+
+	if think.Len() > 0 {
+		_ = s.st.AppendReasoning(s.convID, think.String())
+	}
+	for _, tc := range toolCallsOf(out) {
+		_ = s.st.AppendToolUse(s.convID, tc.name, tc.args)
+	}
+	tps := 0.0
+	if timings != nil {
+		tps = timings.PredictPerSecond
+	}
+	_, err = s.st.AppendMessageTimed(s.convID, "assistant", answer, tps)
 	return err
 }
 
@@ -108,9 +141,94 @@ func (s *Session) segments() []contextbudget.Segment {
 // Budget is the latest metered budget (for the status bar).
 func (s *Session) Budget() contextbudget.Budget { return s.budget }
 
+// finalAssistant is the last assistant message's text in a turn's output.
+func finalAssistant(msgs []backend.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == backend.RoleAssistant && msgs[i].Content != "" {
+			return msgs[i].Content
+		}
+	}
+	return ""
+}
+
+type toolUse struct{ name, args string }
+
+func toolCallsOf(msgs []backend.Message) []toolUse {
+	var uses []toolUse
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			uses = append(uses, toolUse{name: tc.Function.Name, args: tc.Function.Arguments})
+		}
+	}
+	return uses
+}
+
+// prompter implements permission.Prompter as a blocking tview modal: the tool loop
+// (on a worker goroutine) calls Ask, which shows a consent modal on the UI goroutine
+// and blocks on the user's choice — the terminal analogue of the desktop SSE handshake.
+type prompter struct {
+	app     *tview.Application
+	pages   *tview.Pages
+	restore tview.Primitive
+}
+
+func (p *prompter) Ask(ctx context.Context, req permission.Request, allowed []permission.Scope) (permission.Decision, error) {
+	res := make(chan permission.Decision, 1)
+	labels := make([]string, 0, len(allowed)+1)
+	for _, sc := range allowed {
+		labels = append(labels, scopeLabel(sc))
+	}
+	labels = append(labels, "Deny")
+	text := req.Label
+	if req.Detail != "" {
+		text += "\n\n" + req.Detail
+	}
+
+	p.app.QueueUpdateDraw(func() {
+		modal := tview.NewModal().SetText(text).AddButtons(labels).
+			SetDoneFunc(func(i int, _ string) {
+				p.pages.RemovePage("consent")
+				if p.restore != nil {
+					p.app.SetFocus(p.restore)
+				}
+				if i >= 0 && i < len(allowed) {
+					res <- permission.Decision{Allow: true, Scope: allowed[i]}
+					return
+				}
+				res <- permission.Decision{Allow: false}
+			})
+		p.pages.AddPage("consent", modal, true, true)
+	})
+
+	select {
+	case dec := <-res:
+		return dec, nil
+	case <-ctx.Done():
+		return permission.Decision{}, ctx.Err()
+	}
+}
+
+func scopeLabel(s permission.Scope) string {
+	switch s {
+	case permission.ScopeOnce:
+		return "Once"
+	case permission.ScopeSession:
+		return "This chat"
+	case permission.ScopePersistent:
+		return "Always"
+	}
+	return "Allow"
+}
+
 // Run opens a session for dir and runs the interactive tview app until the user quits.
 func Run(be backend.Backend, st *store.Store, dir string) error {
-	sess, err := Open(be, st, dir)
+	app := tview.NewApplication()
+	pages := tview.NewPages()
+	transcript := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
+	status := tview.NewTextView().SetDynamicColors(true)
+	input := tview.NewInputField().SetLabel("› ")
+
+	sess, err := Open(be, st, dir, &prompter{app: app, pages: pages, restore: input})
 	if err != nil {
 		return err
 	}
@@ -118,11 +236,6 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 	if props, perr := be.Props(context.Background()); perr == nil {
 		model, nctx = modelName(props.ModelID), props.NCtx
 	}
-
-	app := tview.NewApplication()
-	transcript := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
-	status := tview.NewTextView().SetDynamicColors(true)
-	input := tview.NewInputField().SetLabel("› ")
 
 	setStatus := func() {
 		b := sess.Budget()
@@ -145,8 +258,8 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 		fmt.Fprintf(transcript, "\n[blue::b]you[-:-:-]  %s\n[green::b]llama[-:-:-]  ", tview.Escape(text))
 		transcript.ScrollToEnd()
 
-		// Animate a "thinking…" spinner in the status bar until the reply lands, so the
-		// gap before the first token (prompt processing / reasoning) doesn't look dead.
+		// Animate a "thinking…" spinner until the reply lands, so the pre-token gap
+		// (prompt processing / reasoning / a tool running) doesn't look dead.
 		spinStop := make(chan struct{})
 		go spinner(app, status, model, spinStop)
 
@@ -157,6 +270,14 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 						fmt.Fprint(transcript, tview.Escape(d.Content))
 						transcript.ScrollToEnd()
 					})
+				}
+				if d.Done {
+					for _, tc := range d.ToolCalls {
+						name := tc.Function.Name
+						app.QueueUpdateDraw(func() {
+							fmt.Fprintf(transcript, "\n[yellow::d]⚙ used %s[-:-:-]\n[green::b]llama[-:-:-]  ", tview.Escape(name))
+						})
+					}
 				}
 				return nil
 			})
@@ -185,14 +306,14 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 		AddItem(transcript, 0, 1, false).
 		AddItem(input, 1, 0, true).
 		AddItem(status, 1, 0, false)
+	pages.AddPage("main", flex, true, true)
 
 	fmt.Fprintf(transcript, "[::d]llaminGO · %s · %s — type a message, Ctrl+C to quit[-]\n", sess.title, model)
-	return app.SetRoot(flex, true).SetFocus(input).Run()
+	return app.SetRoot(pages, true).SetFocus(input).Run()
 }
 
 // spinner animates a "thinking…" indicator in the status bar until stop is closed —
-// the terminal analogue of the desktop's working indicator, so a turn's pre-token
-// gap doesn't look dead.
+// the terminal analogue of the desktop's working indicator.
 func spinner(app *tview.Application, status *tview.TextView, model string, stop <-chan struct{}) {
 	frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 	tk := time.NewTicker(90 * time.Millisecond)

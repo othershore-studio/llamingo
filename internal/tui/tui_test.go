@@ -11,8 +11,17 @@ import (
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/lcpptest"
+	"github.com/othershore-studio/llamingo/internal/permission"
 	"github.com/othershore-studio/llamingo/internal/store"
 )
+
+// allowPrompter approves any tool request. The floor test uses no tools, so it just
+// satisfies the gate's prompter.
+type allowPrompter struct{}
+
+func (allowPrompter) Ask(context.Context, permission.Request, []permission.Scope) (permission.Decision, error) {
+	return permission.Decision{Allow: true, Scope: permission.ScopeOnce}, nil
+}
 
 // A turn against the fake streams the reply, holds the exchange in memory, persists
 // both sides to the store, and reports the authoritative budget — the floor working
@@ -25,7 +34,7 @@ func TestSessionTurnAgainstFake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := Open(be, st, t.TempDir())
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,8 +62,21 @@ func TestSessionTurnAgainstFake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 || entries[0].Role != "user" || entries[1].Role != "assistant" {
-		t.Fatalf("persisted entries = %+v, want user + assistant", entries)
+	var user, asst int
+	for _, e := range entries {
+		switch e.Role {
+		case "user":
+			user++
+		case "assistant":
+			asst++
+		}
+	}
+	if user != 1 || asst != 1 {
+		t.Fatalf("persisted messages: user=%d assistant=%d, want 1 each; entries=%+v", user, asst, entries)
+	}
+	// Via mcp.Run the model's reasoning is captured as a display-only trail entry.
+	if len(entries) < 3 {
+		t.Errorf("expected a reasoning trail entry too; got %d entries", len(entries))
 	}
 	// The authoritative budget comes back from the stream's usage.
 	if b := sess.Budget(); b.Authoritative != 12 {
