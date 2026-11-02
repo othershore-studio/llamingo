@@ -51,9 +51,10 @@ type Session struct {
 	title  string
 	dir    string
 
-	msgs   []backend.Message
-	budget contextbudget.Budget
-	system string
+	msgs      []backend.Message
+	budget    contextbudget.Budget
+	system    string
+	lastTools []string // tool names from the most recent turn, for the display trail
 }
 
 // Open anchors a new session to dir's project (the same project the desktop opens) and
@@ -88,6 +89,7 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 	if input == "" {
 		return nil
 	}
+	s.lastTools = nil
 	s.msgs = append(s.msgs, backend.Message{Role: backend.RoleUser, Content: input})
 	if _, err := s.st.AppendMessage(s.convID, "user", input); err != nil {
 		return err
@@ -127,9 +129,12 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 	if think.Len() > 0 {
 		_ = s.st.AppendReasoning(s.convID, think.String())
 	}
+	var toolNames []string
 	for _, tc := range toolCallsOf(out) {
 		_ = s.st.AppendToolUse(s.convID, tc.name, tc.args)
+		toolNames = append(toolNames, tc.name)
 	}
+	s.lastTools = toolNames
 	tps := 0.0
 	if timings != nil {
 		tps = timings.PredictPerSecond
@@ -333,6 +338,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 	setStatus()
 
 	welcome := fmt.Sprintf("[::d]llaminGO · %s · %s — type a message, /help for commands, Ctrl+C or /exit to quit[-]\n", sess.title, model)
+	v := &view{tv: transcript, welcome: welcome}
 
 	// showTools overlays a scrollable toggle list of the project's native tools — a
 	// filled dot is on, hollow off — so a small model's toolset can be trimmed. Enter
@@ -341,8 +347,8 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 	showTools := func() {
 		tools := sess.Tools()
 		if len(tools) == 0 {
-			fmt.Fprint(transcript, "\n[::d]no tools in this project[-]\n")
-			transcript.ScrollToEnd()
+			v.notice("[::d]no tools in this project[-]")
+			v.render()
 			return
 		}
 		list := tview.NewList().ShowSecondaryText(true)
@@ -358,8 +364,8 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 			pages.RemovePage("tools")
 			app.SetFocus(input)
 			off := len(sess.disabledSet())
-			fmt.Fprintf(transcript, "\n[::d]tools: %d of %d on[-]\n", len(tools)-off, len(tools))
-			transcript.ScrollToEnd()
+			v.notice(fmt.Sprintf("[::d]tools: %d of %d on[-]", len(tools)-off, len(tools)))
+			v.render()
 		})
 		// Near-fullscreen with a small margin; the list scrolls inside its border.
 		layout := tview.NewFlex().
@@ -387,52 +393,54 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 			switch strings.ToLower(strings.Fields(text)[0]) {
 			case "/exit", "/quit", "/q":
 				app.Stop()
+				return
 			case "/tools":
 				showTools()
 				return
 			case "/memory":
 				mem, tampered, err := sess.Memory()
 				if err != nil {
-					fmt.Fprintf(transcript, "\n[red]memory: %s[-]\n", tview.Escape(err.Error()))
+					v.notice("[red]memory: " + tview.Escape(err.Error()) + "[-]")
 				} else {
 					title := "saved memory"
 					if tampered {
 						title += " — edited outside the app"
 					}
-					printBlock(transcript, title, mem)
+					v.notice(blockString(title, mem))
 				}
-				transcript.ScrollToEnd()
-				return
 			case "/prompt", "/system":
+				var sb strings.Builder
 				segs := sess.systemSegments()
 				if len(segs) == 0 {
-					fmt.Fprint(transcript, "\n[::d]system prompt: none — the model sees only the conversation[-]\n")
+					sb.WriteString("[::d]system prompt: none — the model sees only the conversation[-]")
 				} else {
-					fmt.Fprint(transcript, "\n[::d]system prompt sent before the conversation:[-]\n")
+					sb.WriteString("[::d]system prompt sent before the conversation:[-]")
 					for _, seg := range segs {
 						for _, m := range seg.Messages {
-							printBlock(transcript, seg.Name, m.Content)
+							sb.WriteString(blockString(seg.Name, m.Content))
 						}
 					}
 				}
 				if names := sess.OfferedTools(); len(names) > 0 {
-					fmt.Fprintf(transcript, "[::d]── tools offered ──[-]\n[::d]%s[-]\n", tview.Escape(strings.Join(names, ", ")))
+					sb.WriteString(blockString("tools offered", strings.Join(names, ", ")))
 				}
-				transcript.ScrollToEnd()
-				return
+				v.notice(sb.String())
 			case "/help", "/?":
-				fmt.Fprint(transcript, helpText)
+				v.notice(helpText)
 			case "/clear":
-				transcript.Clear()
-				fmt.Fprint(transcript, welcome)
+				v.items = nil
 			default:
-				fmt.Fprintf(transcript, "\n[red]unknown command %s — try /help[-]\n", tview.Escape(strings.Fields(text)[0]))
+				v.notice("[red]unknown command " + tview.Escape(strings.Fields(text)[0]) + " — try /help[-]")
 			}
-			transcript.ScrollToEnd()
+			v.render()
 			return
 		}
 		busy = true
-		fmt.Fprintf(transcript, "\n[blue::b]you[-:-:-]  %s\n[green::b]llama[-:-:-]  ", tview.Escape(text))
+		v.add(item{itemUser, text})
+		v.render()
+		// Stream the reply raw as it arrives, for responsiveness; the completion repaint
+		// upgrades it to rendered markdown.
+		fmt.Fprint(transcript, "\n[green::b]llama[-:-:-]  ")
 		transcript.ScrollToEnd()
 
 		// Animate a "thinking…" spinner until the reply lands, so the pre-token gap
@@ -460,11 +468,18 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 			})
 			close(spinStop)
 			app.QueueUpdateDraw(func() {
-				if rerr != nil {
-					fmt.Fprintf(transcript, "\n[red]error: %s[-]", tview.Escape(rerr.Error()))
+				// Commit the turn to the display model and repaint: the raw streamed text
+				// is replaced by the markdown-rendered answer, after the tool trail.
+				for _, name := range sess.lastTools {
+					v.add(item{itemTool, name})
 				}
-				fmt.Fprint(transcript, "\n")
-				transcript.ScrollToEnd()
+				if n := len(sess.msgs); n > 0 && sess.msgs[n-1].Role == backend.RoleAssistant {
+					v.add(item{itemAssistant, sess.msgs[n-1].Content})
+				}
+				if rerr != nil {
+					v.notice("[red]error: " + tview.Escape(rerr.Error()) + "[-]")
+				}
+				v.render()
 				setStatus()
 				busy = false
 			})
@@ -508,7 +523,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 		AddItem(status, 1, 0, false)
 	pages.AddPage("main", flex, true, true)
 
-	fmt.Fprint(transcript, welcome)
+	v.render()
 	return app.SetRoot(pages, true).SetFocus(input).Run()
 }
 
@@ -556,15 +571,66 @@ func truncate(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// printBlock writes a dimmed, titled block to the transcript — used by the inspection
-// commands (/memory, /prompt) to show what the model is given, set off from the chat.
-func printBlock(tv *tview.TextView, title, body string) {
-	fmt.Fprintf(tv, "\n[::d]── %s ──[-]\n", title)
+// blockString is a dimmed, titled block for the inspection commands (/memory, /prompt),
+// returned as a string so it can be held as a notice item and survive the repaints.
+func blockString(title, body string) string {
+	head := fmt.Sprintf("\n[::d]── %s ──[-]\n", title)
 	if strings.TrimSpace(body) == "" {
-		fmt.Fprint(tv, "[::d](empty)[-]\n")
-		return
+		return head + "[::d](empty)[-]"
 	}
-	fmt.Fprintf(tv, "[::d]%s[-]\n", tview.Escape(body))
+	return head + fmt.Sprintf("[::d]%s[-]", tview.Escape(body))
+}
+
+// item is one entry in the transcript's display model. The transcript is rebuilt from
+// these after each turn so a streamed answer — shown raw as it arrives, for
+// responsiveness — can be repainted as rendered markdown once complete. tview is
+// append-only, so "upgrade the last answer" means repaint from the model.
+type item struct {
+	kind itemKind
+	text string
+}
+
+type itemKind int
+
+const (
+	itemNotice    itemKind = iota // a pre-tagged system line (help, /memory, errors), verbatim
+	itemUser                      // a user message
+	itemTool                      // a tool the model used
+	itemAssistant                 // an assistant answer, rendered as markdown
+)
+
+// view owns the transcript TextView and its display model.
+type view struct {
+	tv      *tview.TextView
+	welcome string
+	items   []item
+}
+
+func (v *view) add(it item)        { v.items = append(v.items, it) }
+func (v *view) notice(text string) { v.add(item{itemNotice, text}) }
+
+// render repaints the whole transcript from the model: markdown for answers, plain for
+// the rest. Called after each change — cheap for a chat-sized history.
+func (v *view) render() {
+	v.tv.Clear()
+	fmt.Fprint(v.tv, v.welcome)
+	for _, it := range v.items {
+		switch it.kind {
+		case itemNotice:
+			fmt.Fprintf(v.tv, "%s\n", it.text)
+		case itemUser:
+			fmt.Fprintf(v.tv, "\n[blue::b]you[-:-:-]  %s\n", tview.Escape(it.text))
+		case itemTool:
+			fmt.Fprintf(v.tv, "[yellow::d]▸ used %s[-:-:-]\n", tview.Escape(it.text))
+		case itemAssistant:
+			if body := renderMarkdown(it.text); body != "" {
+				fmt.Fprintf(v.tv, "[green::b]llama[-:-:-]  %s\n", body)
+			} else {
+				fmt.Fprint(v.tv, "[green::b]llama[-:-:-]\n")
+			}
+		}
+	}
+	v.tv.ScrollToEnd()
 }
 
 func modelName(path string) string {

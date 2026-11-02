@@ -7,6 +7,7 @@ require (
 	github.com/gdamore/tcell/v2 v2.13.10
 	github.com/rivo/tview v0.42.0
 	github.com/wailsapp/wails/v2 v2.17.0
+	github.com/yuin/goldmark v1.8.7
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
 )
