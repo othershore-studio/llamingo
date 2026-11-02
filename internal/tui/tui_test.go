@@ -428,6 +428,25 @@ func TestAssistantItemsSplitsImages(t *testing.T) {
 	}
 }
 
+// A resumed chat's tool trail shows the tool name, not its arguments — AppendToolUse puts
+// the name in Entry.Name and the args in Entry.Content, and the display must read Name.
+func TestHistoryItemsToolName(t *testing.T) {
+	entries := []store.Entry{
+		{Kind: store.KindMessage, Role: "user", Content: "where am I?"},
+		{Kind: store.KindToolCall, Name: "get_location", Content: `{"detail":"city"}`},
+		{Kind: store.KindMessage, Role: "assistant", Content: "Quito."},
+	}
+	var tool string
+	for _, it := range historyItems(entries) {
+		if it.kind == itemTool {
+			tool = it.text
+		}
+	}
+	if tool != "get_location" {
+		t.Errorf("tool trail = %q, want the name get_location (not its arguments)", tool)
+	}
+}
+
 // imageBlocks renders an image to colored half-block text (no raw markers, carries color).
 func TestImageBlocks(t *testing.T) {
 	out := imageBlocks(image.NewRGBA(image.Rect(0, 0, 8, 8)), 10, 10)

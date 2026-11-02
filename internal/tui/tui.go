@@ -13,6 +13,7 @@ package tui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -380,7 +381,7 @@ func historyItems(entries []store.Entry) []item {
 				items = append(items, assistantItems(e.Content)...)
 			}
 		case store.KindToolCall:
-			items = append(items, item{itemTool, e.Content})
+			items = append(items, item{itemTool, e.Name}) // the tool name (args live in e.Content)
 		case store.KindSummary:
 			items = append(items, item{itemNotice, "[::d]— summary of earlier conversation —[-]\n[::d]" + tview.Escape(e.Content) + "[-]"})
 		}
@@ -409,7 +410,7 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 
 	bld := contextbudget.New(s.be)
 	segs := s.segments()
-	if b, err := bld.Estimate(ctx, segs); err == nil {
+	if b, err := bld.Estimate(ctx, s.budgetSegments()); err == nil {
 		s.budget = b
 	}
 
@@ -480,6 +481,20 @@ func (s *Session) systemSegments() []contextbudget.Segment {
 		segs = append(segs, contextbudget.Segment{Name: "memory", Messages: []backend.Message{{Role: backend.RoleSystem, Content: "Personal memory:\n" + mem}}})
 	}
 	return segs
+}
+
+// budgetSegments is what to meter for the status bar: the system framing, the offered
+// tools (their schemas are a big chunk the chat template injects — so the context reads
+// honestly, not short), then the conversation. The tools go in here only, not into the
+// real turn (mcp.Run passes them to the backend); mirrors the desktop's budgetTools.
+func (s *Session) budgetSegments() []contextbudget.Segment {
+	segs := s.systemSegments()
+	if tools := mcp.Curate(s.reg, s.disabledSet()).Tools(); len(tools) > 0 {
+		if b, err := json.Marshal(tools); err == nil {
+			segs = append(segs, contextbudget.Segment{Name: "tools", Messages: []backend.Message{{Role: backend.RoleSystem, Content: "Tools available:\n" + string(b)}}})
+		}
+	}
+	return append(segs, contextbudget.Segment{Name: "conversation", Messages: s.msgs})
 }
 
 // workdirNote tells the model its working directory so it refers to files by relative
@@ -687,15 +702,33 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	if props, perr := be.Props(context.Background()); perr == nil {
 		model, nctx = modelName(props.ModelID), props.NCtx
 	}
+	// Prefer the active connection's alias (what the desktop shows) over the raw model file.
+	label := model
+	if cfg, err := st.Config(); err == nil {
+		for _, c := range cfg.Connections {
+			if c.ID == cfg.ActiveID && strings.TrimSpace(c.Name) != "" {
+				label = c.Name
+				break
+			}
+		}
+	}
 
 	setStatus := func() {
 		b := sess.Budget()
 		status.Clear()
-		fmt.Fprintf(status, "[::d]%s · %s · ctx %d/%d[-]", sess.title, model, b.Used(), nctx)
+		// Colour the context by fill level — a calm→amber→red cue toward the limit.
+		ctxColor := "green"
+		switch b.Level() {
+		case contextbudget.LevelNear:
+			ctxColor = "yellow"
+		case contextbudget.LevelFull:
+			ctxColor = "red"
+		}
+		fmt.Fprintf(status, "[::d]%s · %s · [-][%s]ctx %d/%d[-]", sess.title, tview.Escape(label), ctxColor, b.Used(), nctx)
 	}
 	setStatus()
 
-	welcome := fmt.Sprintf("[::d]llaminGO · %s · %s — type a message, /help for commands, Ctrl+C or /exit to quit[-]\n", sess.title, model)
+	welcome := fmt.Sprintf("[::d]llaminGO · %s · %s — type a message, /help for commands, Ctrl+C or /exit to quit[-]\n", sess.title, label)
 	v := &view{tv: transcript, welcome: welcome, resolve: sess.resolveImage}
 
 	// Re-render inline images when the transcript width changes (the first draw, or a
@@ -704,9 +737,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	transcript.SetDrawFunc(func(_ tcell.Screen, _, _, width, _ int) (int, int, int, int) {
 		if width != lastWidth {
 			lastWidth = width
-			if v.hasImages() {
-				go app.QueueUpdateDraw(v.render)
-			}
+			go app.QueueUpdateDraw(v.render) // re-fit width-dependent content (bars, images)
 		}
 		return transcript.GetInnerRect()
 	})
@@ -767,10 +798,9 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		}
 		setStatus()
 		v.render()
-		if len(sess.msgs) == 0 {
-			return
-		}
-		segs := sess.segments()
+		// Meter the context — tools included — in the background so the status bar reflects
+		// the real size without blocking on the tokenize round-trip.
+		segs := sess.budgetSegments()
 		go func() {
 			if b, err := contextbudget.New(be).Estimate(context.Background(), segs); err == nil {
 				app.QueueUpdateDraw(func() {
@@ -960,13 +990,13 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		v.render()
 		// Stream the reply raw as it arrives, for responsiveness; the completion repaint
 		// upgrades it to rendered markdown.
-		fmt.Fprint(transcript, "[green::b]♦[-:-:-]  ")
+		fmt.Fprint(transcript, "[white::b]♦[-:-:-]  ")
 		transcript.ScrollToEnd()
 
 		// Animate a "thinking…" spinner until the reply lands, so the pre-token gap
 		// (prompt processing / reasoning / a tool running) doesn't look dead.
 		spinStop := make(chan struct{})
-		go spinner(app, status, model, spinStop)
+		go spinner(app, status, label, spinStop)
 
 		go func() {
 			rerr := sess.Turn(context.Background(), text, func(d backend.Delta) error {
@@ -980,7 +1010,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 					for _, tc := range d.ToolCalls {
 						name := tc.Function.Name
 						app.QueueUpdateDraw(func() {
-							fmt.Fprintf(transcript, "\n[yellow::d]▸ used %s[-:-:-]\n[green::b]♦[-:-:-]  ", tview.Escape(name))
+							fmt.Fprintf(transcript, "\n[yellow::d]▸ used %s[-:-:-]\n[white::b]♦[-:-:-]  ", tview.Escape(name))
 						})
 					}
 				}
@@ -1096,7 +1126,8 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	// A one-column left margin so content isn't flush against the window edge.
 	main := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(nil, 1, 0, false).
-		AddItem(rows, 0, 1, true)
+		AddItem(rows, 0, 1, true).
+		AddItem(nil, 1, 0, false)
 	pages.AddPage("main", main, true, true)
 
 	// Grow the composer with its content (newlines) up to a cap, so a multi-line message
@@ -1217,13 +1248,25 @@ type view struct {
 func (v *view) add(it item)        { v.items = append(v.items, it) }
 func (v *view) notice(text string) { v.add(item{itemNotice, text}) }
 
-func (v *view) hasImages() bool {
-	for _, it := range v.items {
-		if it.kind == itemImage {
-			return true
+// drawUser paints the user turn as a full-width highlight bar (padded to the transcript
+// width), one bar per line, with a blank line before and after so a turn is easy to find.
+func (v *view) drawUser(text string) {
+	_, _, w, _ := v.tv.GetInnerRect()
+	fmt.Fprint(v.tv, "\n")
+	for i, line := range strings.Split(text, "\n") {
+		marker := " › "
+		if i > 0 {
+			marker = "   "
 		}
+		content := marker + line
+		if w > 0 {
+			if pad := w - len([]rune(content)); pad > 0 {
+				content += strings.Repeat(" ", pad)
+			}
+		}
+		fmt.Fprintf(v.tv, "[#e6edf3:#2d3f5e]%s[-:-]\n", tview.Escape(content))
 	}
-	return false
+	fmt.Fprint(v.tv, "\n")
 }
 
 // render repaints the whole transcript from the model: markdown for answers, plain for
@@ -1236,16 +1279,14 @@ func (v *view) render() {
 		case itemNotice:
 			fmt.Fprintf(v.tv, "%s\n", it.text)
 		case itemUser:
-			// The user turn: a › marker and the message on a subtle highlight, then a blank
-			// line to let it breathe before the reply.
-			fmt.Fprintf(v.tv, "\n[#e6edf3:#2d3f5e] › %s [-:-]\n\n", tview.Escape(it.text))
+			v.drawUser(it.text)
 		case itemTool:
 			fmt.Fprintf(v.tv, "[yellow::d]▸ used %s[-:-:-]\n", tview.Escape(it.text))
 		case itemAssistant:
 			if body := renderMarkdown(it.text); body != "" {
-				fmt.Fprintf(v.tv, "[green::b]♦[-:-:-]  %s\n", body)
+				fmt.Fprintf(v.tv, "[white::b]♦[-:-:-]  %s\n", body)
 			} else {
-				fmt.Fprint(v.tv, "[green::b]♦[-:-:-]\n")
+				fmt.Fprint(v.tv, "[white::b]♦[-:-:-]\n")
 			}
 		case itemImage:
 			v.drawImage(it.text)
