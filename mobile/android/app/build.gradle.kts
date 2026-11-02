@@ -18,8 +18,8 @@ android {
         // the status bar and keyboard are handled by classic insets + adjustResize.
         // Bump to 35+ for Play, handling edge-to-edge insets properly then.
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.1.1"
+        versionCode = 4
+        versionName = "0.1.2"
     }
 
     signingConfigs {
