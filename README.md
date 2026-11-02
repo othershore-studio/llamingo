@@ -28,7 +28,7 @@ to actually use — with real context management, chat history, MCP tools, image
 
 ## Tech
 
-- **Go** core + CLI + optional gateway (single static binary, dockerable / `.service`-friendly).
+- **Go** core + CLI (single static binary) — standard library first, few dependencies.
 - **One shared web UI** across shells; desktop via **Wails** (all-Go) — or Tauri if a true native mobile app is later wanted.
 - **No sync engine in the client** — v1 is single-machine with plain files you can point your own sync tool at;
   multi-device comes with the optional v2 gateway.
