@@ -3,8 +3,8 @@
 A sovereign, local-first chat client for **[llama.cpp](https://github.com/ggml-org/llama.cpp)** users — in the
 spirit of a desktop/mobile AI client, but for the models *you* run, on hardware *you* own.
 
-> **Status:** a working alpha — a Go core + CLI, a Svelte web UI, and a Wails desktop app, built and used against
-> real local models. Pre-release and iterating; see [`docs/roadmap.md`](docs/roadmap.md).
+> **Status:** a working alpha — a Go core + CLI, a Svelte web UI, a Wails desktop app, and an experimental Android
+> app, built and used against real local models. Pre-release and iterating; see [`docs/roadmap.md`](docs/roadmap.md).
 
 ## What it is
 
@@ -15,7 +15,7 @@ to actually use — with real context management, chat history, MCP tools, image
 - **Chat history & projects** as plain, portable files you own and can sync yourself.
 - **MCP** as a first-class citizen — the client runs the tool-call loop itself.
 - **Image generation** as a built-in tool (direct to forge/ComfyUI; an image-gen MCP optional).
-- **Desktop first**, with mobile and remote access as deliberate later phases.
+- **Desktop first**, with an **experimental Android app** already in the releases; remote/multi-device access is a deliberate later phase.
 
 ## What it is *not*
 
@@ -29,7 +29,7 @@ to actually use — with real context management, chat history, MCP tools, image
 ## Tech
 
 - **Go** core + CLI (single static binary) — standard library first, few dependencies.
-- **One shared web UI** across shells; desktop via **Wails** (all-Go) — or Tauri if a true native mobile app is later wanted.
+- **One shared web UI** across shells — desktop via **Wails**, Android via a **gomobile**-bound core in a WebView (all-Go, the same UI).
 - **No sync engine in the client** — v1 is single-machine with plain files you can point your own sync tool at;
   multi-device comes with the optional v2 gateway.
 
