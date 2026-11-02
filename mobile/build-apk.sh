@@ -11,8 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root
 
-echo "==> Building the web UI (clean: vite's emptyOutDir=false keeps old hashed assets)"
-rm -rf web/dist/assets
+echo "==> Building the web UI (vite clears dist/assets itself; keeps dist/.gitignore)"
 npm --prefix web run build
 
 echo "==> Copying the SPA into the embed dir (go:embed can't reach ../../web/dist)"
