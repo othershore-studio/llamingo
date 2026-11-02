@@ -34,6 +34,8 @@ import (
 const maxToolRounds = 8
 
 const helpText = "\n[::d]commands:\n" +
+	"  /new      start a fresh session\n" +
+	"  /resume   open a past session\n" +
 	"  /tools    turn tools on/off for this chat\n" +
 	"  /memory   show what's in saved memory\n" +
 	"  /prompt   show the system prompt sent to the model\n" +
@@ -50,6 +52,7 @@ type Session struct {
 	convID string
 	title  string
 	dir    string
+	projID store.ProjectID
 
 	msgs      []backend.Message
 	budget    contextbudget.Budget
@@ -61,15 +64,11 @@ type Session struct {
 // wires the native tool registry — memory, time/location, and the project file tools
 // (dir is the project root) — behind the permission gate, whose prompter is the
 // caller's: a tview consent modal live, a fake in tests.
-func Open(be backend.Backend, st *store.Store, dir string, prompter permission.Prompter) (*Session, error) {
+func Open(be backend.Backend, st *store.Store, dir string, prompter permission.Prompter, resume bool) (*Session, error) {
 	dir = filepath.Clean(dir)
 	proj, err := st.OpenProject(dir, filepath.Base(dir))
 	if err != nil {
 		return nil, fmt.Errorf("open project for %s: %w", dir, err)
-	}
-	sess, err := st.NewSession(proj.ID, "New session")
-	if err != nil {
-		return nil, fmt.Errorf("new session: %w", err)
 	}
 	gate := permission.New(prompter, permission.NewMemoryGrantStore())
 	reg := mcp.Combine(
@@ -77,7 +76,100 @@ func Open(be backend.Backend, st *store.Store, dir string, prompter permission.P
 		localtools.NewTool(func() string { return "" }),
 		filetools.NewTool(dir, gate, map[string]bool{}),
 	)
-	return &Session{be: be, st: st, reg: reg, convID: sess.ID, title: filepath.Base(dir), dir: dir}, nil
+	s := &Session{be: be, st: st, reg: reg, title: filepath.Base(dir), dir: dir, projID: proj.ID}
+	// -c resumes the project's most recent session; otherwise start a fresh one.
+	if resume {
+		if sessions, err := st.ListSessions(proj.ID); err == nil && len(sessions) > 0 {
+			return s, s.Load(sessions[0].ID)
+		}
+	}
+	sess, err := st.NewSession(proj.ID, "New session")
+	if err != nil {
+		return nil, fmt.Errorf("new session: %w", err)
+	}
+	s.convID = sess.ID
+	return s, nil
+}
+
+// Load replaces the session's conversation with an existing one's stored history — the
+// folded messages for context (store.Project drops display-only reasoning and the tool
+// trail, so thinking never re-enters the prompt).
+func (s *Session) Load(convID string) error {
+	entries, err := s.st.LoadConversation(convID)
+	if err != nil {
+		return err
+	}
+	s.convID = convID
+	s.msgs = messagesFrom(store.Project(entries))
+	s.lastTools = nil
+	return nil
+}
+
+// New starts a fresh session in the same project (inheriting its tool defaults).
+func (s *Session) New() error {
+	sess, err := s.st.NewSession(s.projID, "New session")
+	if err != nil {
+		return err
+	}
+	s.convID = sess.ID
+	s.msgs = nil
+	s.lastTools = nil
+	s.budget = contextbudget.Budget{}
+	return nil
+}
+
+// Sessions lists this project's saved sessions, newest first — for the /resume picker.
+func (s *Session) Sessions() ([]store.ConversationMeta, error) {
+	return s.st.ListSessions(s.projID)
+}
+
+// HistoryItems renders the current session's stored conversation as display items —
+// user/assistant messages, the tool trail, and any compaction summary — for repainting
+// on resume. Reasoning traces are display-only thinking and left out.
+func (s *Session) HistoryItems() []item {
+	entries, err := s.st.LoadConversation(s.convID)
+	if err != nil {
+		return nil
+	}
+	return historyItems(entries)
+}
+
+// messagesFrom projects stored entries to model messages (mirrors httpapi's
+// messagesFromEntries): a compaction summary stands in as a system note, the rest carry
+// their role. Call it with store.Project(entries) so folded and display-only entries drop.
+func messagesFrom(entries []store.Entry) []backend.Message {
+	msgs := make([]backend.Message, 0, len(entries))
+	for _, e := range entries {
+		if e.Kind == store.KindSummary {
+			msgs = append(msgs, backend.Message{Role: backend.RoleSystem, Content: "Summary of earlier conversation:\n" + e.Content})
+			continue
+		}
+		msgs = append(msgs, backend.Message{Role: backend.Role(e.Role), Content: e.Content})
+	}
+	return msgs
+}
+
+// historyItems maps a conversation's raw entries to display items: user/assistant
+// messages, the tool trail (name in Content), and a compaction summary as a dim notice.
+// Reasoning traces are display-only thinking and skipped on reload.
+func historyItems(entries []store.Entry) []item {
+	var items []item
+	for _, e := range entries {
+		switch e.Kind {
+		case store.KindMessage:
+			switch e.Role {
+			case "user":
+				items = append(items, item{itemUser, e.Content})
+			case "assistant":
+				items = append(items, item{itemAssistant, e.Content})
+			}
+		case store.KindToolCall:
+			items = append(items, item{itemTool, e.Content})
+		case store.KindSummary:
+			items = append(items, item{itemNotice, "[::d]— summary of earlier conversation —[-]\n[::d]" + tview.Escape(e.Content) + "[-]"})
+		}
+	}
+	return items
 }
 
 // Turn runs one exchange through mcp.Run: the model may call the native tools, each
@@ -312,15 +404,16 @@ func scopeLabel(s permission.Scope) string {
 
 // Run opens a session for dir and runs the interactive tview app until the user quits.
 // system, when non-empty (the -system flag), is the persona system prompt prepended to
-// every turn — shown by /prompt.
-func Run(be backend.Backend, st *store.Store, dir, system string) error {
+// every turn — shown by /prompt. resume (-c) opens the project's most recent session
+// instead of a fresh one.
+func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) error {
 	app := tview.NewApplication()
 	pages := tview.NewPages()
 	transcript := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	status := tview.NewTextView().SetDynamicColors(true)
 	input := tview.NewInputField().SetLabel("› ")
 
-	sess, err := Open(be, st, dir, &prompter{app: app, pages: pages, restore: input})
+	sess, err := Open(be, st, dir, &prompter{app: app, pages: pages, restore: input}, resume)
 	if err != nil {
 		return err
 	}
@@ -367,19 +460,80 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 			v.notice(fmt.Sprintf("[::d]tools: %d of %d on[-]", len(tools)-off, len(tools)))
 			v.render()
 		})
-		// Near-fullscreen with a small margin; the list scrolls inside its border.
-		layout := tview.NewFlex().
-			AddItem(nil, 2, 0, false).
-			AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-				AddItem(nil, 1, 0, false).
-				AddItem(list, 0, 1, true).
-				AddItem(nil, 1, 0, false), 0, 1, true).
-			AddItem(nil, 2, 0, false)
-		pages.AddPage("tools", layout, true, true)
+		pages.AddPage("tools", centeredModal(list), true, true)
 		app.SetFocus(list)
 	}
 
 	busy := false
+
+	// reload repaints the transcript from the current session's stored history (after a
+	// /new or /resume, and on startup) and re-meters the budget in the background, so the
+	// status bar reflects the loaded context without blocking on a tokenize round-trip.
+	reload := func() {
+		v.items = sess.HistoryItems()
+		setStatus()
+		v.render()
+		if len(sess.msgs) == 0 {
+			return
+		}
+		segs := sess.segments()
+		go func() {
+			if b, err := contextbudget.New(be).Estimate(context.Background(), segs); err == nil {
+				app.QueueUpdateDraw(func() {
+					if !busy { // a turn would re-meter; don't clobber one in flight
+						sess.budget = b
+						setStatus()
+					}
+				})
+			}
+		}()
+	}
+
+	// showResume overlays a picker of the project's saved sessions (newest first); Enter
+	// opens one, Esc cancels. The terminal face of the desktop session list.
+	showResume := func() {
+		sessions, err := sess.Sessions()
+		if err != nil {
+			v.notice("[red]resume: " + tview.Escape(err.Error()) + "[-]")
+			v.render()
+			return
+		}
+		if len(sessions) == 0 {
+			v.notice("[::d]no saved sessions to resume[-]")
+			v.render()
+			return
+		}
+		list := tview.NewList().ShowSecondaryText(true)
+		list.SetBorder(true).SetTitle(" resume — Enter opens · Esc cancels ")
+		for _, m := range sessions {
+			title := strings.TrimSpace(m.Title)
+			if title == "" {
+				title = "(untitled)"
+			}
+			marker := "  "
+			if m.ID == sess.convID {
+				marker = "▸ " // the session open now
+			}
+			list.AddItem(marker+tview.Escape(title), tview.Escape(m.Updated.Local().Format("Jan 2 15:04")), 0, nil)
+		}
+		list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
+			pages.RemovePage("resume")
+			app.SetFocus(input)
+			if err := sess.Load(sessions[i].ID); err != nil {
+				v.notice("[red]resume: " + tview.Escape(err.Error()) + "[-]")
+				v.render()
+				return
+			}
+			reload()
+		})
+		list.SetDoneFunc(func() {
+			pages.RemovePage("resume")
+			app.SetFocus(input)
+		})
+		pages.AddPage("resume", centeredModal(list), true, true)
+		app.SetFocus(list)
+	}
+
 	input.SetDoneFunc(func(key tcell.Key) {
 		if key != tcell.KeyEnter || busy {
 			return
@@ -396,6 +550,17 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 				return
 			case "/tools":
 				showTools()
+				return
+			case "/new":
+				if err := sess.New(); err != nil {
+					v.notice("[red]new session: " + tview.Escape(err.Error()) + "[-]")
+					v.render()
+					return
+				}
+				reload()
+				return
+			case "/resume":
+				showResume()
 				return
 			case "/memory":
 				mem, tampered, err := sess.Memory()
@@ -523,7 +688,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string) error {
 		AddItem(status, 1, 0, false)
 	pages.AddPage("main", flex, true, true)
 
-	v.render()
+	reload()
 	return app.SetRoot(pages, true).SetFocus(input).Run()
 }
 
@@ -569,6 +734,19 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// centeredModal frames a primitive near-fullscreen with a small margin; the inner
+// primitive (a scrollable list) handles overflow within its border. Shared by the tools
+// and resume pickers.
+func centeredModal(p tview.Primitive) tview.Primitive {
+	return tview.NewFlex().
+		AddItem(nil, 2, 0, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 1, 0, false).
+			AddItem(p, 0, 1, true).
+			AddItem(nil, 1, 0, false), 0, 1, true).
+		AddItem(nil, 2, 0, false)
 }
 
 // blockString is a dimmed, titled block for the inspection commands (/memory, /prompt),

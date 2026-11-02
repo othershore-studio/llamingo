@@ -36,7 +36,7 @@ func TestSessionTurnAgainstFake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := Open(be, st, t.TempDir(), allowPrompter{})
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestSessionToolCuration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := Open(be, st, t.TempDir(), allowPrompter{})
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestSessionSystemSegments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := Open(be, st, t.TempDir(), allowPrompter{})
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,4 +217,64 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// Resume reopens the project's most recent session with its history loaded (into both the
+// model context and the display), /new starts a distinct empty session, and both show up
+// in the session list — the terminal analogue of the desktop's multi-session loop.
+func TestSessionResumeAndNew(t *testing.T) {
+	srv := lcpptest.NewServer()
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	// First session: one turn, persisted.
+	s1, err := Open(be, st, dir, allowPrompter{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Turn(context.Background(), "Hi", nil); err != nil {
+		t.Fatal(err)
+	}
+	firstID := s1.convID
+
+	// Reopen with resume: the same session, its prior exchange loaded for context and
+	// display.
+	s2, err := Open(be, st, dir, allowPrompter{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.convID != firstID {
+		t.Errorf("resume opened %q, want the last session %q", s2.convID, firstID)
+	}
+	if len(s2.msgs) < 2 {
+		t.Errorf("resumed msgs = %d, want the prior user + assistant", len(s2.msgs))
+	}
+	if len(s2.HistoryItems()) == 0 {
+		t.Error("resumed history produced no display items")
+	}
+
+	// /new starts a distinct, empty session.
+	if err := s2.New(); err != nil {
+		t.Fatal(err)
+	}
+	if s2.convID == firstID {
+		t.Error("New did not switch away from the resumed session")
+	}
+	if len(s2.msgs) != 0 {
+		t.Errorf("new session msgs = %d, want 0", len(s2.msgs))
+	}
+
+	// Both sessions are listed for the picker.
+	sessions, err := s2.Sessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("sessions = %d, want 2", len(sessions))
+	}
 }
