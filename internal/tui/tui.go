@@ -61,14 +61,14 @@ type Session struct {
 	dir    string
 	projID store.ProjectID
 
-	msgs      []backend.Message
-	budget    contextbudget.Budget
-	system    string
-	lastTools []string              // tool names from the most recent turn, for the display trail
-	servers   []*mcp.ServerRegistry // connected MCP servers, closed on exit
-	notes     []string              // startup notices (MCP / image status), shown once
-	lastImage image.Image           // the most recent generated image, for the viewer
-	newImage  bool                  // an image was generated this turn (auto-show it)
+	msgs       []backend.Message
+	budget     contextbudget.Budget
+	system     string
+	lastTools  []string              // tool names from the most recent turn, for the display trail
+	servers    []*mcp.ServerRegistry // connected MCP servers, closed on exit
+	notes      []string              // startup notices (MCP / image status), shown once
+	images     []image.Image         // all images generated this session, for the viewer
+	turnImages int                   // how many were generated this turn (auto-show them)
 }
 
 // Open anchors a new session to dir's project (the same project the desktop opens) and
@@ -206,8 +206,8 @@ func (k sessionSink) Save(ctx context.Context, name string, data []byte) (string
 		// auto-show after a generating turn). A non-image or undecodable payload is just
 		// saved, not shown.
 		if img, _, derr := image.Decode(bytes.NewReader(data)); derr == nil {
-			k.s.lastImage = img
-			k.s.newImage = true
+			k.s.images = append(k.s.images, img)
+			k.s.turnImages++
 		}
 	}
 	return ref, err
@@ -320,7 +320,7 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 		return nil
 	}
 	s.lastTools = nil
-	s.newImage = false
+	s.turnImages = 0
 	s.msgs = append(s.msgs, backend.Message{Role: backend.RoleUser, Content: input})
 	if _, err := s.st.AppendMessage(s.convID, "user", input); err != nil {
 		return err
@@ -412,6 +412,42 @@ func (s *Session) Budget() contextbudget.Budget { return s.budget }
 // Tools is the full native toolset offered in this project, before per-chat curation —
 // the set the /tools view toggles over.
 func (s *Session) Tools() []backend.ToolDef { return s.reg.Tools() }
+
+// toolGroup is a tool paired with where it comes from, for the /tools view.
+type toolGroup struct {
+	def   backend.ToolDef
+	label string // "system" or "mcp · <server>"
+}
+
+// GroupedTools returns the toolset labeled by source and ordered System-first, then each
+// MCP server's — so /tools makes clear what is native and what a server provides.
+func (s *Session) GroupedTools() []toolGroup {
+	mcpOf := map[string]string{}
+	for _, sr := range s.servers {
+		for _, g := range sr.ToolsByServer() {
+			for _, t := range g.Tools {
+				mcpOf[t.Name] = g.Server
+			}
+		}
+	}
+	tools := s.reg.Tools()
+	out := make([]toolGroup, len(tools))
+	for i, t := range tools {
+		label := "system"
+		if srv := mcpOf[t.Name]; srv != "" {
+			label = "mcp · " + srv
+		}
+		out[i] = toolGroup{def: t, label: label}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		si, sj := out[i].label == "system", out[j].label == "system"
+		if si != sj {
+			return si // System tools first
+		}
+		return out[i].label < out[j].label // then grouped by MCP server name
+	})
+	return out
+}
 
 // Memory is the personal memory and whether it was last edited outside the app.
 func (s *Session) Memory() (string, bool, error) { return s.st.Memory() }
@@ -578,26 +614,35 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	// toggles (persisted per-chat, applied next turn); Esc closes. The terminal face of
 	// the desktop Tools panel.
 	showTools := func() {
-		tools := sess.Tools()
-		if len(tools) == 0 {
+		groups := sess.GroupedTools()
+		if len(groups) == 0 {
 			v.notice("[::d]no tools in this project[-]")
 			v.render()
 			return
 		}
+		// Each row's secondary line names the source — "system" or "mcp · <server>" — so
+		// it's clear what's native and what a server provides; the list is System-first.
+		secondary := func(g toolGroup) string {
+			s := g.label
+			if d := firstLine(g.def.Description); d != "" {
+				s += " · " + truncate(d, 44)
+			}
+			return tview.Escape(s)
+		}
 		list := tview.NewList().ShowSecondaryText(true)
-		list.SetBorder(true).SetTitle(" tools — Enter toggles · Esc closes ")
-		for _, t := range tools {
-			list.AddItem(mark(sess.disabledSet()[t.Name])+" "+t.Name, tview.Escape(truncate(firstLine(t.Description), 64)), 0, nil)
+		list.SetBorder(true).SetTitle(" tools — system / mcp · Enter toggles · Esc closes ")
+		for _, g := range groups {
+			list.AddItem(mark(sess.disabledSet()[g.def.Name])+" "+g.def.Name, secondary(g), 0, nil)
 		}
 		list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
-			nowDisabled, _ := sess.ToggleTool(tools[i].Name)
-			list.SetItemText(i, mark(nowDisabled)+" "+tools[i].Name, tview.Escape(truncate(firstLine(tools[i].Description), 64)))
+			nowDisabled, _ := sess.ToggleTool(groups[i].def.Name)
+			list.SetItemText(i, mark(nowDisabled)+" "+groups[i].def.Name, secondary(groups[i]))
 		})
 		list.SetDoneFunc(func() {
 			pages.RemovePage("tools")
 			app.SetFocus(input)
 			off := len(sess.disabledSet())
-			v.notice(fmt.Sprintf("[::d]tools: %d of %d on[-]", len(tools)-off, len(tools)))
+			v.notice(fmt.Sprintf("[::d]tools: %d of %d on[-]", len(groups)-off, len(groups)))
 			v.render()
 		})
 		pages.AddPage("tools", centeredModal(list), true, true)
@@ -674,14 +719,33 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		app.SetFocus(list)
 	}
 
-	// showImage displays a generated image in a centered modal — tview's Image primitive,
-	// drawn as colored blocks (or sixel where the terminal supports it). Esc closes it
-	// (handled in the global capture, since the primitive has no key handling of its own).
-	showImage := func(img image.Image) {
-		iv := tview.NewImage().SetImage(img).SetColors(tview.TrueColor)
-		iv.SetBorder(true).SetTitle(" image — Esc closes ")
-		pages.AddPage("image", centeredModal(iv), true, true)
-		app.SetFocus(iv)
+	// Image viewer: a reused Image primitive over a slice of images, navigated with ←/→
+	// from the global key capture (the primitive has no key handling of its own). Drawn as
+	// colored blocks, or sixel where the terminal supports it.
+	viewer := tview.NewImage().SetColors(tview.TrueColor)
+	viewer.SetBorder(true)
+	var viewerImgs []image.Image
+	viewerIdx := 0
+	drawViewer := func() {
+		viewer.SetImage(viewerImgs[viewerIdx])
+		hint := "Esc closes"
+		if len(viewerImgs) > 1 {
+			hint = "←/→ browse · Esc closes"
+		}
+		viewer.SetTitle(fmt.Sprintf(" image %d/%d — %s ", viewerIdx+1, len(viewerImgs), hint))
+	}
+	showImages := func(imgs []image.Image, start int) {
+		if len(imgs) == 0 {
+			return
+		}
+		viewerImgs = imgs
+		viewerIdx = start
+		if viewerIdx < 0 || viewerIdx >= len(imgs) {
+			viewerIdx = len(imgs) - 1
+		}
+		drawViewer()
+		pages.AddPage("image", centeredModal(viewer), true, true)
+		app.SetFocus(viewer)
 	}
 
 	input.SetDoneFunc(func(key tcell.Key) {
@@ -713,11 +777,11 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				showResume()
 				return
 			case "/image":
-				if sess.lastImage == nil {
+				if len(sess.images) == 0 {
 					v.notice("[::d]no image yet — ask the model to generate one[-]")
 					v.render()
 				} else {
-					showImage(sess.lastImage)
+					showImages(sess.images, len(sess.images)-1)
 				}
 				return
 			case "/memory":
@@ -805,11 +869,16 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				v.render()
 				setStatus()
 				busy = false
-				// An image was generated this turn: note it and pop the viewer.
-				if sess.newImage && sess.lastImage != nil {
-					v.notice("[::d]image generated · /image to view again[-]")
+				// Images were generated this turn: note it and pop the viewer at the first
+				// new one (←/→ browses any others).
+				if sess.turnImages > 0 {
+					label := "image generated"
+					if sess.turnImages > 1 {
+						label = fmt.Sprintf("%d images generated", sess.turnImages)
+					}
+					v.notice("[::d]" + label + " · /image to view again[-]")
 					v.render()
-					showImage(sess.lastImage)
+					showImages(sess.images, len(sess.images)-sess.turnImages)
 				}
 			})
 		}()
@@ -825,6 +894,19 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 			if name, _ := pages.GetFrontPage(); name == "image" {
 				pages.RemovePage("image")
 				app.SetFocus(input)
+				return nil
+			}
+			return ev
+		case tcell.KeyLeft, tcell.KeyRight:
+			// Browse the open image viewer; otherwise the input field keeps its cursor keys.
+			if name, _ := pages.GetFrontPage(); name == "image" {
+				if ev.Key() == tcell.KeyLeft && viewerIdx > 0 {
+					viewerIdx--
+					drawViewer()
+				} else if ev.Key() == tcell.KeyRight && viewerIdx < len(viewerImgs)-1 {
+					viewerIdx++
+					drawViewer()
+				}
 				return nil
 			}
 			return ev

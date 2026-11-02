@@ -353,7 +353,7 @@ func TestSessionSinkCapturesImage(t *testing.T) {
 	if ref != "attachments/gen.png" {
 		t.Errorf("ref = %q, want attachments/gen.png", ref)
 	}
-	if sess.lastImage == nil || !sess.newImage {
-		t.Errorf("image not captured: lastImage set=%v newImage=%v", sess.lastImage != nil, sess.newImage)
+	if len(sess.images) != 1 || sess.turnImages != 1 {
+		t.Errorf("image not captured: images=%d turnImages=%d, want 1 each", len(sess.images), sess.turnImages)
 	}
 }
