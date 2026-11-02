@@ -6,11 +6,15 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
+	"github.com/othershore-studio/llamingo/internal/imagegen"
 	"github.com/othershore-studio/llamingo/internal/lcpptest"
 	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/permission"
@@ -276,5 +280,45 @@ func TestSessionResumeAndNew(t *testing.T) {
 	}
 	if len(sessions) != 2 {
 		t.Errorf("sessions = %d, want 2", len(sessions))
+	}
+}
+
+// With a Forge URL and at least one image model configured, Open wires the
+// image-generation tool into the registry — generate_image is offered in the TUI exactly
+// as in the desktop. No Forge connection happens until the tool is called, so a fake URL
+// is fine here.
+func TestSessionWiresImageTool(t *testing.T) {
+	srv := lcpptest.NewServer()
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetConfig(store.Config{ForgeURL: "http://forge.invalid:7860"}); err != nil {
+		t.Fatal(err)
+	}
+	cfgJSON, err := json.Marshal(imagegen.Config{Default: "m", Models: []imagegen.ModelConfig{{Name: "m"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(st.Root(), "imagegen.json"), cfgJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	found := false
+	for _, tl := range sess.Tools() {
+		if tl.Name == imagegen.ToolName {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("image tool %q not wired; registry has %d tools", imagegen.ToolName, len(sess.Tools()))
 	}
 }

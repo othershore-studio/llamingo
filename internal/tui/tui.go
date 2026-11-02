@@ -13,6 +13,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
 	"github.com/othershore-studio/llamingo/internal/filetools"
+	"github.com/othershore-studio/llamingo/internal/imagegen"
 	"github.com/othershore-studio/llamingo/internal/localtools"
 	"github.com/othershore-studio/llamingo/internal/mcp"
 	"github.com/othershore-studio/llamingo/internal/memtool"
@@ -57,7 +59,9 @@ type Session struct {
 	msgs      []backend.Message
 	budget    contextbudget.Budget
 	system    string
-	lastTools []string // tool names from the most recent turn, for the display trail
+	lastTools []string              // tool names from the most recent turn, for the display trail
+	servers   []*mcp.ServerRegistry // connected MCP servers, closed on exit
+	notes     []string              // startup notices (MCP / image status), shown once
 }
 
 // Open anchors a new session to dir's project (the same project the desktop opens) and
@@ -70,13 +74,32 @@ func Open(be backend.Backend, st *store.Store, dir string, prompter permission.P
 	if err != nil {
 		return nil, fmt.Errorf("open project for %s: %w", dir, err)
 	}
+	s := &Session{be: be, st: st, title: filepath.Base(dir), dir: dir, projID: proj.ID}
+
+	// The native tools, then the user's MCP servers and image generation — the same
+	// toolset the desktop assembles (see httpapi.registryFor), so a tool works in both.
+	// One gate (prompter + grants) is shared across the gated tools; global MCP servers
+	// are user-authored and run trusted (nil gate), project .mcp.json is gated.
 	gate := permission.New(prompter, permission.NewMemoryGrantStore())
-	reg := mcp.Combine(
+	regs := []mcp.Registry{
 		memtool.NewTool(st, gate),
-		localtools.NewTool(func() string { return "" }),
+		localtools.NewTool(func() string { c, _ := st.Config(); return c.Location }),
 		filetools.NewTool(dir, gate, map[string]bool{}),
-	)
-	s := &Session{be: be, st: st, reg: reg, title: filepath.Base(dir), dir: dir, projID: proj.ID}
+	}
+	if g := s.connectServers(mcp.NewRegistry(nil), globalMCPPath(st.Root()), ""); g != nil {
+		regs = append(regs, g)
+	}
+	if p := s.connectServers(mcp.NewRegistry(gate), "", projectMCPPath(dir)); p != nil {
+		regs = append(regs, p)
+	}
+	imageOn := false
+	if img := imageTool(st, s, gate); img != nil {
+		regs = append(regs, img)
+		imageOn = true
+	}
+	s.reg = mcp.Combine(regs...)
+	s.summarizeTools(imageOn)
+
 	// -c resumes the project's most recent session; otherwise start a fresh one.
 	if resume {
 		if sessions, err := st.ListSessions(proj.ID); err == nil && len(sessions) > 0 {
@@ -90,6 +113,104 @@ func Open(be backend.Backend, st *store.Store, dir string, prompter permission.P
 	s.convID = sess.ID
 	return s, nil
 }
+
+// connectServers loads one MCP config (global XOR project — pass "" for the other) and
+// connects each declared server into reg, tracking it for Close. A server that won't
+// start is noted and skipped, never fatal. Returns nil when none connected, so an empty
+// registry isn't combined in.
+func (s *Session) connectServers(reg *mcp.ServerRegistry, globalPath, projectPath string) *mcp.ServerRegistry {
+	servers, err := mcp.Load(globalPath, projectPath)
+	if err != nil {
+		s.notes = append(s.notes, "[red]mcp: config error: "+tview.Escape(err.Error())+"[-]")
+	}
+	n := 0
+	for _, srv := range servers {
+		c, err := mcp.Connect(srv)
+		if err != nil {
+			s.notes = append(s.notes, "[yellow]mcp: couldn't start "+tview.Escape(srv.Name)+"[-]")
+			continue
+		}
+		if err := reg.Add(context.Background(), srv, c); err != nil {
+			s.notes = append(s.notes, "[yellow]mcp: "+tview.Escape(srv.Name)+" — "+tview.Escape(err.Error())+"[-]")
+			_ = c.Close()
+			continue
+		}
+		n++
+	}
+	if n == 0 {
+		reg.Close()
+		return nil
+	}
+	s.servers = append(s.servers, reg)
+	return reg
+}
+
+// summarizeTools adds a one-line startup note of the MCP tools available and whether image
+// generation is on, so parity is visible at a glance (the detail is in /tools).
+func (s *Session) summarizeTools(imageOn bool) {
+	mcpTools := 0
+	for _, sr := range s.servers {
+		mcpTools += len(sr.Tools())
+	}
+	if mcpTools == 0 && !imageOn {
+		return
+	}
+	img := "off"
+	if imageOn {
+		img = "on"
+	}
+	s.notes = append(s.notes, fmt.Sprintf("[::d]tools: %d from MCP · image generation %s[-]", mcpTools, img))
+}
+
+// Close shuts the session's MCP server connections. Called once, on exit.
+func (s *Session) Close() {
+	for _, sr := range s.servers {
+		sr.Close()
+	}
+	s.servers = nil
+}
+
+// imageTool builds the image-generation tool when a Forge URL (config or
+// LLAMINGO_FORGE_URL) and at least one model are configured, else nil. Its sink saves into
+// the session's current conversation, resolved per call so /new and /resume follow.
+func imageTool(st *store.Store, s *Session, gate *permission.Gate) mcp.Registry {
+	cfg, _ := st.Config()
+	url := cfg.ForgeURL
+	if url == "" {
+		url = os.Getenv("LLAMINGO_FORGE_URL")
+	}
+	if url == "" {
+		return nil
+	}
+	imgCfg, err := imagegen.LoadConfig(filepath.Join(st.Root(), "imagegen.json"))
+	if err != nil || len(imgCfg.Models) == 0 {
+		return nil
+	}
+	return imagegen.NewTool(imagegen.NewForgeNeo(url), sessionSink{s}, gate, imgCfg)
+}
+
+// sessionSink saves generated image bytes into the session's current conversation.
+type sessionSink struct{ s *Session }
+
+func (k sessionSink) Save(ctx context.Context, name string, data []byte) (string, error) {
+	return k.s.st.SaveAttachment(k.s.convID, name, data)
+}
+
+// globalMCPPath is the global MCP config in the store root (mcp.json, or a copied-in
+// .mcp.json), mirroring httpapi so the TUI and desktop read the same servers.
+func globalMCPPath(root string) string {
+	plain := filepath.Join(root, "mcp.json")
+	if _, err := os.Stat(plain); err == nil {
+		return plain
+	}
+	dotted := filepath.Join(root, ".mcp.json")
+	if _, err := os.Stat(dotted); err == nil {
+		return dotted
+	}
+	return plain
+}
+
+func projectMCPPath(root string) string { return filepath.Join(root, ".mcp.json") }
 
 // Load replaces the session's conversation with an existing one's stored history — the
 // folded messages for context (store.Project drops display-only reasoning and the tool
@@ -417,6 +538,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	if err != nil {
 		return err
 	}
+	defer sess.Close()
 	sess.system = system
 	model, nctx := "unknown model", 0
 	if props, perr := be.Props(context.Background()); perr == nil {
@@ -689,6 +811,12 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	pages.AddPage("main", flex, true, true)
 
 	reload()
+	for _, n := range sess.notes {
+		v.notice(n)
+	}
+	if len(sess.notes) > 0 {
+		v.render()
+	}
 	return app.SetRoot(pages, true).SetFocus(input).Run()
 }
 
