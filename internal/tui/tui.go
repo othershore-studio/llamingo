@@ -51,6 +51,7 @@ const helpText = "\n[::d]commands:\n" +
 	"  /prompt   show the system prompt sent to the model\n" +
 	"  /thought  show the model's thinking for the last turn\n" +
 	"  /image    view the last generated image\n" +
+	"  /mouse    toggle wheel-scroll (off = select & copy text)\n" +
 	"  /clear    clear the view\n" +
 	"  /help     this list\n" +
 	"  /exit     quit (or Ctrl+C)[-]\n"
@@ -783,6 +784,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	}
 
 	busy := false
+	mouseOn := false
 
 	// reload repaints the transcript from the current session's stored history (after a
 	// /new or /resume, and on startup) and re-meters the budget in the background, so the
@@ -946,6 +948,16 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				return
 			case "/thought", "/thinking":
 				showThought()
+				return
+			case "/mouse":
+				mouseOn = !mouseOn
+				app.EnableMouse(mouseOn)
+				if mouseOn {
+					v.notice("[::d]mouse on — wheel scrolls; select text with Shift+drag[-]")
+				} else {
+					v.notice("[::d]mouse off — mark + right-click to copy; PgUp/PgDn to scroll[-]")
+				}
+				v.render()
 				return
 			case "/memory":
 				mem, tampered, err := sess.Memory()
@@ -1147,7 +1159,8 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	if len(sess.notes) > 0 {
 		v.render()
 	}
-	app.EnableMouse(true) // wheel-scroll the transcript; click to position the cursor or pick a list item
+	// Mouse is off by default so the terminal's own text selection (mark + right-click to
+	// copy) keeps working; /mouse turns on wheel-scroll (then selection is Shift+drag).
 	return app.SetRoot(pages, true).SetFocus(input).Run()
 }
 
