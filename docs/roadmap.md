@@ -106,7 +106,7 @@ configuration niceties.
 
 **UI / UX**
 
-- **Responsive to window resizing** — the two-panel layout at narrow/wide sizes (toward the v2 PWA / mobile).
+- **Responsive to window resizing** — the two-panel layout at narrow/wide sizes (toward mobile).
 - **Frameless window + custom title bar** — Wails `Frameless` + a `--wails-draggable` header (like margin). The chrome
   is just HTML, so this is cheap.
 - **Per-message actions** — hover tools on each message (copy, …); fenced code blocks get a copy button. (The HTML UI
@@ -145,7 +145,7 @@ The **optional** small server that earns its place only when you leave the LAN.
 - Auth + reverse-proxy to llama.cpp + **application-layer sync** of the `chat/` root (data only; each device rebuilds
   its own index — the DB is never on the wire). Dockerable / `.service`-friendly; bearer-token, auth-proxy posture, no
   OAuth inside.
-- Serves the same web UI as a **PWA** → mobile without a native-app lift.
+- Serves the same web UI over the network for **off-LAN access** — the local Android app already ships in v1, so no separate mobile rebuild.
 - The same HTTP/SSE adapter from v1, exposed and authenticated — a deploy mode, not a rewrite.
 - *(Open: syncing the `chat/` root is the leaning; not finally committed.)*
 - **Client-compat exploration:** survey other popular clients' project formats and offer a per-project "compatible
@@ -161,7 +161,7 @@ The **optional** small server that earns its place only when you leave the LAN.
 
 - **Remoting `folder/` (project) sessions.** Intrinsically machine-local (they reference a filesystem path); would
   require projects to carry a stable, path-independent id. v3/v4/never.
-- A true native mobile app (Tauri 2) if the PWA proves insufficient.
+- A **fuller-native mobile UI** (beyond the current gomobile + WebView shell) if the shared web UI proves insufficient on a phone.
 
 ## Non-goals
 
