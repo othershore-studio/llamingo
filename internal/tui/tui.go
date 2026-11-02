@@ -13,12 +13,15 @@ package tui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/jpeg" // register decoders so a generated image can be shown
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -43,10 +46,13 @@ const maxToolRounds = 8
 const helpText = "\n[::d]commands:\n" +
 	"  /new      start a fresh session\n" +
 	"  /resume   open a past session\n" +
+	"  /model    switch connection / model\n" +
 	"  /tools    turn tools on/off for this chat\n" +
 	"  /memory   show what's in saved memory\n" +
 	"  /prompt   show the system prompt sent to the model\n" +
+	"  /thought  show the model's thinking for the last turn\n" +
 	"  /image    view the last generated image\n" +
+	"  /mouse    toggle wheel-scroll (off = select & copy text)\n" +
 	"  /clear    clear the view\n" +
 	"  /help     this list\n" +
 	"  /exit     quit (or Ctrl+C)[-]\n"
@@ -69,7 +75,8 @@ type Session struct {
 	servers    []*mcp.ServerRegistry // connected MCP servers, closed on exit
 	notes      []string              // startup notices (MCP / image status), shown once
 	images     []image.Image         // all images generated this session, for the viewer
-	turnImages int                   // how many were generated this turn (auto-show them)
+	turnImages int                   // how many were generated this turn
+	lastThink  string                // the most recent turn's thinking, for /thought
 }
 
 // Open anchors a new session to dir's project (the same project the desktop opens) and
@@ -260,7 +267,62 @@ func (s *Session) Load(convID string) error {
 	s.convID = convID
 	s.msgs = messagesFrom(store.Project(entries))
 	s.lastTools = nil
+	s.lastThink = lastReasoning(entries)
+	s.loadImages(convID)
 	return nil
+}
+
+// lastReasoning is the most recent captured thinking in a conversation (for /thought after
+// a resume), or empty if none.
+func lastReasoning(entries []store.Entry) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Kind == store.KindReasoning {
+			return entries[i].Content
+		}
+	}
+	return ""
+}
+
+// loadImages recovers a conversation's saved images from its attachments folder into the
+// in-memory viewer list, so /image works after a resume (the sink only fills the list
+// during live turns). Non-image files and decode failures are skipped.
+func (s *Session) loadImages(convID string) {
+	s.images = nil
+	names, err := s.st.ListAttachments(convID)
+	if err != nil {
+		return
+	}
+	for _, name := range names {
+		p, err := s.st.AttachmentPath(convID, name)
+		if err != nil {
+			continue
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		img, _, derr := image.Decode(f)
+		_ = f.Close()
+		if derr == nil {
+			s.images = append(s.images, img)
+		}
+	}
+}
+
+// resolveImage loads an attachment image by base name for inline rendering, decoded fresh
+// each call (cheap for chat-sized images).
+func (s *Session) resolveImage(name string) image.Image {
+	p, err := s.st.AttachmentPath(s.convID, name)
+	if err != nil {
+		return nil
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	img, _, _ := image.Decode(f)
+	return img
 }
 
 // New starts a fresh session: lazily, so nothing is written to disk until the first
@@ -269,6 +331,8 @@ func (s *Session) New() error {
 	s.convID = ""
 	s.msgs = nil
 	s.lastTools = nil
+	s.images = nil
+	s.lastThink = ""
 	s.budget = contextbudget.Budget{}
 	return nil
 }
@@ -316,10 +380,10 @@ func historyItems(entries []store.Entry) []item {
 			case "user":
 				items = append(items, item{itemUser, e.Content})
 			case "assistant":
-				items = append(items, item{itemAssistant, e.Content})
+				items = append(items, assistantItems(e.Content)...)
 			}
 		case store.KindToolCall:
-			items = append(items, item{itemTool, e.Content})
+			items = append(items, item{itemTool, e.Name}) // the tool name (args live in e.Content)
 		case store.KindSummary:
 			items = append(items, item{itemNotice, "[::d]— summary of earlier conversation —[-]\n[::d]" + tview.Escape(e.Content) + "[-]"})
 		}
@@ -348,7 +412,7 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 
 	bld := contextbudget.New(s.be)
 	segs := s.segments()
-	if b, err := bld.Estimate(ctx, segs); err == nil {
+	if b, err := bld.Estimate(ctx, s.budgetSegments()); err == nil {
 		s.budget = b
 	}
 
@@ -373,6 +437,7 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 	if err != nil {
 		return err
 	}
+	s.lastThink = think.String()
 
 	// Shape the saved answer like the desktop does (internal/toolreply): strip ReAct
 	// scratch, and recover an image from the tool result when the model forgot to show it —
@@ -418,6 +483,20 @@ func (s *Session) systemSegments() []contextbudget.Segment {
 		segs = append(segs, contextbudget.Segment{Name: "memory", Messages: []backend.Message{{Role: backend.RoleSystem, Content: "Personal memory:\n" + mem}}})
 	}
 	return segs
+}
+
+// budgetSegments is what to meter for the status bar: the system framing, the offered
+// tools (their schemas are a big chunk the chat template injects — so the context reads
+// honestly, not short), then the conversation. The tools go in here only, not into the
+// real turn (mcp.Run passes them to the backend); mirrors the desktop's budgetTools.
+func (s *Session) budgetSegments() []contextbudget.Segment {
+	segs := s.systemSegments()
+	if tools := mcp.Curate(s.reg, s.disabledSet()).Tools(); len(tools) > 0 {
+		if b, err := json.Marshal(tools); err == nil {
+			segs = append(segs, contextbudget.Segment{Name: "tools", Messages: []backend.Message{{Role: backend.RoleSystem, Content: "Tools available:\n" + string(b)}}})
+		}
+	}
+	return append(segs, contextbudget.Segment{Name: "conversation", Messages: s.msgs})
 }
 
 // workdirNote tells the model its working directory so it refers to files by relative
@@ -612,7 +691,8 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	pages := tview.NewPages()
 	transcript := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
 	status := tview.NewTextView().SetDynamicColors(true)
-	input := tview.NewInputField().SetLabel("› ")
+	input := tview.NewTextArea().SetLabel("› ").SetPlaceholder("message — Enter sends · Ctrl+J for a newline")
+	input.SetWrap(true).SetWordWrap(true)
 
 	sess, err := Open(be, st, dir, &prompter{app: app, pages: pages, restore: input}, resume)
 	if err != nil {
@@ -624,16 +704,45 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	if props, perr := be.Props(context.Background()); perr == nil {
 		model, nctx = modelName(props.ModelID), props.NCtx
 	}
+	// Prefer the active connection's alias (what the desktop shows) over the raw model file.
+	label := model
+	if cfg, err := st.Config(); err == nil {
+		for _, c := range cfg.Connections {
+			if c.ID == cfg.ActiveID && strings.TrimSpace(c.Name) != "" {
+				label = c.Name
+				break
+			}
+		}
+	}
 
 	setStatus := func() {
 		b := sess.Budget()
 		status.Clear()
-		fmt.Fprintf(status, "[::d]%s · %s · ctx %d/%d[-]", sess.title, model, b.Used(), nctx)
+		// Colour the context by fill level — a calm→amber→red cue toward the limit.
+		ctxColor := "green"
+		switch b.Level() {
+		case contextbudget.LevelNear:
+			ctxColor = "yellow"
+		case contextbudget.LevelFull:
+			ctxColor = "red"
+		}
+		fmt.Fprintf(status, "[::d]%s · %s · [-][%s]ctx %d/%d[-]", sess.title, tview.Escape(label), ctxColor, b.Used(), nctx)
 	}
 	setStatus()
 
-	welcome := fmt.Sprintf("[::d]llaminGO · %s · %s — type a message, /help for commands, Ctrl+C or /exit to quit[-]\n", sess.title, model)
-	v := &view{tv: transcript, welcome: welcome}
+	welcome := fmt.Sprintf("[::d]llaminGO · %s · %s — type a message, /help for commands, Ctrl+C or /exit to quit[-]\n", sess.title, label)
+	v := &view{tv: transcript, welcome: welcome, resolve: sess.resolveImage}
+
+	// Re-render inline images when the transcript width changes (the first draw, or a
+	// resize), so they fit the real width instead of the pre-draw placeholder.
+	lastWidth := 0
+	transcript.SetDrawFunc(func(_ tcell.Screen, _, _, width, _ int) (int, int, int, int) {
+		if width != lastWidth {
+			lastWidth = width
+			go app.QueueUpdateDraw(v.render) // re-fit width-dependent content (bars, images)
+		}
+		return transcript.GetInnerRect()
+	})
 
 	// showTools overlays a scrollable toggle list of the project's native tools — a
 	// filled dot is on, hollow off — so a small model's toolset can be trimmed. Enter
@@ -676,20 +785,27 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	}
 
 	busy := false
+	mouseOn := false
 
 	// reload repaints the transcript from the current session's stored history (after a
 	// /new or /resume, and on startup) and re-meters the budget in the background, so the
 	// status bar reflects the loaded context without blocking on a tokenize round-trip.
 	reload := func() {
 		v.items = sess.HistoryItems()
+		if n := len(sess.images); n > 0 { // a resumed chat's saved images are viewable
+			noun := "image"
+			if n > 1 {
+				noun = "images"
+			}
+			v.notice(fmt.Sprintf("[::d]%d %s in this chat · /image to view[-]", n, noun))
+		}
 		setStatus()
 		v.render()
-		if len(sess.msgs) == 0 {
-			return
-		}
-		segs := sess.segments()
+		// Meter the context — tools included — in the background so the status bar reflects
+		// the real size without blocking on the tokenize round-trip.
+		segs := sess.budgetSegments()
 		go func() {
-			if b, err := contextbudget.New(be).Estimate(context.Background(), segs); err == nil {
+			if b, err := contextbudget.New(sess.be).Estimate(context.Background(), segs); err == nil {
 				app.QueueUpdateDraw(func() {
 					if !busy { // a turn would re-meter; don't clobber one in flight
 						sess.budget = b
@@ -698,6 +814,80 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				})
 			}
 		}()
+	}
+
+	// switchConnection points this session at another saved connection for the rest of the
+	// run — a fresh backend (its URL, token, sampling) and persona, then re-probe the model
+	// and re-meter. It doesn't change which connection is active globally (that stays the
+	// desktop's to set); it's a per-session switch.
+	switchConnection := func(c store.Connection) {
+		var opts []backend.Option
+		if c.Token != "" {
+			opts = append(opts, backend.WithToken(c.Token))
+		}
+		nbe := backend.New(c.URL, opts...)
+		nbe.SetSampling(c.Temperature, c.MinP)
+		sess.be = nbe
+		sess.system = c.SystemPrompt
+		label = c.Name
+		v.notice("[::d]switched to " + tview.Escape(c.Name) + "[-]")
+		v.render()
+		setStatus()
+		go func() {
+			if props, err := nbe.Props(context.Background()); err == nil {
+				app.QueueUpdateDraw(func() {
+					model, nctx = modelName(props.ModelID), props.NCtx
+					if strings.TrimSpace(label) == "" {
+						label = model
+					}
+					setStatus()
+				})
+			}
+			if b, err := contextbudget.New(nbe).Estimate(context.Background(), sess.budgetSegments()); err == nil {
+				app.QueueUpdateDraw(func() {
+					if !busy {
+						sess.budget = b
+						setStatus()
+					}
+				})
+			}
+		}()
+	}
+
+	// showModels overlays a picker of the saved connections (the desktop's named personas);
+	// Enter switches this session to one, Esc cancels.
+	showModels := func() {
+		cfg, err := st.Config()
+		if err != nil || len(cfg.Connections) == 0 {
+			v.notice("[::d]no saved connections — add them in the desktop app[-]")
+			v.render()
+			return
+		}
+		conns := cfg.Connections
+		list := tview.NewList().ShowSecondaryText(true)
+		list.SetBorder(true).SetTitle(" connection — Enter switches · Esc cancels ")
+		for _, c := range conns {
+			marker := "  "
+			if c.Name == label {
+				marker = "▸ "
+			}
+			secondary := c.URL
+			if strings.TrimSpace(c.SystemPrompt) != "" {
+				secondary += " · persona"
+			}
+			list.AddItem(marker+tview.Escape(c.Name), tview.Escape(secondary), 0, nil)
+		}
+		list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
+			pages.RemovePage("models")
+			app.SetFocus(input)
+			switchConnection(conns[i])
+		})
+		list.SetDoneFunc(func() {
+			pages.RemovePage("models")
+			app.SetFocus(input)
+		})
+		pages.AddPage("models", centeredModal(list), true, true)
+		app.SetFocus(list)
 	}
 
 	// showResume overlays a picker of the project's saved sessions (newest first); Enter
@@ -780,15 +970,30 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		app.SetFocus(viewer)
 	}
 
-	input.SetDoneFunc(func(key tcell.Key) {
-		if key != tcell.KeyEnter || busy {
+	// showThought overlays a scrollable window of the last turn's captured thinking, so you
+	// can read what the model reasoned before answering. Esc closes it.
+	showThought := func() {
+		if strings.TrimSpace(sess.lastThink) == "" {
+			v.notice("[::d]no thinking captured for the last turn[-]")
+			v.render()
+			return
+		}
+		tv := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true).SetWordWrap(true)
+		tv.SetBorder(true).SetTitle(" thinking — Esc closes · ↑/↓ scroll ")
+		fmt.Fprintf(tv, "[::d]%s[-]", tview.Escape(sess.lastThink))
+		pages.AddPage("thought", centeredModal(tv), true, true)
+		app.SetFocus(tv)
+	}
+
+	submit := func() {
+		if busy {
 			return
 		}
 		text := strings.TrimSpace(input.GetText())
 		if text == "" {
 			return
 		}
-		input.SetText("")
+		input.SetText("", false)
 		if strings.HasPrefix(text, "/") {
 			switch strings.ToLower(strings.Fields(text)[0]) {
 			case "/exit", "/quit", "/q":
@@ -808,6 +1013,9 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 			case "/resume":
 				showResume()
 				return
+			case "/model", "/connection":
+				showModels()
+				return
 			case "/image":
 				if len(sess.images) == 0 {
 					v.notice("[::d]no image yet — ask the model to generate one[-]")
@@ -815,6 +1023,19 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				} else {
 					showImages(sess.images, len(sess.images)-1)
 				}
+				return
+			case "/thought", "/thinking":
+				showThought()
+				return
+			case "/mouse":
+				mouseOn = !mouseOn
+				app.EnableMouse(mouseOn)
+				if mouseOn {
+					v.notice("[::d]mouse on — wheel scrolls; select text with Shift+drag[-]")
+				} else {
+					v.notice("[::d]mouse off — mark + right-click to copy; PgUp/PgDn to scroll[-]")
+				}
+				v.render()
 				return
 			case "/memory":
 				mem, tampered, err := sess.Memory()
@@ -859,13 +1080,13 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		v.render()
 		// Stream the reply raw as it arrives, for responsiveness; the completion repaint
 		// upgrades it to rendered markdown.
-		fmt.Fprint(transcript, "\n[green::b]llama[-:-:-]  ")
+		fmt.Fprint(transcript, "[white::b]♦[-:-:-]  ")
 		transcript.ScrollToEnd()
 
 		// Animate a "thinking…" spinner until the reply lands, so the pre-token gap
 		// (prompt processing / reasoning / a tool running) doesn't look dead.
 		spinStop := make(chan struct{})
-		go spinner(app, status, model, spinStop)
+		go spinner(app, status, label, spinStop)
 
 		go func() {
 			rerr := sess.Turn(context.Background(), text, func(d backend.Delta) error {
@@ -879,7 +1100,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 					for _, tc := range d.ToolCalls {
 						name := tc.Function.Name
 						app.QueueUpdateDraw(func() {
-							fmt.Fprintf(transcript, "\n[yellow::d]▸ used %s[-:-:-]\n[green::b]llama[-:-:-]  ", tview.Escape(name))
+							fmt.Fprintf(transcript, "\n[yellow::d]▸ used %s[-:-:-]\n[white::b]♦[-:-:-]  ", tview.Escape(name))
 						})
 					}
 				}
@@ -893,7 +1114,10 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 					v.add(item{itemTool, name})
 				}
 				if n := len(sess.msgs); n > 0 && sess.msgs[n-1].Role == backend.RoleAssistant {
-					v.add(item{itemAssistant, sess.msgs[n-1].Content})
+					// Split the answer at any image reference so the picture renders inline.
+					for _, it := range assistantItems(sess.msgs[n-1].Content) {
+						v.add(it)
+					}
 				}
 				if rerr != nil {
 					v.notice("[red]error: " + tview.Escape(rerr.Error()) + "[-]")
@@ -901,19 +1125,28 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				v.render()
 				setStatus()
 				busy = false
-				// Images were generated this turn: note it and pop the viewer at the first
-				// new one (←/→ browses any others).
-				if sess.turnImages > 0 {
-					label := "image generated"
-					if sess.turnImages > 1 {
-						label = fmt.Sprintf("%d images generated", sess.turnImages)
-					}
-					v.notice("[::d]" + label + " · /image to view again[-]")
+				if sess.turnImages > 0 { // it renders inline above; offer the crisp view
+					v.notice("[::d]· /image for a full-resolution view[-]")
 					v.render()
-					showImages(sess.images, len(sess.images)-sess.turnImages)
 				}
 			})
 		}()
+	}
+
+	// Composer keys: Enter sends; Ctrl+J (and Shift/Alt+Enter where the terminal reports
+	// the modifier) inserts a newline. The composer is a multi-line tview TextArea.
+	input.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Key() {
+		case tcell.KeyEnter:
+			if ev.Modifiers()&(tcell.ModShift|tcell.ModAlt) != 0 {
+				return tcell.NewEventKey(tcell.KeyEnter, '\n', tcell.ModNone) // newline
+			}
+			submit()
+			return nil // plain Enter sends
+		case tcell.KeyCtrlJ:
+			return tcell.NewEventKey(tcell.KeyEnter, '\n', tcell.ModNone) // newline
+		}
+		return ev
 	})
 
 	app.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
@@ -922,9 +1155,9 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 			app.Stop()
 			return nil
 		case tcell.KeyEscape:
-			// The image viewer has no key handling of its own; close it here.
-			if name, _ := pages.GetFrontPage(); name == "image" {
-				pages.RemovePage("image")
+			// The image and thought views have no key handling of their own; close here.
+			if name, _ := pages.GetFrontPage(); name == "image" || name == "thought" {
+				pages.RemovePage(name)
 				app.SetFocus(input)
 				return nil
 			}
@@ -968,11 +1201,34 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		return ev
 	})
 
-	flex := tview.NewFlex().SetDirection(tview.FlexRow).
+	// A thin full-width rule above and below the composer to set it off.
+	rule := func() *tview.TextView {
+		r := tview.NewTextView().SetDynamicColors(true)
+		r.SetWrap(false).SetText("[#3a3a3a]" + strings.Repeat("─", 500) + "[-]")
+		return r
+	}
+	rows := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(transcript, 0, 1, false).
+		AddItem(rule(), 1, 0, false).
 		AddItem(input, 1, 0, true).
+		AddItem(rule(), 1, 0, false).
 		AddItem(status, 1, 0, false)
-	pages.AddPage("main", flex, true, true)
+	// A one-column left margin so content isn't flush against the window edge.
+	main := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(nil, 1, 0, false).
+		AddItem(rows, 0, 1, true).
+		AddItem(nil, 1, 0, false)
+	pages.AddPage("main", main, true, true)
+
+	// Grow the composer with its content (newlines) up to a cap, so a multi-line message
+	// stays visible as you type.
+	input.SetChangedFunc(func() {
+		lines := strings.Count(input.GetText(), "\n") + 1
+		if lines > 8 {
+			lines = 8
+		}
+		rows.ResizeItem(input, lines, 0)
+	})
 
 	reload()
 	for _, n := range sess.notes {
@@ -981,6 +1237,8 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	if len(sess.notes) > 0 {
 		v.render()
 	}
+	// Mouse is off by default so the terminal's own text selection (mark + right-click to
+	// copy) keeps working; /mouse turns on wheel-scroll (then selection is Shift+drag).
 	return app.SetRoot(pages, true).SetFocus(input).Run()
 }
 
@@ -1067,6 +1325,7 @@ const (
 	itemUser                      // a user message
 	itemTool                      // a tool the model used
 	itemAssistant                 // an assistant answer, rendered as markdown
+	itemImage                     // an inline image; text is its attachments/ base name
 )
 
 // view owns the transcript TextView and its display model.
@@ -1074,10 +1333,32 @@ type view struct {
 	tv      *tview.TextView
 	welcome string
 	items   []item
+	resolve func(name string) image.Image // loads an attachment image for inline rendering
 }
 
 func (v *view) add(it item)        { v.items = append(v.items, it) }
 func (v *view) notice(text string) { v.add(item{itemNotice, text}) }
+
+// drawUser paints the user turn as a full-width highlight bar (padded to the transcript
+// width), one bar per line, with a blank line before and after so a turn is easy to find.
+func (v *view) drawUser(text string) {
+	_, _, w, _ := v.tv.GetInnerRect()
+	fmt.Fprint(v.tv, "\n")
+	for i, line := range strings.Split(text, "\n") {
+		marker := " › "
+		if i > 0 {
+			marker = "   "
+		}
+		content := marker + line
+		if w > 0 {
+			if pad := w - len([]rune(content)); pad > 0 {
+				content += strings.Repeat(" ", pad)
+			}
+		}
+		fmt.Fprintf(v.tv, "[#e6edf3:#2d3f5e]%s[-:-]\n", tview.Escape(content))
+	}
+	fmt.Fprint(v.tv, "\n")
+}
 
 // render repaints the whole transcript from the model: markdown for answers, plain for
 // the rest. Called after each change — cheap for a chat-sized history.
@@ -1089,18 +1370,114 @@ func (v *view) render() {
 		case itemNotice:
 			fmt.Fprintf(v.tv, "%s\n", it.text)
 		case itemUser:
-			fmt.Fprintf(v.tv, "\n[blue::b]you[-:-:-]  %s\n", tview.Escape(it.text))
+			v.drawUser(it.text)
 		case itemTool:
 			fmt.Fprintf(v.tv, "[yellow::d]▸ used %s[-:-:-]\n", tview.Escape(it.text))
 		case itemAssistant:
 			if body := renderMarkdown(it.text); body != "" {
-				fmt.Fprintf(v.tv, "[green::b]llama[-:-:-]  %s\n", body)
+				fmt.Fprintf(v.tv, "[white::b]♦[-:-:-]  %s\n", body)
 			} else {
-				fmt.Fprint(v.tv, "[green::b]llama[-:-:-]\n")
+				fmt.Fprint(v.tv, "[white::b]♦[-:-:-]\n")
 			}
+		case itemImage:
+			v.drawImage(it.text)
 		}
 	}
 	v.tv.ScrollToEnd()
+}
+
+// drawImage renders an inline image as colored half-blocks sized to the transcript width
+// (/image stays for a full-resolution modal view). A ref that can't be loaded degrades to
+// a dim placeholder.
+func (v *view) drawImage(name string) {
+	_, _, w, _ := v.tv.GetInnerRect()
+	if w <= 0 {
+		// Width is unknown before the first draw; the draw hook re-renders once it is, so a
+		// placeholder avoids painting at a wrong (tiny) size first.
+		fmt.Fprint(v.tv, "[::d]  …[-]\n")
+		return
+	}
+	var img image.Image
+	if v.resolve != nil {
+		img = v.resolve(name)
+	}
+	if img == nil {
+		fmt.Fprintf(v.tv, "[::d](image: %s)[-]\n", tview.Escape(name))
+		return
+	}
+	w -= 2
+	if w > 96 {
+		w = 96
+	}
+	if w < 8 {
+		w = 8
+	}
+	fmt.Fprint(v.tv, imageBlocks(img, w, 28))
+}
+
+// imageBlocks renders an image as tview-tagged terminal text with the upper-half-block
+// trick: each cell is two vertical pixels — foreground the top, background the bottom — so
+// the vertical resolution doubles. The grid is maxW×maxH cells at most, preserving aspect
+// (a cell is ~twice as tall as wide). Low-res by nature, but inline and scrolls with chat.
+func imageBlocks(img image.Image, maxW, maxH int) string {
+	b := img.Bounds()
+	iw, ih := b.Dx(), b.Dy()
+	if iw <= 0 || ih <= 0 {
+		return ""
+	}
+	w := maxW
+	h := w * ih / (2 * iw)
+	if h < 1 {
+		h = 1
+	}
+	if h > maxH {
+		h = maxH
+		if w = h * 2 * iw / ih; w < 1 {
+			w = 1
+		} else if w > maxW {
+			w = maxW
+		}
+	}
+	var sb strings.Builder
+	for row := 0; row < h; row++ {
+		for col := 0; col < w; col++ {
+			sx := b.Min.X + col*iw/w
+			tr, tg, tb := rgb8(img.At(sx, b.Min.Y+(2*row)*ih/(2*h)))
+			br, bg, bb := rgb8(img.At(sx, b.Min.Y+(2*row+1)*ih/(2*h)))
+			fmt.Fprintf(&sb, "[#%02x%02x%02x:#%02x%02x%02x]▀", tr, tg, tb, br, bg, bb)
+		}
+		sb.WriteString("[-:-]\n")
+	}
+	return sb.String()
+}
+
+func rgb8(c color.Color) (uint8, uint8, uint8) {
+	r, g, b, _ := c.RGBA()
+	return uint8(r >> 8), uint8(g >> 8), uint8(b >> 8)
+}
+
+var attachImageRe = regexp.MustCompile(`!\[[^\]]*\]\(attachments/([^)\s]+)\)`)
+
+// assistantItems splits an answer into text and inline-image items at each
+// ![…](attachments/<name>) reference, so a generated image renders in place in the chat.
+func assistantItems(content string) []item {
+	locs := attachImageRe.FindAllStringSubmatchIndex(content, -1)
+	if len(locs) == 0 {
+		return []item{{itemAssistant, content}}
+	}
+	var items []item
+	last := 0
+	for _, loc := range locs {
+		if pre := content[last:loc[0]]; strings.TrimSpace(pre) != "" {
+			items = append(items, item{itemAssistant, pre})
+		}
+		items = append(items, item{itemImage, content[loc[2]:loc[3]]}) // group 1 = base name
+		last = loc[1]
+	}
+	if rest := content[last:]; strings.TrimSpace(rest) != "" {
+		items = append(items, item{itemAssistant, rest})
+	}
+	return items
 }
 
 func modelName(path string) string {

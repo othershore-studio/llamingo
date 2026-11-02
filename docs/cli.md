@@ -74,8 +74,9 @@ also pure-Go / MIT.)
 - a **transcript viewport** — scrollable (PgUp/PgDn); user / assistant / tool messages, with
   markdown rendered for the terminal and the tool-trail inline. Streamed raw for
   responsiveness, then repainted as rendered markdown once a turn completes.
-- an **input line** — Enter sends (single-line today; a multi-line composer with
-  Shift/Alt+Enter is a later nicety),
+- a **composer** — a multi-line input: Enter sends, Ctrl+J (or Shift/Alt+Enter where the
+  terminal reports the modifier) inserts a newline; it grows with its content. Mouse is on,
+  so the wheel scrolls the transcript,
 - a **status bar** — project · model · the honest **context budget**,
 - **modals** over the transcript for the **permission prompt**, the **session picker**
   (`/resume`), and the **tools view** (`/tools`).
