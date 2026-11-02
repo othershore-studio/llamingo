@@ -5,8 +5,11 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -320,5 +323,37 @@ func TestSessionWiresImageTool(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("image tool %q not wired; registry has %d tools", imagegen.ToolName, len(sess.Tools()))
+	}
+}
+
+// The image sink keeps the decoded image in memory (for /image and the auto-show) while
+// still persisting it to the conversation's attachments.
+func TestSessionSinkCapturesImage(t *testing.T) {
+	srv := lcpptest.NewServer()
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := (sessionSink{s: sess}).Save(context.Background(), "gen.png", pngBuf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref != "attachments/gen.png" {
+		t.Errorf("ref = %q, want attachments/gen.png", ref)
+	}
+	if sess.lastImage == nil || !sess.newImage {
+		t.Errorf("image not captured: lastImage set=%v newImage=%v", sess.lastImage != nil, sess.newImage)
 	}
 }

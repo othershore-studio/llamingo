@@ -11,8 +11,12 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	_ "image/jpeg" // register decoders so a generated image can be shown
+	_ "image/png"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,6 +45,7 @@ const helpText = "\n[::d]commands:\n" +
 	"  /tools    turn tools on/off for this chat\n" +
 	"  /memory   show what's in saved memory\n" +
 	"  /prompt   show the system prompt sent to the model\n" +
+	"  /image    view the last generated image\n" +
 	"  /clear    clear the view\n" +
 	"  /help     this list\n" +
 	"  /exit     quit (or Ctrl+C)[-]\n"
@@ -62,6 +67,8 @@ type Session struct {
 	lastTools []string              // tool names from the most recent turn, for the display trail
 	servers   []*mcp.ServerRegistry // connected MCP servers, closed on exit
 	notes     []string              // startup notices (MCP / image status), shown once
+	lastImage image.Image           // the most recent generated image, for the viewer
+	newImage  bool                  // an image was generated this turn (auto-show it)
 }
 
 // Open anchors a new session to dir's project (the same project the desktop opens) and
@@ -193,7 +200,17 @@ func imageTool(st *store.Store, s *Session, gate *permission.Gate) mcp.Registry 
 type sessionSink struct{ s *Session }
 
 func (k sessionSink) Save(ctx context.Context, name string, data []byte) (string, error) {
-	return k.s.st.SaveAttachment(k.s.convID, name, data)
+	ref, err := k.s.st.SaveAttachment(k.s.convID, name, data)
+	if err == nil {
+		// Keep the decoded image in memory for the terminal viewer (/image, and the
+		// auto-show after a generating turn). A non-image or undecodable payload is just
+		// saved, not shown.
+		if img, _, derr := image.Decode(bytes.NewReader(data)); derr == nil {
+			k.s.lastImage = img
+			k.s.newImage = true
+		}
+	}
+	return ref, err
 }
 
 // globalMCPPath is the global MCP config in the store root (mcp.json, or a copied-in
@@ -303,6 +320,7 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 		return nil
 	}
 	s.lastTools = nil
+	s.newImage = false
 	s.msgs = append(s.msgs, backend.Message{Role: backend.RoleUser, Content: input})
 	if _, err := s.st.AppendMessage(s.convID, "user", input); err != nil {
 		return err
@@ -656,6 +674,16 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		app.SetFocus(list)
 	}
 
+	// showImage displays a generated image in a centered modal — tview's Image primitive,
+	// drawn as colored blocks (or sixel where the terminal supports it). Esc closes it
+	// (handled in the global capture, since the primitive has no key handling of its own).
+	showImage := func(img image.Image) {
+		iv := tview.NewImage().SetImage(img).SetColors(tview.TrueColor)
+		iv.SetBorder(true).SetTitle(" image — Esc closes ")
+		pages.AddPage("image", centeredModal(iv), true, true)
+		app.SetFocus(iv)
+	}
+
 	input.SetDoneFunc(func(key tcell.Key) {
 		if key != tcell.KeyEnter || busy {
 			return
@@ -683,6 +711,14 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				return
 			case "/resume":
 				showResume()
+				return
+			case "/image":
+				if sess.lastImage == nil {
+					v.notice("[::d]no image yet — ask the model to generate one[-]")
+					v.render()
+				} else {
+					showImage(sess.lastImage)
+				}
 				return
 			case "/memory":
 				mem, tampered, err := sess.Memory()
@@ -769,6 +805,12 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				v.render()
 				setStatus()
 				busy = false
+				// An image was generated this turn: note it and pop the viewer.
+				if sess.newImage && sess.lastImage != nil {
+					v.notice("[::d]image generated · /image to view again[-]")
+					v.render()
+					showImage(sess.lastImage)
+				}
 			})
 		}()
 	})
@@ -778,6 +820,14 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 		case tcell.KeyCtrlC:
 			app.Stop()
 			return nil
+		case tcell.KeyEscape:
+			// The image viewer has no key handling of its own; close it here.
+			if name, _ := pages.GetFrontPage(); name == "image" {
+				pages.RemovePage("image")
+				app.SetFocus(input)
+				return nil
+			}
+			return ev
 		case tcell.KeyPgUp, tcell.KeyPgDn:
 			// Scroll the transcript a page while the input keeps focus — but only on the
 			// main view, so a modal's own paging (the tools list) still works.
