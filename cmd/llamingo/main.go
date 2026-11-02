@@ -13,10 +13,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
+	"github.com/othershore-studio/llamingo/internal/store"
+	"github.com/othershore-studio/llamingo/internal/tui"
 )
 
 func main() {
@@ -31,7 +36,27 @@ func run() error {
 	token := flag.String("token", os.Getenv("LLAMINGO_TOKEN"), "optional bearer token for an auth-fronted proxy")
 	system := flag.String("system", "", "optional system prompt")
 	msg := flag.String("m", "", "user message (default: read from stdin)")
+	dataDir := flag.String("data-dir", env("LLAMINGO_DATA_DIR", defaultDataDir()), "data directory for projects, chats, and config")
 	flag.Parse()
+
+	var opts []backend.Option
+	if *token != "" {
+		opts = append(opts, backend.WithToken(*token))
+	}
+
+	// No message and an interactive terminal: launch the TUI, anchored to the cwd's
+	// project. A piped or -m message stays the scriptable one-shot.
+	if *msg == "" && term.IsTerminal(int(os.Stdin.Fd())) {
+		st, err := store.Open(*dataDir)
+		if err != nil {
+			return err
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return tui.Run(backend.New(*url, opts...), st, cwd)
+	}
 
 	prompt := *msg
 	if prompt == "" {
@@ -43,11 +68,6 @@ func run() error {
 	}
 	if prompt == "" {
 		return fmt.Errorf("no message: pass -m or pipe text on stdin")
-	}
-
-	var opts []backend.Option
-	if *token != "" {
-		opts = append(opts, backend.WithToken(*token))
 	}
 	return chat(context.Background(), backend.New(*url, opts...), *url, *system, prompt, os.Stdout, os.Stderr)
 }
@@ -103,6 +123,13 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func defaultDataDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".llamingo")
+	}
+	return ".llamingo"
 }
 
 func modelName(path string) string {
