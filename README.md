@@ -15,7 +15,7 @@ to actually use — with real context management, chat history, MCP tools, image
 - **Chat history & projects** as plain, portable files you own and can sync yourself.
 - **MCP** as a first-class citizen — the client runs the tool-call loop itself.
 - **Image generation** as a built-in tool (direct to forge/ComfyUI; an image-gen MCP optional).
-- **Desktop first**, with an **experimental Android app** already in the releases; remote/multi-device access is a deliberate later phase.
+- **Desktop first**, plus a **terminal client (TUI)** for Termux / SSH / terminal users, and an **experimental Android app** already in the releases; remote/multi-device access is a deliberate later phase.
 
 ## What it is *not*
 
@@ -25,6 +25,31 @@ to actually use — with real context management, chat history, MCP tools, image
   and **save frontier tokens** for the work that genuinely needs them.
 - Not a general "any backend" client. It **targets llama.cpp** and uses its native capabilities as the differentiator.
   It stays OpenAI-compatible, so it *may* talk to other servers — but that is not the scope.
+
+## Quick start
+
+You need a `llama-server` running with tool use and honest templating enabled — the
+key flag is `--jinja`:
+
+```bash
+llama-server -m your-model.gguf --jinja --port 8080
+```
+
+Then reach it from either surface:
+
+- **Desktop** — grab the app from [Releases](https://github.com/othershore-studio/llamingo/releases),
+  launch it, and add your `llama-server` as a connection in Settings.
+- **Terminal** — drop the `llamingo` binary on your PATH and run it in any folder:
+
+  ```bash
+  llamingo -url http://localhost:8080
+  ```
+
+  It opens a chat anchored to that folder, shares the desktop's config and history,
+  and needs no server of its own. Type `/help` for the commands.
+
+See the **[user guide](docs/guide.md)** for connections and personas, projects, tools,
+MCP, memory, image generation, and the full terminal command surface.
 
 ## Tech
 
