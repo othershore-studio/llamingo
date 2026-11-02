@@ -20,11 +20,14 @@ already exists and is shared.
 4. connects to the configured `llama-server` (`LLAMINGO_URL` / saved config, `/props` probe),
 5. opens an interactive TUI session **in that project's context**.
 
-It is the **same project the desktop opens for that folder** — so you start a session in
-the terminal and pick it up in the desktop, or vice-versa; shared history, shared config.
-**No server:** the CLI consumes the core package *directly* (the architecture's "CLI
-direct" face — see [`architecture.md`](architecture.md)), so a TUI session needs no
-`llamingo-serve` running.
+It is the **same project the desktop opens for that folder** — open a folder in the TUI or
+in the desktop and you land in the identical project: shared history, shared `AGENTS.md`,
+`.mcp.json`, `.llamingo/project.json`, and `memory.md`. The **global config is shared too** —
+connections/personas, global MCP servers, and settings all live under `~/.llamingo`, so the
+TUI and the desktop read the same ones. Configure once, use from either; start a session in
+the terminal and pick it up in the desktop, or vice-versa. **No server:** the CLI consumes
+the core package *directly* (the architecture's "CLI direct" face — see
+[`architecture.md`](architecture.md)), so a TUI session needs no `llamingo-serve` running.
 
 **Invocation**
 
@@ -67,12 +70,25 @@ want a viewport. Your call; the layout below assumes Bubble Tea.)
   analogue of the composer),
 - a **status bar** — connection · model/alias · the honest **context budget** with its
   color ramp (calm → amber → red),
-- **modals** over the transcript for: the **permission prompt**, a **session picker**, and
-  later a **menu** (the ⋮ equivalent: tools · project · settings).
+- **modals** over the transcript for the **permission prompt**, a **session picker**, and
+  the **tools view** (below).
 
-Streaming tokens interleave with the live budget and the MCP loop (a core concern from
-commit one, same as everywhere). **Terminal images** (image-gen output, attachments):
-detect Kitty / iTerm / sixel and draw inline; else print a path/URL.
+**Commands (slash).** A TUI has no ⋮ menu or buttons, so the command surface is **slash
+commands** typed in the composer (the `claude-code` idiom) — each the terminal equivalent of
+a desktop surface:
+
+- `/tools` — the **tools view**: curate this chat's System + MCP toolset (the Tools panel's
+  job). There is no editor for `.mcp.json` itself — that's a file you edit (global
+  `~/.llamingo/mcp.json`, or the project's `.mcp.json`) — but the TUI *reads and curates*
+  what those servers declare, exactly as the desktop does.
+- `/project` (in a project folder) · `/model` or `/connection` (switch persona) ·
+  `/thinking` (toggle) · `/compact` · `/new` · `/resume` (session picker) · `/help` · `/quit`.
+- frequent actions also get keybindings (Esc closes a modal, PgUp/PgDn scroll, Ctrl+C quits).
+
+Streaming tokens interleave with the live budget and the MCP loop (a core concern from commit
+one, same as everywhere). **Terminal images** — the genuinely hard part, still being decided:
+the plan is to detect Kitty / iTerm / sixel and draw inline, else print the saved path; which
+protocols the actual terminals (Windows Terminal, Termux, iTerm, …) support will shape it.
 
 ## The permission gate in the terminal
 
