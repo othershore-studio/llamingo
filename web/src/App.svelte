@@ -69,9 +69,13 @@
   // In the Wails desktop shell the window is frameless, so the HTML topbar is the
   // title bar: draggable, with our own min/max/close. The browser/PWA has none.
   const isDesktop = typeof window !== 'undefined' && !!window.runtime
-  // The phone client — the mobile app or a touch browser — is "desktop minus
-  // Projects": projects (a desktop/coding concern) are hidden there.
-  const mobileClient = !isDesktop && coarsePointer
+  // The mobile app is "desktop minus Projects" (a desktop/coding concern). The
+  // Android shell loads the UI with `?app=android` — an explicit, reliable marker,
+  // rather than inferring "mobile" from `(pointer: coarse)` (unreliable in a WebView,
+  // and it would wrongly hide Projects in any touch browser). coarsePointer stays for
+  // its real job: Enter-to-send gating on a virtual keyboard.
+  const mobileClient =
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('app') === 'android'
 
   let conn = $state(null) // { model, nCtx }
   let chats = $state([])
