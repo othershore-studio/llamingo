@@ -24,7 +24,7 @@ A **frameless, merged top bar** — the OS title bar is hidden and llaminGO draw
 traffic-lights). Below it a **two-panel body** (left nav + conversation) that **collapses to conversation-only**. A
 **status bar** across the bottom carries live state (connection · model · the context budget). Narrow/mobile:
 conversation is primary and the left panel becomes a **slide-over drawer** (overlays, doesn't push). It is the same
-web UI everywhere, so the v2 PWA is free (see [`architecture.md`](architecture.md) → *The core and its three faces*).
+web UI everywhere, so the **Android app** reuses it wholesale (see [`architecture.md`](architecture.md) → *The core and its three faces*).
 
 ## The left panel — scope + sessions
 
@@ -133,8 +133,8 @@ convenience over them, never a second source of truth.
 
 - **Dedicated context inspector** — only if the distributed budget proves thin.
 - **`Sessions ⟷ Files` toggle** — later; v1 is conversations-only + `@`-mention.
-- **Web UI framework** — lean toward Svelte (fits llama.cpp's own webui and the small-footprint goal); not settled.
-- **Mobile** — the responsive web UI works now; the PWA ships with the v2 gateway.
+- **Web UI framework** — *settled:* **Svelte** (fits llama.cpp's own webui and the small-footprint goal).
+- **Mobile** — a native **Android app** ships now (the responsive web UI in a WebView over a `gomobile`-bound core); broader mobile polish and off-LAN access ride later phases.
 
 ## Implementation gotchas (hard-won)
 

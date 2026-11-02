@@ -21,8 +21,9 @@ ways, and that distinction is load-bearing:
 - **As one HTTP + SSE/WebSocket adapter** over that package — consumed by the **web UI**.
 
 The desktop shell (**[Wails](https://wails.io/)** — Go backend + system webview) points its webview at that HTTP
-server on localhost. The v2 **gateway** exposes the *same* server behind auth. So the web UI speaks **one transport
-everywhere** — identical in the desktop app and in the mobile PWA — and never uses Wails-specific bindings.
+server on localhost; the **Android app** does the same, with the core **bound in-process via gomobile**. The v2
+**gateway** exposes the *same* server behind auth. So the web UI speaks **one transport everywhere** — desktop,
+Android, and later the gateway — and never uses Wails-specific bindings.
 
 Why this matters:
 
@@ -397,10 +398,10 @@ Two kinds, split by infrastructure (the real test suite starts at increment #1):
 ## Open decisions
 
 - **v2 chat-sync:** the gateway syncing the `chat/` root is the *leaning*, not finally committed.
-- **Mobile feel:** PWA (keeps everything Go + Wails) vs a true native app (would pull the UI shell toward Tauri 2).
-  Deferred — the thin-client architecture keeps it reversible.
-- **Web UI framework:** lean toward Svelte (fits llama.cpp's own webui and the small-footprint goal); not settled.
-- **UX & interface:** first pass captured in [`ui.md`](ui.md); the web UI framework (above) is the main item still open there.
+- **Mobile feel:** *resolved* — a native **Android app** (a `gomobile`-bound Go core in a WebView serving the shared
+  UI), neither a PWA nor Tauri. The thin-client architecture kept the choice reversible, exactly as intended.
+- **Web UI framework:** *resolved* — **Svelte** (fits llama.cpp's own webui and the small-footprint goal).
+- **UX & interface:** captured in [`ui.md`](ui.md).
 - **"Compatible with" other clients (v2):** survey other popular clients' project/standard formats and a per-project *compatible-with* setting; Claude is the v1 target.
 
 ## Changelog
