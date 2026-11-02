@@ -17,7 +17,8 @@
 #     ANDROID_KEY_PASSWORD       the key password
 #     ANDROID_KEY_ALIAS          llamingo
 #   Environments -> New environment `android-release` -> add yourself under
-#     "Required reviewers".
+#     "Required reviewers". (Required reviewers need a PUBLIC repo or Pro/Team; on a
+#     free private repo the env runs ungated — enable the reviewer when you go public.)
 #
 # Make the base64 secret value on the dev machine (PowerShell):
 #   [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\Code\.keys\llamingo-release.jks"))
