@@ -6,8 +6,13 @@ the one shell still thin; everything it needs (core client, honest context budge
 two-root store, the client-owned MCP loop, the permission gate, the file + image tools)
 already exists and is shared.
 
-> **Status:** spec, not built. The core is done; this is a terminal front-end over it,
-> not a rewrite — the same payoff as Wails being "a window + a localhost server."
+> **Status:** v1 built and merged to `main`. Anchored streaming chat, the permission gate,
+> per-chat tool curation, memory/prompt inspection, scroll, markdown rendering, session
+> continuity (`-c` / `/new` / `/resume`), and defaulting to the active saved connection all
+> work. Still to come in the TUI: image generation and MCP servers (the native system tools
+> are wired; these two aren't yet), `/compact`, terminal images, the launchers, and first-run
+> PATH registration. A terminal front-end over the core, not a rewrite — the same payoff as
+> Wails being "a window + a localhost server."
 
 ## The shape
 
@@ -20,19 +25,24 @@ already exists and is shared.
 4. connects to the configured `llama-server` (`LLAMINGO_URL` / saved config, `/props` probe),
 5. opens an interactive TUI session **in that project's context**.
 
-It is the **same project the desktop opens for that folder** — so you start a session in
-the terminal and pick it up in the desktop, or vice-versa; shared history, shared config.
-**No server:** the CLI consumes the core package *directly* (the architecture's "CLI
-direct" face — see [`architecture.md`](architecture.md)), so a TUI session needs no
-`llamingo-serve` running.
+It is the **same project the desktop opens for that folder** — open a folder in the TUI or
+in the desktop and you land in the identical project: shared history, shared `AGENTS.md`,
+`.mcp.json`, `.llamingo/project.json`, and `memory.md`. The **global config is shared too** —
+connections/personas, global MCP servers, and settings all live under `~/.llamingo`, so the
+TUI and the desktop read the same ones. Configure once, use from either; start a session in
+the terminal and pick it up in the desktop, or vice-versa. **No server:** the CLI consumes
+the core package *directly* (the architecture's "CLI direct" face — see
+[`architecture.md`](architecture.md)), so a TUI session needs no `llamingo-serve` running.
 
 **Invocation**
 
-- `llamingo` — interactive TUI, anchored to cwd (new session, or a resume picker).
-- `llamingo -c` — resume the last session in this project (the `claude -c` move).
+- `llamingo` — interactive TUI, anchored to cwd (a fresh session; `/resume` opens a past one).
+- `llamingo -c` — resume this project's most recent session (the `claude -c` move).
 - `llamingo -m "…"` — scriptable one-shot, non-interactive (today's behavior, kept).
-- `llamingo -C <dir>` — anchor somewhere other than cwd.
-- `-url` / `LLAMINGO_URL`, `-data-dir`, … as today.
+- **Connection:** with no `-url`, the TUI uses the **active saved connection** from the shared
+  config — its URL, token, sampling, and persona; `-url` / `LLAMINGO_URL` override.
+- `-token`, `-system`, `-data-dir` as today. (Anchoring elsewhere than cwd — a `-C <dir>` — is
+  not built yet.)
 
 ## Fully Go, cross-platform
 
@@ -51,28 +61,43 @@ gracefully across them.
 
 ## The TUI
 
-**DECISION — framework:** recommend **Bubble Tea** (+ Lipgloss for styling, Bubbles for
-the viewport/textarea). It is the de-facto Go TUI framework, actively maintained, runs on
-all four targets, and brings "windows and menus in a terminal" back. It *is* a real
-dependency — but a **load-bearing, justified** one, the TUI's analogue of Wails for the
-desktop, not feature-bloat. (Alternatives: `tview` — more classic widgets; or lean
-stdlib + raw ANSI — leanest, but you hand-roll raw-mode, resize, input parsing and still
-want a viewport. Your call; the layout below assumes Bubble Tea.)
+**DECISION — framework: `tview`** (on `gdamore/tcell`). Chosen over Bubble Tea after weighing
+both: tview is a widget toolkit (lists, forms, modals, flex layout, a built-in Image
+primitive) rather than an Elm-style render loop, so the pickers and the consent modal fall out
+of its primitives; it is pure-Go / no-cgo (the CGO-free cross-compile holds), MIT, and proven
+in k9s / lazysql / podman-tui. It *is* a real dependency — but a **load-bearing, justified**
+one, the TUI's analogue of Wails for the desktop. (Markdown is rendered with `yuin/goldmark`,
+also pure-Go / MIT.)
 
 **Layout** — one screen to start (not a window manager; grows toward menus later):
 
-- a **transcript viewport** — scrollable; user / assistant / tool messages; markdown
-  rendered for the terminal; thinking as a dimmed collapsible block; the tool-trail inline,
-- an **input line** — multi-line; Enter sends, Shift/Alt+Enter for a newline (the terminal
-  analogue of the composer),
-- a **status bar** — connection · model/alias · the honest **context budget** with its
-  color ramp (calm → amber → red),
-- **modals** over the transcript for: the **permission prompt**, a **session picker**, and
-  later a **menu** (the ⋮ equivalent: tools · project · settings).
+- a **transcript viewport** — scrollable (PgUp/PgDn); user / assistant / tool messages, with
+  markdown rendered for the terminal and the tool-trail inline. Streamed raw for
+  responsiveness, then repainted as rendered markdown once a turn completes.
+- an **input line** — Enter sends (single-line today; a multi-line composer with
+  Shift/Alt+Enter is a later nicety),
+- a **status bar** — project · model · the honest **context budget**,
+- **modals** over the transcript for the **permission prompt**, the **session picker**
+  (`/resume`), and the **tools view** (`/tools`).
 
-Streaming tokens interleave with the live budget and the MCP loop (a core concern from
-commit one, same as everywhere). **Terminal images** (image-gen output, attachments):
-detect Kitty / iTerm / sixel and draw inline; else print a path/URL.
+**Commands (slash).** A TUI has no ⋮ menu or buttons, so the command surface is **slash
+commands** typed in the composer (the `claude-code` idiom) — each the terminal equivalent of
+a desktop surface:
+
+- **Built:** `/new` (fresh session) · `/resume` (session picker, newest first) · `/tools`
+  (curate this chat's toolset, persisted per-chat) · `/memory` (show saved memory) ·
+  `/prompt` (show the system prompt the model receives) · `/clear` · `/help` · `/exit`
+  (`/quit`). Keybindings: Esc closes a modal, PgUp/PgDn scroll, Ctrl+C quits.
+- **Planned:** `/model` or `/connection` (switch persona without leaving the terminal) ·
+  `/compact` · `/project` · `/thinking`. `/tools` curates the System tools today and will show
+  MCP servers' tools once those are wired into the TUI. There is no editor for `.mcp.json`
+  itself — that's a file you edit (global `~/.llamingo/mcp.json`, or the project's `.mcp.json`)
+  — the TUI *reads and curates* what those servers declare, exactly as the desktop does.
+
+Streaming tokens interleave with the live budget and the MCP loop (a core concern from commit
+one, same as everywhere). **Terminal images** — the genuinely hard part, still being decided:
+the plan is to detect Kitty / iTerm / sixel and draw inline, else print the saved path; which
+protocols the actual terminals (Windows Terminal, Termux, iTerm, …) support will shape it.
 
 ## The permission gate in the terminal
 
@@ -150,28 +175,34 @@ type `llamingo`."
 Same discipline as the rest — every slice runs against the mocked `llama-server`
 (`internal/lcpptest`), GPU-free in CI:
 
-1. **Anchored chat** — `llamingo` in a dir → project resolve/create → interactive streaming
-   chat with the honest budget in the status bar. The floor: proves the TUI shell over the
-   core.
-2. **The gate** — the terminal `Prompter` (allow / once / session), so the file tools, image
-   gen and MCP servers work exactly as elsewhere.
-3. **Niceties** — `-c` resume + session picker; thinking / tool-trail rendering; terminal
-   images; the menu (tools · project · settings).
-4. **Polish** — first-run PATH self-registration (consent-gated, self-healing), the
-   launchers (`.reg` + shell), the release-matrix binaries.
+1. **Anchored chat** — ✅ `llamingo` in a dir → project resolve/create → interactive streaming
+   chat with the honest budget in the status bar. The floor: the TUI shell over the core.
+2. **The gate** — ✅ the terminal `Prompter` (once / this-chat / always), so the native file +
+   memory tools work exactly as elsewhere. (Image gen + MCP servers: still to wire in.)
+3. **Niceties** — ✅ `-c` resume + `/resume` picker + `/new`; the thinking spinner + tool-trail;
+   **markdown rendering**; the `/tools` curation view; `/memory` + `/prompt` inspection; the
+   connection-from-config default. Still open: `/compact`, terminal images.
+4. **Polish** — ⏳ first-run PATH self-registration (consent-gated, self-healing), the launchers
+   (`.reg` + shell), the release-matrix binaries.
 
-## Open decisions (your redline)
+## Decided / still open
 
-- **TUI framework** — Bubble Tea (recommended) vs `tview` vs lean-stdlib: the
-  dependency-vs-polish call, weighed against [`prefers-lean`].
-- **Command name** — `llamingo` (assumed), or literally `llamingo-code`?
-- **How much "windows and menus"** — a clean chat + status + modals for v1, vs a richer
-  multi-pane TUI (a session-list pane, etc.) later.
-- **Resume semantics** — `-c` = last session in this project, plus a picker for the rest;
-  match `claude`'s feel?
+- **TUI framework** — ✅ decided: `tview` (see above).
+- **Command name** — ✅ `llamingo` (the binary); "llamingo-code" stays the affectionate name
+  for the project-anchored mode.
+- **Resume semantics** — ✅ `-c` = this project's most recent session; `/resume` picks the rest,
+  newest first. Matches `claude`'s feel.
+- **Still open** — in-TUI connection/model switching (`/model`); image gen + MCP in the TUI;
+  terminal images (the hard one); a richer multi-pane layout vs the current chat + modals.
 
 ## Changelog
 
+- 2026-11-02: **v1 built and merged.** The spec is real: `tview` chosen (over Bubble Tea);
+  anchored streaming chat + honest budget + thinking spinner; the permission gate as a consent
+  modal; native tools via the client-owned loop; `/tools` curation; `/memory` + `/prompt`
+  inspection; PgUp/PgDn scroll; markdown rendering (goldmark); session continuity (`-c` /
+  `/new` / `/resume` + history loading); and defaulting to the active saved connection.
+  Pending: image gen + MCP in the TUI, `/compact`, terminal images, launchers, PATH registration.
 - 2026-11-01: Spec drafted — a fully-Go, cross-platform (Termux / Windows / Linux / macOS)
   project-anchored TUI over the shared core; Bubble Tea proposed; **no-install, user-context
   only** (portable binary, user PATH, no admin) with **consent-gated, self-healing first-run
