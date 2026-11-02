@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-package httpapi
+package toolreply
 
 import (
 	"strings"
@@ -23,25 +23,25 @@ func TestStripLeadingToolBlob(t *testing.T) {
 
 Here is an image of a black cat for you!`
 	want := "![generated image](attachments/x.png)\n\nHere is an image of a black cat for you!"
-	if got := stripLeadingToolBlob(blob); got != want {
+	if got := StripLeadingToolBlob(blob); got != want {
 		t.Errorf("stripped = %q,\nwant %q", got, want)
 	}
 
 	// Ordinary prose is untouched.
 	plain := "Here is your answer."
-	if got := stripLeadingToolBlob(plain); got != plain {
+	if got := StripLeadingToolBlob(plain); got != plain {
 		t.Errorf("plain content altered: %q", got)
 	}
 
 	// A leading JSON object the user actually wanted is not a tool blob → kept.
 	data := "{\"name\": \"Ada\", \"age\": 30}\nmore"
-	if got := stripLeadingToolBlob(data); got != data {
+	if got := StripLeadingToolBlob(data); got != data {
 		t.Errorf("non-tool JSON altered: %q", got)
 	}
 
-	// Gemma's real shape: unescaped inner quotes in action_input (invalid JSON),
-	// yet the object's end is still found — the stray braces fall inside string
-	// state, so the brace depth stays balanced.
+	// Gemma's real shape: unescaped inner quotes in action_input (invalid JSON), yet the
+	// object's end is still found — the stray braces fall inside string state, so the
+	// brace depth stays balanced.
 	messy := `{
 "action": "generate_image",
 "action_input": "{ "prompt": "A fluffy white cat with blue eyes." }",
@@ -51,19 +51,19 @@ Here is an image of a black cat for you!`
 ![generated image](attachments/c9.png)
 
 Here is the image.`
-	if got := stripLeadingToolBlob(messy); got != "![generated image](attachments/c9.png)\n\nHere is the image." {
+	if got := StripLeadingToolBlob(messy); got != "![generated image](attachments/c9.png)\n\nHere is the image." {
 		t.Errorf("messy (unescaped-quote) blob not stripped: %q", got)
 	}
 
-	// Regression guard: the model buried the image inside the blob and wrote
-	// nothing after it — recover the image so the reply is not empty.
+	// Regression guard: the model buried the image inside the blob and wrote nothing after
+	// it — recover the image so the reply is not empty.
 	buried := `{
 "action": "generate_image",
 "action_input": "{ "prompt": "a cat" }",
 "result": "![generated image](attachments/z.png)",
 "thought": "done"
 }`
-	if got := stripLeadingToolBlob(buried); got != "![generated image](attachments/z.png)" {
+	if got := StripLeadingToolBlob(buried); got != "![generated image](attachments/z.png)" {
 		t.Errorf("buried image not recovered: %q", got)
 	}
 }
@@ -71,27 +71,27 @@ Here is the image.`
 func TestRecoverToolImages(t *testing.T) {
 	img := "![generated image](attachments/e2922716.png)"
 
-	// The real failure: the model generated an image, then returned an empty
-	// final message. The image lives only in the tool result — recover it.
+	// The real failure: the model generated an image, then returned an empty final
+	// message. The image lives only in the tool result — recover it.
 	silent := []backend.Message{
 		{Role: backend.RoleUser, Content: "draw a black cat"},
 		{Role: backend.RoleAssistant, ToolCalls: []backend.ToolCall{{ID: "1"}}},
 		{Role: backend.RoleTool, Content: "Image generated with DreamShaperXL_Turbo_SFW (seed 42, image/png): " + img, ToolCallID: "1"},
 		{Role: backend.RoleAssistant, Content: ""},
 	}
-	if got := recoverToolImages("", silent); got != img {
+	if got := RecoverToolImages("", silent); got != img {
 		t.Errorf("silent answer: recovered = %q, want %q", got, img)
 	}
 
 	// The model wrote prose but no image — append the tool's image to it.
 	prose := "Here is your black cat!"
-	if got := recoverToolImages(prose, silent); got != prose+"\n\n"+img {
+	if got := RecoverToolImages(prose, silent); got != prose+"\n\n"+img {
 		t.Errorf("prose answer: recovered = %q, want %q", got, prose+"\n\n"+img)
 	}
 
 	// The model already echoed the image — leave the answer untouched (no dup).
 	echoed := prose + "\n\n" + img
-	if got := recoverToolImages(echoed, silent); got != echoed {
+	if got := RecoverToolImages(echoed, silent); got != echoed {
 		t.Errorf("echoed answer altered: %q", got)
 	}
 
@@ -100,7 +100,7 @@ func TestRecoverToolImages(t *testing.T) {
 		{Role: backend.RoleTool, Content: "the time is 04:22", ToolCallID: "1"},
 		{Role: backend.RoleAssistant, Content: "It's 4:22."},
 	}
-	if got := recoverToolImages("It's 4:22.", noImg); got != "It's 4:22." {
+	if got := RecoverToolImages("It's 4:22.", noImg); got != "It's 4:22." {
 		t.Errorf("no-image turn altered: %q", got)
 	}
 }
@@ -113,22 +113,22 @@ func TestSurfaceImageDenial(t *testing.T) {
 	}
 
 	// An empty answer after a denial gets a clear, plain-language notice.
-	if got := surfaceImageDenial("", deniedTurn); !strings.Contains(got, "No image was generated") {
+	if got := SurfaceImageDenial("", deniedTurn); !strings.Contains(got, "No image was generated") {
 		t.Errorf("denied + empty answer = %q, want a denial notice", got)
 	}
 	// An answer that already explains the decline is left alone (no doubling up).
 	explained := "Sorry, I couldn't create that — the request was declined."
-	if got := surfaceImageDenial(explained, deniedTurn); got != explained {
+	if got := SurfaceImageDenial(explained, deniedTurn); got != explained {
 		t.Errorf("already-explained answer altered: %q", got)
 	}
 	// If an image did come through, there is nothing to surface.
 	withImg := "Here you go! ![generated image](attachments/x.png)"
-	if got := surfaceImageDenial(withImg, deniedTurn); got != withImg {
+	if got := SurfaceImageDenial(withImg, deniedTurn); got != withImg {
 		t.Errorf("answer with an image altered: %q", got)
 	}
 	// No denial this turn → untouched.
 	okTurn := []backend.Message{{Role: backend.RoleTool, Content: "the time is 5pm"}}
-	if got := surfaceImageDenial("", okTurn); got != "" {
+	if got := SurfaceImageDenial("", okTurn); got != "" {
 		t.Errorf("no-denial turn altered: %q", got)
 	}
 }

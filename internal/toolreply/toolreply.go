@@ -2,7 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-package httpapi
+// Package toolreply shapes a tool-loop turn's final answer for saving: it strips the
+// ReAct scratch some small models emit, recovers an image a tool produced when the model
+// forgets to show it, and surfaces a declined image rather than a blank reply. Both the
+// HTTP adapter and the TUI run a turn through the same functions so the saved answer — and
+// any image reference in it — is identical, and an image generated in the terminal shows
+// in the desktop too.
+package toolreply
 
 import (
 	"regexp"
@@ -11,14 +17,12 @@ import (
 	"github.com/othershore-studio/llamingo/internal/backend"
 )
 
-// Some small models (notably Gemma under a large toolset) emit a ReAct-style
-// tool-call object as text in their final answer — {"action":…,"action_input":…,
-// "thought":…} — even when they also made the real native call. It is scratch,
-// not answer. stripLeadingToolBlob removes one such leading object so it does not
-// clutter the saved reply; the model's reasoning (and the prompt it chose) still
-// live in the thinking trace. Anything that is not clearly a tool-call blob is
-// left untouched.
-func stripLeadingToolBlob(content string) string {
+// StripLeadingToolBlob removes a leading ReAct-style tool-call object some small models
+// (notably Gemma under a large toolset) emit as text in their final answer —
+// {"action":…,"action_input":…,"thought":…} — even when they also made the real native
+// call. It is scratch, not answer. Anything that is not clearly a tool-call blob is left
+// untouched.
+func StripLeadingToolBlob(content string) string {
 	t := strings.TrimLeft(content, " \t\r\n")
 	if !strings.HasPrefix(t, "{") {
 		return content
@@ -32,9 +36,9 @@ func stripLeadingToolBlob(content string) string {
 		return content // a leading JSON object, but not a ReAct tool-call blob
 	}
 	rest := strings.TrimSpace(t[end+1:])
-	// The model sometimes buries the image it was handed inside the blob (a
-	// "result" field) and writes nothing usable after it; recover the image
-	// markdown so it still shows rather than leaving an empty reply.
+	// The model sometimes buries the image it was handed inside the blob (a "result"
+	// field) and writes nothing usable after it; recover the image markdown so it still
+	// shows rather than leaving an empty reply.
 	if !strings.Contains(rest, "](") {
 		if img := firstImageMarkdown(blob); img != "" {
 			if rest == "" {
@@ -46,12 +50,12 @@ func stripLeadingToolBlob(content string) string {
 	return rest
 }
 
-// surfaceImageDenial makes a declined (or timed-out) image request legible. When
-// the gate denies generate_image, its tool result tells the model not to claim an
-// image was made, so a small model often falls silent (or re-narrates) and the
-// reply ends up empty. If the answer carries no image but a generate_image was
-// denied this turn, append a plain note so the user isn't left with a blank reply.
-func surfaceImageDenial(answer string, msgs []backend.Message) string {
+// SurfaceImageDenial makes a declined (or timed-out) image request legible. When the gate
+// denies generate_image, its tool result tells the model not to claim an image was made,
+// so a small model often falls silent (or re-narrates) and the reply ends up empty. If the
+// answer carries no image but a generate_image was denied this turn, append a plain note so
+// the user isn't left with a blank reply.
+func SurfaceImageDenial(answer string, msgs []backend.Message) string {
 	if imageMarkdownRe.MatchString(answer) {
 		return answer // an image came through
 	}
@@ -76,22 +80,21 @@ func surfaceImageDenial(answer string, msgs []backend.Message) string {
 
 var imageMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\([^)\s]+\)`)
 
-// firstImageMarkdown finds an ![alt](url) image in s, unescaping a JSON-escaped
-// blob first so a markdown image buried in a string field is still matched.
+// firstImageMarkdown finds an ![alt](url) image in s, unescaping a JSON-escaped blob first
+// so a markdown image buried in a string field is still matched.
 func firstImageMarkdown(s string) string {
 	s = strings.ReplaceAll(s, `\"`, `"`)
 	s = strings.ReplaceAll(s, `\n`, "\n")
 	return imageMarkdownRe.FindString(s)
 }
 
-// recoverToolImages makes sure an image produced by a tool this turn still
-// reaches the saved reply even when the model echoes nothing (or no image) in
-// its final message. The native image tool and MCP image servers return the
-// image as markdown in their tool result; finalAssistant keeps only the last
-// assistant message, so a silent model loses the image although the file is
-// already on disk. If the answer carries no image of its own, surface the most
-// recent one found in the turn's tool results.
-func recoverToolImages(answer string, msgs []backend.Message) string {
+// RecoverToolImages makes sure an image produced by a tool this turn still reaches the
+// saved reply even when the model echoes nothing (or no image) in its final message. The
+// native image tool and MCP image servers return the image as markdown in their tool
+// result; the last assistant message is kept as the answer, so a silent model loses the
+// image although the file is already on disk. If the answer carries no image of its own,
+// surface the most recent one found in the turn's tool results.
+func RecoverToolImages(answer string, msgs []backend.Message) string {
 	if imageMarkdownRe.MatchString(answer) {
 		return answer // the model already showed an image
 	}
@@ -109,8 +112,8 @@ func recoverToolImages(answer string, msgs []backend.Message) string {
 	return answer
 }
 
-// jsonObjectEnd returns the index of the brace that closes the one at s[0],
-// string-aware (quotes and backslash escapes), or -1 if it is unbalanced.
+// jsonObjectEnd returns the index of the brace that closes the one at s[0], string-aware
+// (quotes and backslash escapes), or -1 if it is unbalanced.
 func jsonObjectEnd(s string) int {
 	depth, inStr, esc := 0, false, false
 	for i := 0; i < len(s); i++ {

@@ -35,6 +35,7 @@ import (
 	"github.com/othershore-studio/llamingo/internal/memtool"
 	"github.com/othershore-studio/llamingo/internal/permission"
 	"github.com/othershore-studio/llamingo/internal/store"
+	"github.com/othershore-studio/llamingo/internal/toolreply"
 )
 
 const maxToolRounds = 8
@@ -107,18 +108,37 @@ func Open(be backend.Backend, st *store.Store, dir string, prompter permission.P
 	s.reg = mcp.Combine(regs...)
 	s.summarizeTools(imageOn)
 
-	// -c resumes the project's most recent session; otherwise start a fresh one.
+	// -c resumes the project's most recent session that has content, skipping the empty
+	// shells a launch used to leave behind. Otherwise the session is created lazily on the
+	// first message (ensureSession), so opening the TUI without chatting leaves nothing.
 	if resume {
-		if sessions, err := st.ListSessions(proj.ID); err == nil && len(sessions) > 0 {
-			return s, s.Load(sessions[0].ID)
+		if sessions, err := st.ListSessions(proj.ID); err == nil {
+			for _, m := range sessions { // newest first
+				if hasContent(m) {
+					return s, s.Load(m.ID)
+				}
+			}
 		}
 	}
-	sess, err := st.NewSession(proj.ID, "New session")
+	return s, nil
+}
+
+// hasContent reports whether a session has been written to — an untouched one keeps
+// Updated == Created, so this skips empty shells on resume and in the picker.
+func hasContent(m store.ConversationMeta) bool { return !m.Updated.Equal(m.Created) }
+
+// ensureSession creates the backing session on first use (lazy creation), so launching the
+// TUI without sending a message leaves no empty session behind.
+func (s *Session) ensureSession() error {
+	if s.convID != "" {
+		return nil
+	}
+	sess, err := s.st.NewSession(s.projID, "New session")
 	if err != nil {
-		return nil, fmt.Errorf("new session: %w", err)
+		return err
 	}
 	s.convID = sess.ID
-	return s, nil
+	return nil
 }
 
 // connectServers loads one MCP config (global XOR project — pass "" for the other) and
@@ -243,13 +263,10 @@ func (s *Session) Load(convID string) error {
 	return nil
 }
 
-// New starts a fresh session in the same project (inheriting its tool defaults).
+// New starts a fresh session: lazily, so nothing is written to disk until the first
+// message (ensureSession), keeping empty sessions out of the project.
 func (s *Session) New() error {
-	sess, err := s.st.NewSession(s.projID, "New session")
-	if err != nil {
-		return err
-	}
-	s.convID = sess.ID
+	s.convID = ""
 	s.msgs = nil
 	s.lastTools = nil
 	s.budget = contextbudget.Budget{}
@@ -319,6 +336,9 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 	if input == "" {
 		return nil
 	}
+	if err := s.ensureSession(); err != nil {
+		return err
+	}
 	s.lastTools = nil
 	s.turnImages = 0
 	s.msgs = append(s.msgs, backend.Message{Role: backend.RoleUser, Content: input})
@@ -354,7 +374,10 @@ func (s *Session) Turn(ctx context.Context, input string, onDelta func(backend.D
 		return err
 	}
 
-	answer := finalAssistant(out)
+	// Shape the saved answer like the desktop does (internal/toolreply): strip ReAct
+	// scratch, and recover an image from the tool result when the model forgot to show it —
+	// so the image reference lands in the log and the picture also shows in the desktop.
+	answer := toolreply.SurfaceImageDenial(toolreply.RecoverToolImages(toolreply.StripLeadingToolBlob(finalAssistant(out)), out), out)
 	s.msgs = append(s.msgs, backend.Message{Role: backend.RoleAssistant, Content: answer})
 
 	if think.Len() > 0 {
@@ -481,6 +504,9 @@ func (s *Session) disabledSet() map[string]bool {
 // ToggleTool flips one tool's curation for this chat and persists it, reporting
 // whether the tool is now disabled.
 func (s *Session) ToggleTool(name string) (disabled bool, err error) {
+	if err := s.ensureSession(); err != nil { // curation is per-chat, so it needs a chat
+		return false, err
+	}
 	set := s.disabledSet()
 	if set == nil {
 		set = map[string]bool{}
@@ -677,14 +703,20 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	// showResume overlays a picker of the project's saved sessions (newest first); Enter
 	// opens one, Esc cancels. The terminal face of the desktop session list.
 	showResume := func() {
-		sessions, err := sess.Sessions()
+		all, err := sess.Sessions()
 		if err != nil {
 			v.notice("[red]resume: " + tview.Escape(err.Error()) + "[-]")
 			v.render()
 			return
 		}
+		var sessions []store.ConversationMeta
+		for _, m := range all {
+			if hasContent(m) { // skip the empty shells
+				sessions = append(sessions, m)
+			}
+		}
 		if len(sessions) == 0 {
-			v.notice("[::d]no saved sessions to resume[-]")
+			v.notice("[::d]no saved sessions yet[-]")
 			v.render()
 			return
 		}

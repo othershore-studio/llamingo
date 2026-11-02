@@ -265,18 +265,27 @@ func TestSessionResumeAndNew(t *testing.T) {
 		t.Error("resumed history produced no display items")
 	}
 
-	// /new starts a distinct, empty session.
+	// /new starts a fresh session lazily — nothing on disk until the first message.
 	if err := s2.New(); err != nil {
 		t.Fatal(err)
 	}
-	if s2.convID == firstID {
-		t.Error("New did not switch away from the resumed session")
+	if s2.convID != "" {
+		t.Errorf("New left convID=%q, want empty (lazy)", s2.convID)
 	}
 	if len(s2.msgs) != 0 {
 		t.Errorf("new session msgs = %d, want 0", len(s2.msgs))
 	}
+	if ss, _ := s2.Sessions(); len(ss) != 1 {
+		t.Errorf("sessions after lazy /new = %d, want 1 (New created nothing yet)", len(ss))
+	}
 
-	// Both sessions are listed for the picker.
+	// A message creates the new session — now two distinct sessions.
+	if err := s2.Turn(context.Background(), "Second", nil); err != nil {
+		t.Fatal(err)
+	}
+	if s2.convID == "" || s2.convID == firstID {
+		t.Errorf("new session convID=%q, want a fresh non-empty id", s2.convID)
+	}
 	sessions, err := s2.Sessions()
 	if err != nil {
 		t.Fatal(err)
@@ -341,6 +350,9 @@ func TestSessionSinkCapturesImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sess.Close()
+	if err := sess.ensureSession(); err != nil { // the sink saves into a conversation
+		t.Fatal(err)
+	}
 
 	var pngBuf bytes.Buffer
 	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 4, 4))); err != nil {
