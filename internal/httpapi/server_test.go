@@ -537,6 +537,41 @@ func TestChatStreamPersists(t *testing.T) {
 	}
 }
 
+// A conversation created with a default title gets a tentative name from its first
+// message — no model call, just the message truncated at a word boundary.
+func TestChatStreamAutoTitles(t *testing.T) {
+	api := newAPI(t)
+	id := createChat(t, api, "New chat") // the default title → eligible for auto-naming
+
+	resp, err := http.Post(api.URL+"/api/chat/stream", "application/json",
+		strings.NewReader(`{"id":"`+id+`","content":"How do I reverse a linked list in Go?"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	buf.ReadFrom(resp.Body) // drain the stream so the turn completes
+	resp.Body.Close()
+
+	r, err := http.Get(api.URL + "/api/chats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	var chats []struct{ ID, Title string }
+	if err := json.NewDecoder(r.Body).Decode(&chats); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	for _, c := range chats {
+		if c.ID == id {
+			got = c.Title
+		}
+	}
+	if got != "How do I reverse a linked list in Go?" {
+		t.Errorf("auto-title = %q, want the first message", got)
+	}
+}
+
 // Reasoning ("thinking") streams as its own SSE events and is persisted as a
 // reasoning entry — shown on reload, but kept out of the prompt (Project drops
 // it) and never mixed into the assistant's reply.

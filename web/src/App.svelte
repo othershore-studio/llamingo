@@ -770,6 +770,9 @@
     const text = input.trim()
     if (!text || streaming) return
     if (!activeId) await newChat()
+    // First turn of a chat: the core auto-titles it from this message, so reload the
+    // sidebar name once the turn lands (below).
+    const firstMessage = messages.length === 0
     input = ''
     const now = new Date().toISOString()
     messages.push({ role: 'user', content: text, time: now })
@@ -781,6 +784,11 @@
     try {
       // The client sends only the new turn; the core persists both sides.
       await streamChat(activeId, text)
+      if (firstMessage) {
+        // The core named this chat from its first message — reload so the sidebar shows it.
+        chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+        if (expandedProject) await loadSessions(expandedProject)
+      }
     } catch (e) {
       error = String(e)
       reachable = false
