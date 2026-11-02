@@ -205,3 +205,8 @@ Everything is **plain files under `~/.llamingo`** — config, connections, chats
 projects, memory, image config. No database, no cloud. Back it up or point your own
 sync tool at it. The terminal binary needs no installer and writes only to your user
 context; `-data-dir` or `LLAMINGO_DATA_DIR` moves the root if you want it elsewhere.
+
+On Windows, **`llamingo -setup`** optionally adds the binary's folder to your PATH (so
+`llamingo` runs from anywhere) and an Explorer right-click menu on folders — *"Call a
+llaminGO here"* and a resume variant. It's your user context only (no admin) and
+reversible; re-run it if you move the binary and it will repoint itself.
