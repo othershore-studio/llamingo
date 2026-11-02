@@ -682,6 +682,19 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	welcome := fmt.Sprintf("[::d]llaminGO · %s · %s — type a message, /help for commands, Ctrl+C or /exit to quit[-]\n", sess.title, model)
 	v := &view{tv: transcript, welcome: welcome, resolve: sess.resolveImage}
 
+	// Re-render inline images when the transcript width changes (the first draw, or a
+	// resize), so they fit the real width instead of the pre-draw placeholder.
+	lastWidth := 0
+	transcript.SetDrawFunc(func(_ tcell.Screen, _, _, width, _ int) (int, int, int, int) {
+		if width != lastWidth {
+			lastWidth = width
+			if v.hasImages() {
+				go app.QueueUpdateDraw(v.render)
+			}
+		}
+		return transcript.GetInnerRect()
+	})
+
 	// showTools overlays a scrollable toggle list of the project's native tools — a
 	// filled dot is on, hollow off — so a small model's toolset can be trimmed. Enter
 	// toggles (persisted per-chat, applied next turn); Esc closes. The terminal face of
@@ -1158,6 +1171,15 @@ type view struct {
 func (v *view) add(it item)        { v.items = append(v.items, it) }
 func (v *view) notice(text string) { v.add(item{itemNotice, text}) }
 
+func (v *view) hasImages() bool {
+	for _, it := range v.items {
+		if it.kind == itemImage {
+			return true
+		}
+	}
+	return false
+}
+
 // render repaints the whole transcript from the model: markdown for answers, plain for
 // the rest. Called after each change — cheap for a chat-sized history.
 func (v *view) render() {
@@ -1188,6 +1210,13 @@ func (v *view) render() {
 // (/image stays for a full-resolution modal view). A ref that can't be loaded degrades to
 // a dim placeholder.
 func (v *view) drawImage(name string) {
+	_, _, w, _ := v.tv.GetInnerRect()
+	if w <= 0 {
+		// Width is unknown before the first draw; the draw hook re-renders once it is, so a
+		// placeholder avoids painting at a wrong (tiny) size first.
+		fmt.Fprint(v.tv, "[::d]  …[-]\n")
+		return
+	}
 	var img image.Image
 	if v.resolve != nil {
 		img = v.resolve(name)
@@ -1196,18 +1225,14 @@ func (v *view) drawImage(name string) {
 		fmt.Fprintf(v.tv, "[::d](image: %s)[-]\n", tview.Escape(name))
 		return
 	}
-	_, _, w, _ := v.tv.GetInnerRect()
-	if w <= 0 {
-		w = 40 // before the first draw (resumed images); a safe thumbnail width
-	}
 	w -= 2
-	if w > 64 {
-		w = 64
+	if w > 96 {
+		w = 96
 	}
 	if w < 8 {
 		w = 8
 	}
-	fmt.Fprint(v.tv, imageBlocks(img, w, 20))
+	fmt.Fprint(v.tv, imageBlocks(img, w, 28))
 }
 
 // imageBlocks renders an image as tview-tagged terminal text with the upper-half-block

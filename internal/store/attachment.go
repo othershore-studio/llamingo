@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ListAttachments returns the base names of the files in a conversation's attachments/
-// folder (none → empty, not an error). Each name resolves through AttachmentPath. Used to
-// recover a resumed conversation's images for the terminal viewer.
+// folder, oldest first (none → empty, not an error). Each name resolves through
+// AttachmentPath. Sorted by modification time so a resumed conversation's images come back
+// in the order they were made — random GUID names would otherwise shuffle them.
 func (s *Store) ListAttachments(convID string) ([]string, error) {
 	dir, err := s.conversationDir(convID)
 	if err != nil {
@@ -27,13 +29,26 @@ func (s *Store) ListAttachments(convID string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: list attachments: %w", err)
 	}
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			names = append(names, e.Name())
-		}
+	type att struct {
+		name string
+		mod  time.Time
 	}
-	sort.Strings(names)
+	var files []att
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, att{e.Name(), info.ModTime()})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
+	names := make([]string, len(files))
+	for i, f := range files {
+		names[i] = f.name
+	}
 	return names, nil
 }
 
