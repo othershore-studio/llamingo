@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -143,6 +144,12 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 		busy = true
 		fmt.Fprintf(transcript, "\n[blue::b]you[-:-:-]  %s\n[green::b]llama[-:-:-]  ", tview.Escape(text))
 		transcript.ScrollToEnd()
+
+		// Animate a "thinking…" spinner in the status bar until the reply lands, so the
+		// gap before the first token (prompt processing / reasoning) doesn't look dead.
+		spinStop := make(chan struct{})
+		go spinner(app, status, model, spinStop)
+
 		go func() {
 			rerr := sess.Turn(context.Background(), text, func(d backend.Delta) error {
 				if d.Content != "" {
@@ -153,6 +160,7 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 				}
 				return nil
 			})
+			close(spinStop)
 			app.QueueUpdateDraw(func() {
 				if rerr != nil {
 					fmt.Fprintf(transcript, "\n[red]error: %s[-]", tview.Escape(rerr.Error()))
@@ -180,6 +188,27 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 
 	fmt.Fprintf(transcript, "[::d]llaminGO · %s · %s — type a message, Ctrl+C to quit[-]\n", sess.title, model)
 	return app.SetRoot(flex, true).SetFocus(input).Run()
+}
+
+// spinner animates a "thinking…" indicator in the status bar until stop is closed —
+// the terminal analogue of the desktop's working indicator, so a turn's pre-token
+// gap doesn't look dead.
+func spinner(app *tview.Application, status *tview.TextView, model string, stop <-chan struct{}) {
+	frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+	tk := time.NewTicker(90 * time.Millisecond)
+	defer tk.Stop()
+	for i := 0; ; i++ {
+		select {
+		case <-stop:
+			return
+		case <-tk.C:
+			f := frames[i%len(frames)]
+			app.QueueUpdateDraw(func() {
+				status.Clear()
+				fmt.Fprintf(status, "[yellow]%c[-:-:-]  thinking…  [::d]· %s[-:-:-]", f, model)
+			})
+		}
+	}
 }
 
 func modelName(path string) string {
