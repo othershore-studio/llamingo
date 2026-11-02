@@ -410,3 +410,34 @@ func TestSessionLoadsImagesOnResume(t *testing.T) {
 		t.Errorf("resumed images = %d, want 1 (recovered from attachments)", len(s2.images))
 	}
 }
+
+// An answer is split at its image reference so the picture renders inline between the text.
+func TestAssistantItemsSplitsImages(t *testing.T) {
+	if its := assistantItems("hello"); len(its) != 1 || its[0].kind != itemAssistant {
+		t.Fatalf("plain text = %+v, want one assistant item", its)
+	}
+	its := assistantItems("Here you go\n\n![cat](attachments/c9.png)")
+	if len(its) != 2 {
+		t.Fatalf("split = %d items, want 2 (text + image)", len(its))
+	}
+	if its[0].kind != itemAssistant || !strings.Contains(its[0].text, "Here you go") {
+		t.Errorf("first item = %+v, want the text", its[0])
+	}
+	if its[1].kind != itemImage || its[1].text != "c9.png" {
+		t.Errorf("second item = %+v, want the image base name c9.png", its[1])
+	}
+}
+
+// imageBlocks renders an image to colored half-block text (no raw markers, carries color).
+func TestImageBlocks(t *testing.T) {
+	out := imageBlocks(image.NewRGBA(image.Rect(0, 0, 8, 8)), 10, 10)
+	if out == "" {
+		t.Fatal("imageBlocks returned empty")
+	}
+	if !strings.Contains(out, "▀") {
+		t.Errorf("output has no half-block char:\n%s", out)
+	}
+	if !strings.Contains(out, "[#") {
+		t.Errorf("output has no color tags:\n%s", out)
+	}
+}

@@ -15,10 +15,12 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/jpeg" // register decoders so a generated image can be shown
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -290,6 +292,22 @@ func (s *Session) loadImages(convID string) {
 	}
 }
 
+// resolveImage loads an attachment image by base name for inline rendering, decoded fresh
+// each call (cheap for chat-sized images).
+func (s *Session) resolveImage(name string) image.Image {
+	p, err := s.st.AttachmentPath(s.convID, name)
+	if err != nil {
+		return nil
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	img, _, _ := image.Decode(f)
+	return img
+}
+
 // New starts a fresh session: lazily, so nothing is written to disk until the first
 // message (ensureSession), keeping empty sessions out of the project.
 func (s *Session) New() error {
@@ -344,7 +362,7 @@ func historyItems(entries []store.Entry) []item {
 			case "user":
 				items = append(items, item{itemUser, e.Content})
 			case "assistant":
-				items = append(items, item{itemAssistant, e.Content})
+				items = append(items, assistantItems(e.Content)...)
 			}
 		case store.KindToolCall:
 			items = append(items, item{itemTool, e.Content})
@@ -662,7 +680,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	setStatus()
 
 	welcome := fmt.Sprintf("[::d]llaminGO · %s · %s — type a message, /help for commands, Ctrl+C or /exit to quit[-]\n", sess.title, model)
-	v := &view{tv: transcript, welcome: welcome}
+	v := &view{tv: transcript, welcome: welcome, resolve: sess.resolveImage}
 
 	// showTools overlays a scrollable toggle list of the project's native tools — a
 	// filled dot is on, hollow off — so a small model's toolset can be trimmed. Enter
@@ -929,7 +947,10 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 					v.add(item{itemTool, name})
 				}
 				if n := len(sess.msgs); n > 0 && sess.msgs[n-1].Role == backend.RoleAssistant {
-					v.add(item{itemAssistant, sess.msgs[n-1].Content})
+					// Split the answer at any image reference so the picture renders inline.
+					for _, it := range assistantItems(sess.msgs[n-1].Content) {
+						v.add(it)
+					}
 				}
 				if rerr != nil {
 					v.notice("[red]error: " + tview.Escape(rerr.Error()) + "[-]")
@@ -937,16 +958,9 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 				v.render()
 				setStatus()
 				busy = false
-				// Images were generated this turn: note it and pop the viewer at the first
-				// new one (←/→ browses any others).
-				if sess.turnImages > 0 {
-					label := "image generated"
-					if sess.turnImages > 1 {
-						label = fmt.Sprintf("%d images generated", sess.turnImages)
-					}
-					v.notice("[::d]" + label + " · /image to view again[-]")
+				if sess.turnImages > 0 { // it renders inline above; offer the crisp view
+					v.notice("[::d]· /image for a full-resolution view[-]")
 					v.render()
-					showImages(sess.images, len(sess.images)-sess.turnImages)
 				}
 			})
 		}()
@@ -1130,6 +1144,7 @@ const (
 	itemUser                      // a user message
 	itemTool                      // a tool the model used
 	itemAssistant                 // an assistant answer, rendered as markdown
+	itemImage                     // an inline image; text is its attachments/ base name
 )
 
 // view owns the transcript TextView and its display model.
@@ -1137,6 +1152,7 @@ type view struct {
 	tv      *tview.TextView
 	welcome string
 	items   []item
+	resolve func(name string) image.Image // loads an attachment image for inline rendering
 }
 
 func (v *view) add(it item)        { v.items = append(v.items, it) }
@@ -1161,9 +1177,102 @@ func (v *view) render() {
 			} else {
 				fmt.Fprint(v.tv, "[green::b]llama[-:-:-]\n")
 			}
+		case itemImage:
+			v.drawImage(it.text)
 		}
 	}
 	v.tv.ScrollToEnd()
+}
+
+// drawImage renders an inline image as colored half-blocks sized to the transcript width
+// (/image stays for a full-resolution modal view). A ref that can't be loaded degrades to
+// a dim placeholder.
+func (v *view) drawImage(name string) {
+	var img image.Image
+	if v.resolve != nil {
+		img = v.resolve(name)
+	}
+	if img == nil {
+		fmt.Fprintf(v.tv, "[::d](image: %s)[-]\n", tview.Escape(name))
+		return
+	}
+	_, _, w, _ := v.tv.GetInnerRect()
+	if w <= 0 {
+		w = 40 // before the first draw (resumed images); a safe thumbnail width
+	}
+	w -= 2
+	if w > 64 {
+		w = 64
+	}
+	if w < 8 {
+		w = 8
+	}
+	fmt.Fprint(v.tv, imageBlocks(img, w, 20))
+}
+
+// imageBlocks renders an image as tview-tagged terminal text with the upper-half-block
+// trick: each cell is two vertical pixels — foreground the top, background the bottom — so
+// the vertical resolution doubles. The grid is maxW×maxH cells at most, preserving aspect
+// (a cell is ~twice as tall as wide). Low-res by nature, but inline and scrolls with chat.
+func imageBlocks(img image.Image, maxW, maxH int) string {
+	b := img.Bounds()
+	iw, ih := b.Dx(), b.Dy()
+	if iw <= 0 || ih <= 0 {
+		return ""
+	}
+	w := maxW
+	h := w * ih / (2 * iw)
+	if h < 1 {
+		h = 1
+	}
+	if h > maxH {
+		h = maxH
+		if w = h * 2 * iw / ih; w < 1 {
+			w = 1
+		} else if w > maxW {
+			w = maxW
+		}
+	}
+	var sb strings.Builder
+	for row := 0; row < h; row++ {
+		for col := 0; col < w; col++ {
+			sx := b.Min.X + col*iw/w
+			tr, tg, tb := rgb8(img.At(sx, b.Min.Y+(2*row)*ih/(2*h)))
+			br, bg, bb := rgb8(img.At(sx, b.Min.Y+(2*row+1)*ih/(2*h)))
+			fmt.Fprintf(&sb, "[#%02x%02x%02x:#%02x%02x%02x]▀", tr, tg, tb, br, bg, bb)
+		}
+		sb.WriteString("[-:-]\n")
+	}
+	return sb.String()
+}
+
+func rgb8(c color.Color) (uint8, uint8, uint8) {
+	r, g, b, _ := c.RGBA()
+	return uint8(r >> 8), uint8(g >> 8), uint8(b >> 8)
+}
+
+var attachImageRe = regexp.MustCompile(`!\[[^\]]*\]\(attachments/([^)\s]+)\)`)
+
+// assistantItems splits an answer into text and inline-image items at each
+// ![…](attachments/<name>) reference, so a generated image renders in place in the chat.
+func assistantItems(content string) []item {
+	locs := attachImageRe.FindAllStringSubmatchIndex(content, -1)
+	if len(locs) == 0 {
+		return []item{{itemAssistant, content}}
+	}
+	var items []item
+	last := 0
+	for _, loc := range locs {
+		if pre := content[last:loc[0]]; strings.TrimSpace(pre) != "" {
+			items = append(items, item{itemAssistant, pre})
+		}
+		items = append(items, item{itemImage, content[loc[2]:loc[3]]}) // group 1 = base name
+		last = loc[1]
+	}
+	if rest := content[last:]; strings.TrimSpace(rest) != "" {
+		items = append(items, item{itemAssistant, rest})
+	}
+	return items
 }
 
 func modelName(path string) string {
