@@ -32,6 +32,8 @@ import (
 
 const maxToolRounds = 8
 
+const helpText = "\n[::d]commands:  /help — this list  ·  /clear — clear the view  ·  /exit — quit (or Ctrl+C)[-]\n"
+
 // Session is a TUI chat anchored to a directory's project, driving turns over the core
 // directly through the client-owned tool loop.
 type Session struct {
@@ -244,6 +246,8 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 	}
 	setStatus()
 
+	welcome := fmt.Sprintf("[::d]llaminGO · %s · %s — type a message, /help for commands, Ctrl+C or /exit to quit[-]\n", sess.title, model)
+
 	busy := false
 	input.SetDoneFunc(func(key tcell.Key) {
 		if key != tcell.KeyEnter || busy {
@@ -254,6 +258,21 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 			return
 		}
 		input.SetText("")
+		if strings.HasPrefix(text, "/") {
+			switch strings.ToLower(strings.Fields(text)[0]) {
+			case "/exit", "/quit", "/q":
+				app.Stop()
+			case "/help", "/?":
+				fmt.Fprint(transcript, helpText)
+			case "/clear":
+				transcript.Clear()
+				fmt.Fprint(transcript, welcome)
+			default:
+				fmt.Fprintf(transcript, "\n[red]unknown command %s — try /help[-]\n", tview.Escape(strings.Fields(text)[0]))
+			}
+			transcript.ScrollToEnd()
+			return
+		}
 		busy = true
 		fmt.Fprintf(transcript, "\n[blue::b]you[-:-:-]  %s\n[green::b]llama[-:-:-]  ", tview.Escape(text))
 		transcript.ScrollToEnd()
@@ -308,7 +327,7 @@ func Run(be backend.Backend, st *store.Store, dir string) error {
 		AddItem(status, 1, 0, false)
 	pages.AddPage("main", flex, true, true)
 
-	fmt.Fprintf(transcript, "[::d]llaminGO · %s · %s — type a message, Ctrl+C to quit[-]\n", sess.title, model)
+	fmt.Fprint(transcript, welcome)
 	return app.SetRoot(pages, true).SetFocus(input).Run()
 }
 
