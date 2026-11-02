@@ -317,6 +317,76 @@ func (s *Store) Rename(id, title string) error {
 	return writeJSON(metaPath, m)
 }
 
+// Default titles a fresh conversation carries until it earns one. Kept here so
+// MaybeAutoTitle can tell "still unnamed" from "the user renamed it" — the web and
+// CLI shells create new conversations with these exact titles.
+const (
+	DefaultChatTitle    = "New chat"
+	DefaultSessionTitle = "New session"
+)
+
+// MaybeAutoTitle gives a conversation a tentative, human-readable title derived from
+// its first user message — deterministically, no model call — but only while the title
+// is still a default. A user rename is never clobbered, and it no-ops once the title is
+// non-default (i.e. after the first message), so callers can run it on every user turn.
+func (s *Store) MaybeAutoTitle(id, userContent string) error {
+	dir, err := s.conversationDir(id)
+	if err != nil {
+		return err
+	}
+	metaPath := filepath.Join(dir, "meta.json")
+	var m ConversationMeta
+	if err := readJSON(metaPath, &m); err != nil {
+		return fmt.Errorf("store: read meta for auto-title: %w", err)
+	}
+	if m.Title != DefaultChatTitle && m.Title != DefaultSessionTitle {
+		return nil // named already — a user rename, or we're past the first message
+	}
+	title := deriveTitle(userContent)
+	if title == "" {
+		return nil // nothing usable in the message — keep the default
+	}
+	m.Title = title
+	return writeJSON(metaPath, m)
+}
+
+// deriveTitle makes a short, human title from a message: its first non-blank line,
+// trimmed and truncated at a word boundary — never splitting a word, except a single
+// over-long token (e.g. a URL) that has no boundary to fall back to.
+func deriveTitle(content string) string {
+	line := ""
+	for _, l := range strings.Split(content, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			line = l
+			break
+		}
+	}
+	if line == "" {
+		return ""
+	}
+	const max = 48 // runes, so multi-byte titles count characters not bytes
+	runes := []rune(line)
+	if len(runes) <= max {
+		return line
+	}
+	cut := runes[:max]
+	// Back off to the last word boundary within the limit, unless that would cut too
+	// much (a single long token) — then hard-cut rather than return a tiny fragment.
+	if sp := lastSpaceRune(cut); sp > max/2 {
+		cut = cut[:sp]
+	}
+	return strings.TrimRight(string(cut), " \t.,;:—-") + "…"
+}
+
+func lastSpaceRune(rs []rune) int {
+	for i := len(rs) - 1; i >= 0; i-- {
+		if rs[i] == ' ' || rs[i] == '\t' {
+			return i
+		}
+	}
+	return -1
+}
+
 // ConversationTools returns the tool names curated off for this conversation
 // (empty for a fresh chat — everything is offered). Stored per-chat in meta.json,
 // so each chat carries its own toolset.

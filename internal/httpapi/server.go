@@ -406,6 +406,9 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Give a fresh conversation a tentative name from its first message (no-op once
+	// named). Best-effort — a title hiccup must not fail the turn.
+	_ = s.st.MaybeAutoTitle(body.ID, body.Content)
 	messages := append(messagesFromEntries(store.Project(prior)), backend.Message{Role: backend.RoleUser, Content: body.Content})
 
 	w.Header().Set("Content-Type", "text/event-stream")
