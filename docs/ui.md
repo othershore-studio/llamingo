@@ -181,3 +181,13 @@ Small web-UI traps already paid for, kept so the next app doesn't re-learn them:
   (global / per-folder) is separate from *activating* (per chat). The Settings modal scrolls as one styled pane; a
   chat-only **display toggle** hides the thinking + tool trail. **Model selection** is deferred to v2 (a plain
   `llama-server` serves one model).
+- 2026-11-01: **Composer + connection controls** — the composer now **grows with input** (Shift+Enter for a newline),
+  and a **Send button** with Enter-to-send gated to non-touch gives the mobile chat-app feel. A **Model/Connection
+  picker** (status bar + a Settings card) selects among saved connections — each a **persona** (temperature + min_p +
+  system prompt), its alias shown in the status bar. The **context budget** became model-aware: it tracks the active
+  model's window, warns on overflow, and re-meters on a tool or model change.
+- 2026-11-01: **Mobile UI** — the same responsive web UI runs on Android (a WebView over the in-process core).
+  **Projects are hidden on the mobile client** (desktop minus Projects); the composer follows the WhatsApp model
+  (Enter = newline on touch, the Send button sends); system bars are tinted to the UI's `--surface`.
+- 2026-11-01: **File-tools surface** — a project session surfaces its **working directory** (with a toggle on the
+  Project surface), supporting the gated file read/write/rename/copy/delete tools.

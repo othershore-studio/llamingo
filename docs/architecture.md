@@ -426,3 +426,24 @@ Two kinds, split by infrastructure (the real test suite starts at increment #1):
 - 2026-10-28: tokens/sec + timestamps — the backend parses llama.cpp's `timings` on the terminal chunk (`Delta.Timings`); the chat stream's `done` event carries the generation rate, shown as `tok/s` in the status bar beside the budget. Each message also gets a numeric ISO-ish local timestamp below it (`2026-10-28 15:42`, not a day name), from the stored entry time. Honest metering extended from context to speed.
 - 2026-10-30/31: **Image generation shipped end to end** — a native **Forge Neo** `txt2img` tool behind the `ImageGen` seam (no MCP needed); **per-model recipes** (name-inferred from the checkpoint + a Settings editor for steps/CFG/sampler/scheduler/size/modules, stored as deltas from the default); an **auto-pick allow-list + sticky-safe default** (shared-GPU guard: a heavy modern DiT is opt-in, so it can't OOM `llama-server` mid-turn); **prepopulate** (seed the model list from Forge's `/sdapi/v1/sd-models`); one-at-a-time serialization; per-chat **debug logging** of raw LLAMA/FORGE/TOOL payloads; a shaping round + image-recovery (the model writes the caption, we attach the picture); and MCP Streamable-HTTP **session recovery**. **Graceful backend-death**: `ChatStream` runs an idle-timeout, so a silently-dead backend ends the turn with an error instead of hanging.
 - 2026-10-31: **Tool configuration** — **per-chat curation** (each chat's `DisabledTools` in its `meta.json`; a Tools panel grouping **System** vs **MCP** tools, applied fresh each turn via `mcp.Curate`); **MCP server config from the UI** (Settings → MCP servers: add/edit streamable-HTTP servers — name/URL/auth header — with **live reconnect**, no restart, replacing the connect-once cache); **project MCP** (a project's own `.mcp.json` wired per session, connected per project and **gated**, since project servers aren't user-authored); and **per-project system-tool defaults** in a **`.llamingo/project.json`** in the working folder (mirroring `.claude/`; a new session inherits them, still overridable per chat). Three surfaces — **Settings** (global) / **Tools** (per-chat) / **Project** (per-folder) — *configuring* kept separate from *activating*.
+- 2026-11-01: **Connection personas** — a saved connection carries not just URL/token but **temperature + min_p + a
+  system prompt**, so two connections on the *same* `llama-server` are distinct personas (a low-temp "Coder", a
+  high-temp "Creative") at no VRAM cost — v2-Taita's "named connections = personalities" pulled into v1. Only temp +
+  min_p are exposed, not the exotic samplers; model-*within-a-server* selection stays a v2 concern.
+- 2026-11-01: **File coding tools** — `read_file` + gated `write_file` (read-before-overwrite), then a fuller set
+  (`folder_tree`, `rename`/`create`/`copy`/`delete` file+folder, `file_properties`) in `internal/filetools`,
+  **project-confined** (`resolveWithin` + symlink/`..`/absolute rejection) and **risk-tiered** on the existing gate
+  (reads ungated, writes/renames/copy gated, deletes always-ask). A project session is also told its working
+  directory. Deliberately minimal — "local = light tasks and code."
+- 2026-11-01: **Loopback hardening** — the desktop API is **Origin-allowlisted** (`httpapi.CORS`, not `ACAO:*`),
+  closing a browser drive-by that could read the backend token via `GET /api/settings/connections`. Chosen over a
+  per-launch token (the webview origins are verified from Wails' own source).
+- 2026-11-01: **Android app (Option A)** — the **same Go core + Svelte UI on a phone**. A normal Android app can't
+  `exec` a shipped binary (API-29+ W^X), so the core runs **in-process** via a **gomobile**-bound `.aar` that serves
+  the API *and* the `//go:embed`'d SPA on a loopback port, behind a `WebView`. No rewrite — the UI↔core HTTP boundary
+  (one `apiOrigin()` chokepoint) made it drop in. `targetSdk 34` sidesteps Android 15/16 forced edge-to-edge for now;
+  iOS rides the same path (`bind -target=ios`). Mobile = desktop minus Projects.
+- 2026-11-01: **Open-sourced + CI/releases** — the repo went **public** (MPL-2.0 LICENSE/NOTICE + CONTRIBUTING +
+  SECURITY, branch protection, private vulnerability reporting). CI runs `go vet`/`go test` + web and Windows builds;
+  **tag-driven workflows** publish a signed Android APK and a Windows build to a GitHub Release, the signing gated
+  behind a required-reviewer Environment. **v0.1.0** is the first public release.
