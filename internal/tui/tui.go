@@ -685,8 +685,9 @@ func scopeLabel(s permission.Scope) string {
 // Run opens a session for dir and runs the interactive tview app until the user quits.
 // system, when non-empty (the -system flag), is the persona system prompt prepended to
 // every turn — shown by /prompt. resume (-c) opens the project's most recent session
-// instead of a fresh one.
-func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) error {
+// instead of a fresh one. setupHint, when non-empty, is a startup nudge (e.g. to run
+// `llamingo -setup`), shown once with the other startup notices.
+func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, setupHint string) error {
 	app := tview.NewApplication()
 	pages := tview.NewPages()
 	transcript := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
@@ -1234,7 +1235,10 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool) e
 	for _, n := range sess.notes {
 		v.notice(n)
 	}
-	if len(sess.notes) > 0 {
+	if setupHint != "" {
+		v.notice(setupHint)
+	}
+	if len(sess.notes) > 0 || setupHint != "" {
 		v.render()
 	}
 	// Mouse is off by default so the terminal's own text selection (mark + right-click to

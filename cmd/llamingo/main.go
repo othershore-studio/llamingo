@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"golang.org/x/term"
@@ -22,6 +23,7 @@ import (
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
 	"github.com/othershore-studio/llamingo/internal/store"
 	"github.com/othershore-studio/llamingo/internal/tui"
+	"github.com/othershore-studio/llamingo/internal/winsetup"
 )
 
 func main() {
@@ -38,7 +40,11 @@ func run() error {
 	msg := flag.String("m", "", "user message (default: read from stdin)")
 	dataDir := flag.String("data-dir", env("LLAMINGO_DATA_DIR", defaultDataDir()), "data directory for projects, chats, and config")
 	resumeLast := flag.Bool("c", false, "resume this project's most recent session (interactive)")
+	setup := flag.Bool("setup", false, "register llamingo with Windows (PATH + Explorer right-click), then exit")
 	flag.Parse()
+	if *setup {
+		return runSetup()
+	}
 	set := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
@@ -62,7 +68,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return tui.Run(be, st, cwd, conn.system, *resumeLast)
+		return tui.Run(be, st, cwd, conn.system, *resumeLast, setupHint())
 	}
 
 	prompt := *msg
@@ -168,6 +174,85 @@ func chat(ctx context.Context, be backend.Backend, url, system, prompt string, o
 	fmt.Fprintln(out)
 	fmt.Fprintf(errOut, "context %d/%d [%s]\n", bud.Used(), bud.NCtx, bud.Level())
 	return nil
+}
+
+// setupHint is a one-line nudge shown in the TUI when the Windows PATH / right-click
+// integration isn't in place (or the binary moved), pointing at `llamingo -setup`. Empty
+// off Windows or once it's set up.
+func setupHint() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	s, _ := winsetup.Check(exe)
+	switch {
+	case s.Configured():
+		return ""
+	case s.NeedsHeal():
+		return "[yellow]llamingo moved — run `llamingo -setup` to update the PATH + right-click shortcuts[-]"
+	default:
+		return "[::d]tip: `llamingo -setup` adds llamingo to your PATH and an Explorer right-click menu[-]"
+	}
+}
+
+// runSetup registers (or heals) the Windows PATH entry and the Explorer right-click menu —
+// user context only, no admin. Idempotent; re-run after moving the binary.
+func runSetup() error {
+	if runtime.GOOS != "windows" {
+		fmt.Println("Setup (PATH + Explorer menu) is Windows-only for now.")
+		fmt.Println("On other systems, put the llamingo binary on your PATH yourself")
+		fmt.Println("(for example a symlink into ~/.local/bin).")
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	exe = filepath.Clean(exe)
+	s, _ := winsetup.Check(exe)
+	fmt.Println("llamingo:", exe)
+	if s.Configured() {
+		fmt.Println("Already set up — your PATH and the right-click menu point here. Nothing to do.")
+		return nil
+	}
+	if s.NeedsHeal() {
+		fmt.Println("The right-click menu points at a different binary — it looks like llamingo moved.")
+	}
+	fmt.Println("This will, in your user context only (no admin, reversible):")
+	if !s.OnPath {
+		fmt.Println("  - add", filepath.Dir(exe), "to your PATH so `llamingo` runs from anywhere")
+	}
+	fmt.Println(`  - add an Explorer right-click menu on folders: "Call a llaminGO here" (+ a resume variant)`)
+	fmt.Print("Proceed? [y/N] ")
+	if !confirmYes() {
+		fmt.Println("Cancelled — nothing changed.")
+		return nil
+	}
+	if changed, err := winsetup.ApplyPath(filepath.Dir(exe)); err != nil {
+		fmt.Println("  PATH:", err)
+	} else if changed {
+		fmt.Println("  PATH: added (open a new terminal to pick it up).")
+	} else {
+		fmt.Println("  PATH: already present.")
+	}
+	if err := winsetup.ApplyMenu(exe); err != nil {
+		fmt.Println("  menu:", err)
+	} else {
+		fmt.Println(`  menu: installed — right-click a folder and choose "Call a llaminGO here".`)
+		fmt.Println(`        On Windows 11 it's in the classic menu: Shift+right-click (or "Show`)
+		fmt.Println(`        more options") to see it.`)
+	}
+	return nil
+}
+
+func confirmYes() bool {
+	var s string
+	_, _ = fmt.Scanln(&s)
+	s = strings.ToLower(strings.TrimSpace(s))
+	return s == "y" || s == "yes"
 }
 
 func env(key, def string) string {

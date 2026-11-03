@@ -1,7 +1,7 @@
 # Releasing llaminGO
 
 Releases are built and published by GitHub Actions on a **version tag** — nothing
-runs on ordinary pushes. One tag produces a GitHub Release with both downloads
+runs on ordinary pushes. One tag produces a GitHub Release with its downloads
 attached:
 
 - **Windows desktop** (Wails) — `llamingo-windows-amd64.zip` (the `.exe`). Built by
@@ -11,6 +11,11 @@ attached:
 - **Android** — `llamingo-android.apk` (arm64, sideloadable). Built by
   [`android.yml`](../.github/workflows/android.yml), **signed** with the
   annoyances.studio upload key.
+- **Terminal client (CLI/TUI)** — `llamingo-<os>-<arch>.zip` for windows/amd64, linux
+  amd64 + arm64, and darwin amd64 + arm64 (each a static binary plus a short README; the
+  linux-arm64 build also runs under Termux). Built by
+  [`cli.yml`](../.github/workflows/cli.yml) — one Linux runner cross-compiles every target,
+  CGO-free. **Unsigned**, and it needs none; the windows build carries the embedded icon.
 
 The per-push desktop/web build-check stays in [`ci.yml`](../.github/workflows/ci.yml);
 local `wails build` and `./mobile/build-apk.sh` remain for day-to-day testing.

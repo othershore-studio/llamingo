@@ -1,0 +1,83 @@
+# Builds the terminal client (`llamingo`) for every OS/arch and attaches one zip per
+# target to the GitHub Release.
+#
+# Runs only when you ask for it — on a version tag (`git tag v0.1.0 && git push --tags`),
+# which also attaches the zips to the matching GitHub Release, or via the "Run workflow"
+# button (Actions tab). Nothing runs on ordinary pushes.
+#
+# The CLI is a single static CGO-free binary, so one Linux runner cross-compiles every
+# target; a CLI binary needs no signing (unlike the desktop / Android). The windows/amd64
+# build embeds the icon resource (cmd/llamingo/rsrc_windows_amd64.syso).
+name: CLI release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-cli:
+    runs-on: ubuntu-latest
+    # Needed so a tagged run can attach the zips to the GitHub Release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin Go to the toolchain go.mod declares, so CI matches the dev machine.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build every target
+        run: |
+          set -eu
+          mkdir -p out
+          cat > README.txt <<'EOF'
+          llaminGO — terminal client for llama.cpp
+
+          Run `llamingo` in any folder: it opens a chat anchored to that folder's
+          project, over your llama-server, with no server of its own. Point it at a
+          server with -url (or configure connections in the desktop app, which this
+          shares config with). Type /help for the commands.
+
+              llamingo -url http://localhost:8080
+
+          Windows: `llamingo -setup` adds the binary to your PATH and an Explorer
+          right-click menu ("Call a llaminGO here") — your user context only, no admin.
+
+          Linux / macOS: put the binary on your PATH yourself (e.g. ~/.local/bin).
+          Android: use the linux-arm64 build under Termux.
+
+          Guide: https://github.com/othershore-studio/llamingo/blob/main/docs/guide.md
+          EOF
+          build() {
+            goos=$1; goarch=$2; ext=${3:-}
+            echo "building $goos/$goarch"
+            rm -rf pkg && mkdir pkg
+            GOOS=$goos GOARCH=$goarch CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w" -o "pkg/llamingo$ext" ./cmd/llamingo
+            cp README.txt pkg/README.txt
+            (cd pkg && zip -q -j "../out/llamingo-$goos-$goarch.zip" ./*)
+          }
+          build windows amd64 .exe
+          build linux   amd64
+          build linux   arm64
+          build darwin  amd64
+          build darwin  arm64
+          ls -l out
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llamingo-cli-binaries
+          path: out/*.zip
+          if-no-files-found: error
+
+      # On a version tag, also attach the zips to that tag's GitHub Release
+      # (created if it doesn't exist yet).
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.zip
