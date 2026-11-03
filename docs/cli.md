@@ -11,7 +11,8 @@ already exists and is shared.
 > scroll, markdown rendering, session continuity (`-c` / `/new` / `/resume`), **inline terminal
 > images**, and **image generation + MCP servers** (full tool parity with the desktop). A
 > **connection manager** (`/connections`) and a **settings hub** (`/settings`: connections ·
-> Forge · global MCP) configure everything **live, no restart** — so a headless / CLI-only box
+> Forge · global MCP · a DNS resolver) configure it all — Forge and MCP edits apply **live, no
+> restart** — so a headless / CLI-only box
 > is set up with no GUI. Windows PATH + Explorer-menu self-registration ships as
 > `llamingo -setup`; the per-OS/arch binaries ship from [`cli.yml`](../.github/workflows/cli.yml).
 > Still open: `/compact` and a richer multi-pane layout. A terminal front-end over the core,
@@ -102,7 +103,7 @@ a desktop surface:
 
 - **Built:** `/new` · `/resume` (session picker) · `/model` (alias `/connection`: switch the
   session's connection/persona) · `/connections` (add/edit/activate/delete saved connections) ·
-  `/settings` (alias `/config`: the hub — connections · image gen (Forge) · global MCP) ·
+  `/settings` (alias `/config`: the hub — connections · image gen (Forge) · global MCP · DNS resolver) ·
   `/tools` (curate this chat's toolset, System **and** MCP, persisted per-chat) · `/memory` ·
   `/prompt` · `/thought` (the last turn's thinking) · `/image` (view generated images) ·
   `/mouse` (toggle wheel-scroll) · `/clear` · `/help` · `/exit` (`/quit`). Keybindings: Esc
@@ -110,8 +111,9 @@ a desktop surface:
 - **Still planned:** `/compact` (manual compaction) and `/project`.
 
 MCP servers' tools *do* show in `/tools` now, and **`/settings` edits the global
-`~/.llamingo/mcp.json`** (add/edit/delete servers) plus the Forge image config — the headless
-analogue of the desktop Settings, applied live. A project's own `.mcp.json` stays a file you
+`~/.llamingo/mcp.json`** (add/edit/delete servers), the Forge image config, and a **DNS resolver**
+(Android/Termux — see below) — the headless analogue of the desktop Settings. MCP and Forge edits
+apply live; the DNS setting is read at startup. A project's own `.mcp.json` stays a file you
 edit in the repo; the TUI reads and curates (gated) what it declares.
 
 Streaming tokens interleave with the live budget and the MCP loop. **Terminal images** —
@@ -209,7 +211,7 @@ Same discipline as the rest — every slice runs against the mocked `llama-serve
    `/thought`; **inline terminal images**; the connection-from-config default. Still open:
    `/compact`.
 4. **Config surface** — ✅ `/connections` and the `/settings` hub (connections · Forge · global
-   MCP), applied **live** — a headless box set up with no GUI.
+   MCP · a DNS resolver); Forge/MCP applied **live** — a headless box set up with no GUI.
 5. **Polish** — ✅ Windows PATH + Explorer-menu self-registration (`llamingo -setup`,
    consent-gated, self-healing, embedded icon); ✅ the release-matrix binaries
    ([`cli.yml`](../.github/workflows/cli.yml)).
@@ -221,13 +223,18 @@ Same discipline as the rest — every slice runs against the mocked `llama-serve
   for the project-anchored mode.
 - **Resume semantics** — ✅ `-c` = this project's most recent session; `/resume` picks the rest,
   newest first. Matches `claude`'s feel.
-- **Done since** — `/model` switching, `/connections` + the `/settings` config hub, image gen
-  + MCP parity, inline terminal images, and `-setup` PATH/Explorer registration all shipped.
+- **Done since** — `/model` switching, `/connections` + the `/settings` config hub (+ a DNS
+  resolver), live-apply of Forge/MCP, image gen + MCP parity, inline terminal images, and
+  `-setup` all shipped.
 - **Still open** — `/compact`; a richer multi-pane layout vs the current chat + modals; a
   `-C <dir>` to anchor somewhere other than cwd.
 
 ## Changelog
 
+- 2026-11-03 (v0.3.1): **Headless hardening.** A **DNS resolver** setting (`-dns` / `LLAMINGO_DNS` /
+  a persisted `dns`, set via `/settings`) so hostnames resolve on Android/Termux, where Go's own
+  resolver finds no nameserver; plus a guide section documenting the SSH + Termux gotchas (colours,
+  `noexec`, DNS, CA certs, `sshd`) with exact commands. Validated on a phone over Termux.
 - 2026-11-02 (later): **Feature-complete vs the desktop, and headless-ready.** Shipped since
   the morning's v1: **image generation + MCP** tool parity; **inline terminal images** (+ the
   `/image` viewer); `/model` connection switching; a **`/connections`** manager and a
