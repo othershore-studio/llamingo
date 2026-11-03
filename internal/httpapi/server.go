@@ -26,11 +26,12 @@ import (
 
 // Server is the HTTP handler for the core API.
 type Server struct {
-	be    backend.Backend
-	st    *store.Store
-	mux   *http.ServeMux
-	mode  string     // "local" (a client sidecar) or "server" (taita); see GET /api/mode
-	taita *taitaLink // set → this local sidecar proxies a linked taita (serverproxy.go)
+	be      backend.Backend
+	st      *store.Store
+	mux     *http.ServeMux
+	mode    string     // "local" (a client sidecar) or "server" (taita); see GET /api/mode
+	taitaMu sync.Mutex // guards taita (relinkable at runtime via Settings)
+	taita   *taitaLink // set → this local sidecar proxies a linked taita (serverproxy.go)
 
 	// Agentic wiring: the tool loop's permission gate reaches the user over the
 	// chat stream. The broker + prompter are app-wide; gates are per-conversation
@@ -85,6 +86,13 @@ func New(be backend.Backend, st *store.Store, opts ...Option) *Server {
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	// A linked taita persists in config (set via Settings); adopt it at startup,
+	// unless an option already linked one (e.g. tests).
+	if !s.taitaLinked() {
+		if cfg, cerr := st.Config(); cerr == nil {
+			s.setTaita(cfg.TaitaURL)
+		}
 	}
 	s.mux.HandleFunc("GET /api/props", s.handleProps)
 	s.mux.HandleFunc("GET /api/mode", s.handleMode)
@@ -143,7 +151,7 @@ func (s *Server) handleProps(w http.ResponseWriter, r *http.Request) {
 // taita server ("server"). Backend-independent (unlike /api/props), so the shared
 // web UI can pick its layout even when the model is down. See taita-build-plan.
 func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"mode": s.mode})
+	writeJSON(w, map[string]any{"mode": s.mode, "serverLinked": s.taitaLinked()})
 }
 
 // thinkingSupported reports whether the model's chat template exposes an
@@ -242,7 +250,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, _ := s.st.Config()
-	writeJSON(w, map[string]any{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location, "forgeUrl": cfg.ForgeURL, "debug": cfg.Debug})
+	writeJSON(w, map[string]any{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location, "forgeUrl": cfg.ForgeURL, "taitaUrl": cfg.TaitaURL, "debug": cfg.Debug})
 }
 
 // PUT /api/settings {url, token, location, forgeUrl, debug} — persist and hot-swap
@@ -258,6 +266,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		Token    string `json:"token"`
 		Location string `json:"location"`
 		ForgeURL string `json:"forgeUrl"`
+		TaitaURL string `json:"taitaUrl"`
 		Debug    bool   `json:"debug"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -276,6 +285,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.Location = strings.TrimSpace(body.Location)
 	cfg.ForgeURL = strings.TrimSpace(body.ForgeURL)
+	cfg.TaitaURL = strings.TrimSpace(body.TaitaURL)
 	cfg.Debug = body.Debug
 	if err := s.st.SetConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -284,6 +294,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if url != "" {
 		rc.SetConnection(url, body.Token)
 	}
+	s.setTaita(cfg.TaitaURL) // relink the client's Server Chats (empty = unlink)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -168,6 +168,7 @@
   const isActiveConn = (c) => !!activeConnId && c.id === activeConnId
   let settingsLocation = $state('') // editable user location (for place-aware tools)
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
+  let settingsTaitaUrl = $state('') // editable Taita server URL (links this client's Server Chats)
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
   let autostartSupported = $state(false) // this build can manage login autostart (desktop, per-OS)
   let autostartEnabled = $state(false) // launch llaminGO at login
@@ -289,9 +290,12 @@
     // Mode is server-declared (backend-independent), so the layout is correct even
     // when the model is down: taita → "server" (one chat list, no Projects).
     try {
-      serverMode = (await apiFetch('/api/mode').then((r) => r.json()))?.mode === 'server'
+      const m = await apiFetch('/api/mode').then((r) => r.json())
+      serverMode = m?.mode === 'server'
+      serverLinked = !!m?.serverLinked
     } catch {}
     chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+    serverChats = serverLinked ? await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => []) : []
     projects = serverMode ? [] : ((await apiFetch('/api/projects').then((r) => r.json())) ?? [])
     if (!activeId) {
       if (chats.length) await selectChat(chats[0].id)
@@ -402,6 +406,7 @@
     const s = await apiFetch('/api/settings').then((r) => r.json())
     settingsLocation = s.location ?? ''
     settingsForgeUrl = s.forgeUrl ?? ''
+    settingsTaitaUrl = s.taitaUrl ?? ''
     settingsDebug = s.debug ?? false
     // Login autostart is a desktop-only, per-OS setting (the OS entry is the source
     // of truth); the browser skips it and the controls stay hidden.
@@ -439,8 +444,14 @@
     await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), debug: settingsDebug }),
+      body: JSON.stringify({ location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), taitaUrl: settingsTaitaUrl.trim(), debug: settingsDebug }),
     })
+    // The taita link may have changed — refresh the Server Chats list + flag.
+    try {
+      const m = await apiFetch('/api/mode').then((r) => r.json())
+      serverLinked = !!m?.serverLinked
+      serverChats = serverLinked ? await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => []) : []
+    } catch {}
     // Image models: persist the user's choices, or seed them from Forge on a first
     // connect (an empty list + a Forge URL). See internal/imagegen.
     if (settingsForgeUrl.trim()) {
@@ -1615,6 +1626,17 @@
             <div class="imgmodels-hint muted">No saved connections. Add one, or it falls back to $LLAMINGO_URL.</div>
           {/if}
         </div>
+
+        <div class="group-head">Server (Taita)</div>
+        <label class="setting">
+          <span>Taita server URL <span class="muted">(optional; shows that server's chats under "Server Chats")</span></span>
+          <input
+            class="field"
+            bind:value={settingsTaitaUrl}
+            placeholder="https://taita.example.com"
+            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
+          />
+        </label>
 
         <div class="group-head">Image generation</div>
         <label class="setting">

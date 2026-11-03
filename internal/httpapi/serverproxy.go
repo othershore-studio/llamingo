@@ -21,32 +21,57 @@ type taitaLink struct {
 	client *http.Client
 }
 
-// WithTaita links this (local) core to a remote taita at baseURL, so /api/server/*
-// proxies there. The cookie jar keeps one session across calls — anonymous today;
-// an account login lands later (P2).
+// WithTaita links this (local) core to a remote taita at baseURL at construction.
+// The persisted setting (config.TaitaURL, edited in the Settings window) is the
+// normal path; this option is for tests and explicit wiring.
 func WithTaita(baseURL string) Option {
-	return func(s *Server) {
+	return func(s *Server) { s.setTaita(baseURL) }
+}
+
+// setTaita points this sidecar at a taita, or clears it when url is empty,
+// preserving the live session jar when the URL is unchanged. Safe for concurrent
+// use: the Settings UI relinks at runtime (PUT /api/settings).
+func (s *Server) setTaita(url string) {
+	url = strings.TrimRight(strings.TrimSpace(url), "/")
+	s.taitaMu.Lock()
+	defer s.taitaMu.Unlock()
+	switch {
+	case url == "":
+		s.taita = nil
+	case s.taita != nil && s.taita.base == url:
+		// unchanged — keep the live session jar
+	default:
 		jar, _ := cookiejar.New(nil)
-		s.taita = &taitaLink{base: strings.TrimRight(baseURL, "/"), client: &http.Client{Jar: jar}}
+		s.taita = &taitaLink{base: url, client: &http.Client{Jar: jar}}
 	}
+}
+
+// taitaLinked reports whether a taita is currently linked (surfaced at /api/mode
+// so the UI shows the Server Chats list).
+func (s *Server) taitaLinked() bool {
+	s.taitaMu.Lock()
+	defer s.taitaMu.Unlock()
+	return s.taita != nil
 }
 
 // handleServerChats proxies the free-chat list/create to the linked taita. With no
 // taita linked it is an empty list — a local-only client has no server chats.
 func (s *Server) handleServerChats(w http.ResponseWriter, r *http.Request) {
-	if s.taita == nil {
+	s.taitaMu.Lock()
+	link := s.taita
+	s.taitaMu.Unlock()
+	if link == nil {
 		writeJSON(w, []any{})
 		return
 	}
-	s.proxyToTaita(w, r, "/api/chats")
+	s.proxyToTaita(w, r, link, "/api/chats")
 }
 
-// proxyToTaita forwards the request to the linked taita at path, carrying the
-// session cookie jar so the server resolves the same folder every time. This is a
-// live proxy; the download-by-chat cache (the two-root "cache, not sync") is a
-// later refinement.
-func (s *Server) proxyToTaita(w http.ResponseWriter, r *http.Request, path string) {
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, s.taita.base+path, r.Body)
+// proxyToTaita forwards the request to the linked taita at path, carrying its
+// session cookie jar so the server resolves the same folder every time. Live proxy
+// for now; the download-by-chat cache (two-root "cache, not sync") is a later step.
+func (s *Server) proxyToTaita(w http.ResponseWriter, r *http.Request, link *taitaLink, path string) {
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, link.base+path, r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -54,7 +79,7 @@ func (s *Server) proxyToTaita(w http.ResponseWriter, r *http.Request, path strin
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
-	resp, err := s.taita.client.Do(req)
+	resp, err := link.client.Do(req)
 	if err != nil {
 		http.Error(w, "taita unreachable: "+err.Error(), http.StatusBadGateway)
 		return

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/httpapi"
@@ -27,6 +28,7 @@ func main() {
 	token := flag.String("token", "", "optional bearer token (default: $LLAMINGO_TOKEN or saved config)")
 	data := flag.String("data", defaultDataDir(), "store root directory")
 	fake := flag.Bool("fake", false, "serve against an in-process fake llama-server (demo/preview; no model needed)")
+	web := flag.String("web", "", "also serve the built web UI from this dir (e.g. web/dist) — a runnable local-mode client; empty = API only")
 	flag.Parse()
 
 	st, err := store.Open(*data)
@@ -52,8 +54,24 @@ func main() {
 		be = backend.New(resolved, opts...)
 	}
 
+	var handler http.Handler = httpapi.New(be, st)
+	if *web != "" {
+		// A runnable local-mode client: /api is the core, everything else is the web
+		// UI — the same shape as taita, minus server mode. Lets a browser exercise the
+		// local + Server Chats two-list without the desktop shell.
+		api := handler
+		files := http.FileServer(http.Dir(*web))
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				api.ServeHTTP(w, r)
+				return
+			}
+			files.ServeHTTP(w, r)
+		})
+		log.Printf("web UI: serving %s", *web)
+	}
 	log.Printf("llaminGO adapter listening on %s (store: %s)", *addr, *data)
-	log.Fatal(http.ListenAndServe(*addr, httpapi.New(be, st)))
+	log.Fatal(http.ListenAndServe(*addr, handler))
 }
 
 // firstNonEmpty returns the first non-empty string, or "" if all are empty.
