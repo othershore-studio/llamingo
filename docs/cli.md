@@ -62,6 +62,16 @@ Bionic. Targets:
 Detect terminal capabilities (color depth, true-color, inline-image protocol) and degrade
 gracefully across them.
 
+**DNS on Android/Termux.** A CGO-free Go binary uses Go's own resolver, which reads
+`/etc/resolv.conf` — Android has no usable one, so hostname lookups fall back to `[::1]:53`
+and fail (direct IPs still work; the browser is fine, because it uses the system resolver a
+non-cgo binary can't reach). Rather than switch to CGO + the Android NDK — which would cost
+the toolchain-free one-minute cross-compile — llamingo takes an optional **DNS server
+setting**: `-dns`, `LLAMINGO_DNS`, or the persisted `dns` in config (set it from `/settings` →
+*DNS resolver*). Point it at any resolver that knows your names — a LAN resolver, or a public
+one if your private addresses are published there (as with a mesh-VPN + public-DNS setup). It
+is inert on every platform where DNS already works.
+
 ## The TUI
 
 **DECISION — framework: `tview`** (on `gdamore/tcell`). Chosen over Bubble Tea after weighing

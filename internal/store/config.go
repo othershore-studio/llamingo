@@ -28,6 +28,7 @@ type Config struct {
 	Token    string `json:"token,omitempty"`
 	Location string `json:"location,omitempty"` // the user's manually set location (city/country)
 	ForgeURL string `json:"forgeUrl,omitempty"` // Forge Neo image server (empty = image generation off)
+	DNS      string `json:"dns,omitempty"`      // DNS server for name resolution (host or host:port); mainly Android/Termux, where Go's resolver finds no nameserver. Empty = the OS resolver.
 	Debug    bool   `json:"debug,omitempty"`    // write raw llama/Forge/tool payloads to each chat's logs/ (debug mode)
 
 	// ActiveID is which saved Connection is active (stable across url/name edits),

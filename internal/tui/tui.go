@@ -1122,11 +1122,13 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 	// manages — connections, image generation (Forge), and the global MCP servers — so a
 	// headless / CLI-only install can be set up without the GUI. Image-gen and MCP changes
 	// are written to the same files the app reads and applied live via reloadTools (a
-	// background registry rebuild); connection changes apply live too.
+	// background registry rebuild); connection changes apply live too. The DNS resolver is the
+	// one exception — process-global, set at startup, so a change there applies on next launch.
 	var (
 		showSettings     func()
 		showForge        func()
 		showMCP          func()
+		showDNS          func()
 		mcpActions       func(string, mcp.ServerConfig)
 		editMCP          func(string, mcp.ServerConfig)
 		confirmDeleteMCP func(string)
@@ -1164,6 +1166,15 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 		list.AddItem("MCP servers (global)", fmt.Sprintf("%d configured", len(gs)), 0, func() {
 			pages.RemovePage("settings")
 			showMCP()
+		})
+
+		dnsStatus := "OS default"
+		if strings.TrimSpace(cfg.DNS) != "" {
+			dnsStatus = cfg.DNS
+		}
+		list.AddItem("DNS resolver", dnsStatus, 0, func() {
+			pages.RemovePage("settings")
+			showDNS()
 		})
 
 		list.SetDoneFunc(func() {
@@ -1420,6 +1431,49 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 			})
 		pages.AddPage("mcpDelete", modal, true, true)
 		app.SetFocus(modal)
+	}
+
+	// showDNS sets the DNS server llamingo resolves names through — for Android/Termux, where
+	// Go's pure resolver finds no nameserver and every hostname fails. Blank = the OS resolver.
+	// It's read at startup (main.go sets net.DefaultResolver), so a change here takes effect on
+	// the next launch.
+	showDNS = func() {
+		cfg, _ := st.Config()
+		cur := "OS default"
+		if strings.TrimSpace(cfg.DNS) != "" {
+			cur = cfg.DNS
+		}
+		const label = "DNS server (host or host:port; blank = OS resolver)"
+		form := tview.NewForm()
+		form.SetBorder(true).SetTitle(" DNS resolver — " + tview.Escape(cur) + " · Esc back ")
+		form.AddInputField(label, cfg.DNS, 44, nil, nil)
+		form.AddButton("Save", func() {
+			val := strings.TrimSpace(form.GetFormItemByLabel(label).(*tview.InputField).GetText())
+			c, _ := st.Config()
+			c.DNS = val
+			if err := st.SetConfig(c); err != nil {
+				form.SetTitle(" couldn't save — Esc back ")
+				return
+			}
+			pages.RemovePage("dns")
+			if val == "" {
+				v.notice("[::d]DNS reset to the OS resolver — restart llamingo to apply[-]")
+			} else {
+				v.notice("[::d]DNS set to " + tview.Escape(val) + " — restart llamingo to apply (it's set at startup)[-]")
+			}
+			v.render()
+			showSettings()
+		})
+		form.AddButton("Cancel", func() {
+			pages.RemovePage("dns")
+			showSettings()
+		})
+		form.SetCancelFunc(func() {
+			pages.RemovePage("dns")
+			showSettings()
+		})
+		pages.AddPage("dns", centeredModal(form), true, true)
+		app.SetFocus(form)
 	}
 
 	// showResume overlays a picker of the project's saved sessions (newest first); Enter

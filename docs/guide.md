@@ -16,6 +16,7 @@ terminal client specifically, [`cli.md`](cli.md).
 - [Projects](#projects)
 - [Memory](#memory)
 - [Image generation](#image-generation)
+- [Over SSH and on Android (Termux)](#over-ssh-and-on-android-termux)
 - [Where your data lives](#where-your-data-lives)
 
 ## The surfaces
@@ -102,7 +103,7 @@ project, the connection alias, and the live context budget.
 | `/resume` | open a past session (a picker, newest first) |
 | `/model` | switch connection / model for this session |
 | `/connections` | add, edit, activate or delete saved servers |
-| `/settings` | hub: connections, image gen (Forge), global MCP servers |
+| `/settings` | hub: connections, image gen (Forge), global MCP, DNS |
 | `/tools` | turn this chat's tools on and off (System and MCP) |
 | `/memory` | show what's in saved memory |
 | `/prompt` | show the system prompt the model is actually given |
@@ -206,6 +207,84 @@ generation is **off** until both a URL and at least one model are configured.
 > On a shared GPU, generating an image loads VRAM and can disrupt a resident
 > `llama-server` mid-turn; llaminGO rides this out with a stream idle-timeout rather
 > than hanging. A small always-resident model alongside Forge is the smoother setup.
+
+## Over SSH and on Android (Termux)
+
+llaminGO runs headless well — on a server over SSH, or on a phone under Termux (the CGO-free
+static binary just runs on Android). A few environment gotchas, with the exact fixes.
+
+### Full-colour images over SSH
+
+OpenSSH forwards `TERM` but not `COLORTERM`, so the server can't tell your terminal does
+24-bit colour and falls back to 256 — visible banding on inline images. On the box you SSH
+**into**, run (and add to `~/.bashrc` so it sticks):
+
+```sh
+export TERM=xterm-256color COLORTERM=truecolor
+```
+
+For pixel-accurate images instead of half-blocks, use a **sixel-capable** terminal — tview
+switches to sixel automatically when the terminal advertises it.
+
+### Android / Termux
+
+Install Termux from **F-Droid or GitHub, not the Play Store** (the Play build is deprecated,
+with dead package repos). Then three Android-specific nudges.
+
+**Run it from Termux's home, not shared storage.** `/sdcard` is mounted `noexec`, so a binary
+there fails with "Permission denied" even after `chmod +x`. Keep it in `~`:
+
+```sh
+cd ~
+chmod +x llamingo-linux-arm64
+./llamingo-linux-arm64
+```
+
+**DNS.** Go's own resolver finds no nameserver on Android, so hostnames fail
+(`lookup … on [::1]:53`) while direct IPs still work. Point llamingo at a resolver — the
+`-dns` flag, the `LLAMINGO_DNS` env, or `/settings` → *DNS resolver* (persisted). Any resolver
+that knows your names works (a LAN or VPN resolver, or a public one if your private IPs are
+published there):
+
+```sh
+export LLAMINGO_DNS=1.1.1.1
+```
+
+**TLS (HTTPS servers).** HTTPS needs a CA bundle on the device — a Termux setup step, *not* a
+Go limitation like DNS above. `pkg install ca-certificates` provides one and llamingo picks it
+up. It only fails when that bundle is missing or broken, which a stale Termux can be: if `pkg`
+can't reach its mirrors, the absent CA store also breaks apt's own HTTPS (so "all mirrors look
+bad"), and llamingo's HTTPS then gives `x509: certificate signed by unknown authority`, valid
+cert or not. Fixes:
+
+```sh
+pkg install ca-certificates
+# if pkg is stuck, copy a bundle in (e.g. https://curl.se/ca/cacert.pem) and point Go at it:
+export SSL_CERT_FILE=~/cacert.pem
+```
+
+For a private CA, append your CA's PEM to the bundle. Put the `export` lines (and the colour
+one above) in `~/.bashrc` so they persist.
+
+### Driving Termux from your computer
+
+Configuring on a touchscreen is painful — run an SSH server **inside** Termux and connect from
+your PC instead (no remote-control app, no accessibility permissions). In Termux:
+
+```sh
+pkg install openssh
+passwd            # set a password
+sshd              # listens on port 8022
+whoami            # your SSH username (e.g. u0_a123)
+ip a              # the phone's IP (wlan0, or its VPN address)
+```
+
+Then from your computer — `scp`/`ssh` land you in Termux's home (`~`), the executable spot:
+
+```sh
+scp -P 8022 llamingo-linux-arm64 <user>@<phone-ip>:
+ssh -p 8022 <user>@<phone-ip>
+```
 
 ## Where your data lives
 
