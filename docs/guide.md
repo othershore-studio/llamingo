@@ -102,6 +102,7 @@ project, the connection alias, and the live context budget.
 | `/resume` | open a past session (a picker, newest first) |
 | `/model` | switch connection / model for this session |
 | `/connections` | add, edit, activate or delete saved servers |
+| `/settings` | hub: connections, image gen (Forge), global MCP servers |
 | `/tools` | turn this chat's tools on and off (System and MCP) |
 | `/memory` | show what's in saved memory |
 | `/prompt` | show the system prompt the model is actually given |
@@ -139,8 +140,9 @@ the same across models. Three kinds:
 - **System tools** — built in: memory, the current time and your location, and the
   project **file tools** (read, write, rename, copy, create, delete, folder tree,
   properties — all confined to the project folder).
-- **MCP servers** — any server you configure, global or per-project (see
-  [Projects](#projects)); the client connects them and offers their tools.
+- **MCP servers** — any server you configure, global (desktop Settings, or `/settings` →
+  *MCP servers* in the terminal) or per-project (see [Projects](#projects)); the client
+  connects them and offers their tools.
 - **Image generation** — a native tool when a Forge server is configured (see
   [Image generation](#image-generation)).
 
@@ -195,8 +197,9 @@ notices and tells you.
 
 With a **Forge** (Forge Neo) image server configured, llaminGO offers a native
 `generate_image` tool — zero end-user setup beyond pointing at the server. Configure
-the Forge URL (Settings, or `LLAMINGO_FORGE_URL`) and your image models
-(`imagegen.json`, with per-model recipes). Generated images save into the chat's
+the Forge URL and seed your image models in the desktop Settings, in the terminal via
+`/settings` → *Image generation* (which fetches them from Forge into `imagegen.json`),
+or with the `LLAMINGO_FORGE_URL` env var. Generated images save into the chat's
 attachments, render inline, and open full-screen with `/image` in the terminal. Image
 generation is **off** until both a URL and at least one model are configured.
 
