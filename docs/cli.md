@@ -6,13 +6,16 @@ the one shell still thin; everything it needs (core client, honest context budge
 two-root store, the client-owned MCP loop, the permission gate, the file + image tools)
 already exists and is shared.
 
-> **Status:** v1 built and merged to `main`. Anchored streaming chat, the permission gate,
-> per-chat tool curation, memory/prompt inspection, scroll, markdown rendering, session
-> continuity (`-c` / `/new` / `/resume`), and defaulting to the active saved connection all
-> work. Still to come in the TUI: image generation and MCP servers (the native system tools
-> are wired; these two aren't yet), `/compact`, terminal images, the launchers, and first-run
-> PATH registration. A terminal front-end over the core, not a rewrite — the same payoff as
-> Wails being "a window + a localhost server."
+> **Status:** shipped and merged to `main`, matching the desktop's feature surface. Anchored
+> streaming chat, the permission gate, per-chat tool curation, memory/prompt inspection,
+> scroll, markdown rendering, session continuity (`-c` / `/new` / `/resume`), **inline terminal
+> images**, and **image generation + MCP servers** (full tool parity with the desktop). A
+> **connection manager** (`/connections`) and a **settings hub** (`/settings`: connections ·
+> Forge · global MCP) configure everything **live, no restart** — so a headless / CLI-only box
+> is set up with no GUI. Windows PATH + Explorer-menu self-registration ships as
+> `llamingo -setup`; the per-OS/arch binaries ship from [`cli.yml`](../.github/workflows/cli.yml).
+> Still open: `/compact` and a richer multi-pane layout. A terminal front-end over the core,
+> not a rewrite — the same payoff as Wails being "a window + a localhost server."
 
 ## The shape
 
@@ -75,30 +78,37 @@ also pure-Go / MIT.)
   markdown rendered for the terminal and the tool-trail inline. Streamed raw for
   responsiveness, then repainted as rendered markdown once a turn completes.
 - a **composer** — a multi-line input: Enter sends, Ctrl+J (or Shift/Alt+Enter where the
-  terminal reports the modifier) inserts a newline; it grows with its content. Mouse is on,
-  so the wheel scrolls the transcript,
-- a **status bar** — project · model · the honest **context budget**,
-- **modals** over the transcript for the **permission prompt**, the **session picker**
-  (`/resume`), and the **tools view** (`/tools`).
+  terminal reports the modifier) inserts a newline; it grows with its content. Mouse is **off
+  by default** so the terminal's own select-and-copy works; `/mouse` turns on wheel-scroll,
+- a **status bar** — project · the active connection's alias · the honest **context budget**
+  (coloured by fill level),
+- **modals** over the transcript for the **permission prompt**, the pickers (`/resume`,
+  `/model`), the **tools view** (`/tools`), the **config editors** (`/settings`,
+  `/connections`), the **image viewer** (`/image`), and the **thinking view** (`/thought`).
 
 **Commands (slash).** A TUI has no ⋮ menu or buttons, so the command surface is **slash
 commands** typed in the composer (the `claude-code` idiom) — each the terminal equivalent of
 a desktop surface:
 
-- **Built:** `/new` (fresh session) · `/resume` (session picker, newest first) · `/tools`
-  (curate this chat's toolset, persisted per-chat) · `/memory` (show saved memory) ·
-  `/prompt` (show the system prompt the model receives) · `/clear` · `/help` · `/exit`
-  (`/quit`). Keybindings: Esc closes a modal, PgUp/PgDn scroll, Ctrl+C quits.
-- **Planned:** `/model` or `/connection` (switch persona without leaving the terminal) ·
-  `/compact` · `/project` · `/thinking`. `/tools` curates the System tools today and will show
-  MCP servers' tools once those are wired into the TUI. There is no editor for `.mcp.json`
-  itself — that's a file you edit (global `~/.llamingo/mcp.json`, or the project's `.mcp.json`)
-  — the TUI *reads and curates* what those servers declare, exactly as the desktop does.
+- **Built:** `/new` · `/resume` (session picker) · `/model` (alias `/connection`: switch the
+  session's connection/persona) · `/connections` (add/edit/activate/delete saved connections) ·
+  `/settings` (alias `/config`: the hub — connections · image gen (Forge) · global MCP) ·
+  `/tools` (curate this chat's toolset, System **and** MCP, persisted per-chat) · `/memory` ·
+  `/prompt` · `/thought` (the last turn's thinking) · `/image` (view generated images) ·
+  `/mouse` (toggle wheel-scroll) · `/clear` · `/help` · `/exit` (`/quit`). Keybindings: Esc
+  closes a modal, PgUp/PgDn scroll, Ctrl+C quits.
+- **Still planned:** `/compact` (manual compaction) and `/project`.
 
-Streaming tokens interleave with the live budget and the MCP loop (a core concern from commit
-one, same as everywhere). **Terminal images** — the genuinely hard part, still being decided:
-the plan is to detect Kitty / iTerm / sixel and draw inline, else print the saved path; which
-protocols the actual terminals (Windows Terminal, Termux, iTerm, …) support will shape it.
+MCP servers' tools *do* show in `/tools` now, and **`/settings` edits the global
+`~/.llamingo/mcp.json`** (add/edit/delete servers) plus the Forge image config — the headless
+analogue of the desktop Settings, applied live. A project's own `.mcp.json` stays a file you
+edit in the repo; the TUI reads and curates (gated) what it declares.
+
+Streaming tokens interleave with the live budget and the MCP loop. **Terminal images** —
+shipped: generated images render inline in the transcript (half-block, doubled vertical
+resolution) and `/image` opens a full viewer (truecolor blocks, or sixel where the terminal
+supports it). Over SSH, set `COLORTERM=truecolor` on the server for full colour — OpenSSH
+doesn't forward it, so tcell otherwise falls back to 256 colours (banding).
 
 ## The permission gate in the terminal
 
@@ -132,10 +142,14 @@ file, run it, done.
   linux/arm64, darwin/amd64, darwin/arm64, and the Termux arm64 build) — cheap, and a CLI
   binary needs no signing.
 
-### First run — PATH self-registration (consent-gated, self-healing)
+### First run — PATH + Explorer self-registration (consent-gated, self-healing)
 
-So "type `llamingo` anywhere" works without the user hand-editing PATH, the binary registers
-*itself* — in the gate's own spirit (a side effect → ask first, be specific, be reversible):
+**Shipped as `llamingo -setup`** (Windows): run it once and it adds the binary to your user
+PATH and an Explorer right-click entry, **"Call a llaminGO here"** (+ a "(resume)" variant);
+a startup hint nudges you to run it. On **Windows 11** the entry is in the classic context
+menu — **Shift + right-click** (or "Show more options"). It self-heals: re-run it after moving
+the binary and it repoints everything. The design, in the gate's own spirit (a side effect →
+ask first, be specific, be reversible):
 
 - **On first run**, check whether the binary's own directory is on the **user** PATH. If not,
   ask: *"Add this folder to your PATH so `llamingo` runs from anywhere? (your user PATH only —
@@ -147,11 +161,11 @@ So "type `llamingo` anywhere" works without the user hand-editing PATH, the bina
   location — so moving the install never breaks the command or leaves a stale, dead entry.
 - All **user-context, no admin, reversible** — the no-install posture, applied to PATH.
 
-## The launch trick (shipped as a convenience, opt-in)
+## The launch trick (shipped in `-setup`, opt-in)
 
-PATH self-registration already covers "run `llamingo` from any terminal"; this adds the
-**Explorer right-click → open here** convenience on top. Mirrors your `claudeCode.reg`,
-generalized and shipped in the repo (e.g. `cli/launchers/`):
+The Explorer right-click → open-here convenience ships **inside `llamingo -setup`** (above),
+not as a separate `.reg` file — setup writes the per-user (`HKCU`) registry entries directly
+and heals them. The design it realizes (generalizing your `claudeCode.reg`):
 
 - **Windows** — a `llamingo-code.reg` adding a per-user (`HKCU`) Explorer context menu on
   folders **and folder background**:
@@ -178,13 +192,17 @@ Same discipline as the rest — every slice runs against the mocked `llama-serve
 
 1. **Anchored chat** — ✅ `llamingo` in a dir → project resolve/create → interactive streaming
    chat with the honest budget in the status bar. The floor: the TUI shell over the core.
-2. **The gate** — ✅ the terminal `Prompter` (once / this-chat / always), so the native file +
-   memory tools work exactly as elsewhere. (Image gen + MCP servers: still to wire in.)
+2. **The gate** — ✅ the terminal `Prompter` (once / this-chat / always), so the native file,
+   memory, **MCP, and image-generation** tools all work behind it. ✅ full tool parity.
 3. **Niceties** — ✅ `-c` resume + `/resume` picker + `/new`; the thinking spinner + tool-trail;
-   **markdown rendering**; the `/tools` curation view; `/memory` + `/prompt` inspection; the
-   connection-from-config default. Still open: `/compact`, terminal images.
-4. **Polish** — ⏳ first-run PATH self-registration (consent-gated, self-healing), the launchers
-   (`.reg` + shell), the release-matrix binaries.
+   **markdown rendering**; the `/tools` curation view (System + MCP); `/memory` + `/prompt` +
+   `/thought`; **inline terminal images**; the connection-from-config default. Still open:
+   `/compact`.
+4. **Config surface** — ✅ `/connections` and the `/settings` hub (connections · Forge · global
+   MCP), applied **live** — a headless box set up with no GUI.
+5. **Polish** — ✅ Windows PATH + Explorer-menu self-registration (`llamingo -setup`,
+   consent-gated, self-healing, embedded icon); ✅ the release-matrix binaries
+   ([`cli.yml`](../.github/workflows/cli.yml)).
 
 ## Decided / still open
 
@@ -193,11 +211,21 @@ Same discipline as the rest — every slice runs against the mocked `llama-serve
   for the project-anchored mode.
 - **Resume semantics** — ✅ `-c` = this project's most recent session; `/resume` picks the rest,
   newest first. Matches `claude`'s feel.
-- **Still open** — in-TUI connection/model switching (`/model`); image gen + MCP in the TUI;
-  terminal images (the hard one); a richer multi-pane layout vs the current chat + modals.
+- **Done since** — `/model` switching, `/connections` + the `/settings` config hub, image gen
+  + MCP parity, inline terminal images, and `-setup` PATH/Explorer registration all shipped.
+- **Still open** — `/compact`; a richer multi-pane layout vs the current chat + modals; a
+  `-C <dir>` to anchor somewhere other than cwd.
 
 ## Changelog
 
+- 2026-11-02 (later): **Feature-complete vs the desktop, and headless-ready.** Shipped since
+  the morning's v1: **image generation + MCP** tool parity; **inline terminal images** (+ the
+  `/image` viewer); `/model` connection switching; a **`/connections`** manager and a
+  **`/settings`** hub (connections · Forge · global MCP) that configure everything **live, no
+  restart**; **`llamingo -setup`** (Windows PATH + Explorer right-click, self-healing, embedded
+  icon); and the **per-OS/arch release binaries** ([`cli.yml`](../.github/workflows/cli.yml)).
+  Validated headless over SSH on a real server, image generation included. Still open:
+  `/compact`, a richer multi-pane layout.
 - 2026-11-02: **v1 built and merged.** The spec is real: `tview` chosen (over Bubble Tea);
   anchored streaming chat + honest budget + thinking spinner; the permission gate as a consent
   modal; native tools via the client-owned loop; `/tools` curation; `/memory` + `/prompt`

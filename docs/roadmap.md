@@ -128,6 +128,30 @@ Still v1, still single-machine. Mobile here is **local-only** (the Android app r
 LAN `llama-server`); shared history across devices, and model-within-one-server selection, remain the v2 gateway
 (**Taita**) line — v1 switches among saved connections/personas, not models behind one endpoint.
 
+## Status (2026-11-02) — the terminal client
+
+The `llamingo` **TUI** grew from a chat floor into a full client, feature-matched to the desktop and usable with **no
+GUI at all** — see [`cli.md`](cli.md). Merged to `main`:
+
+- **A real terminal client** (`tview`/`tcell`) — anchored streaming chat with **markdown** rendering, the permission
+  gate as a consent modal, session continuity (`-c` / `/new` / `/resume`), the thinking spinner + tool-trail, `/memory`
+  · `/prompt` · `/thought` inspection, scroll, and mouse-off-by-default so the terminal's own select-and-copy works.
+- **Full tool parity** — the native tools, **MCP servers**, and **image generation** all run in a TUI turn through the
+  same Registry as the desktop; `/tools` curates System **and** MCP per chat.
+- **Inline terminal images** — generated images render in the transcript (half-block) and `/image` opens a full viewer
+  (truecolor blocks, or sixel). Validated headless **over SSH** on a real server, image generation included
+  (`COLORTERM=truecolor` for full colour, since OpenSSH doesn't forward it).
+- **A headless config surface** — `/connections` (#92) manages saved connections/personas, and the **`/settings` hub**
+  (#93: connections · Forge · global MCP) configures everything **live, no restart** — a server with no desktop set up
+  entirely from the terminal. The desktop's global settings, reached from the TUI.
+- **`llamingo -setup`** — Windows PATH + Explorer right-click self-registration (user-context, no admin, self-healing,
+  embedded icon; on Win11, Shift+right-click for the classic menu).
+- **Release pipeline + v0.2.0** — [`cli.yml`](../.github/workflows/cli.yml) ships the per-OS/arch CLI binaries beside
+  the desktop + Android artifacts; **v0.2.0 — "the terminal client"** shipped.
+
+Still open in the TUI: `/compact` and a richer multi-pane layout. The terminal is now a first-class v1 surface
+alongside desktop and mobile.
+
 ## Backlog — surfaced by real-model testing (2026-10)
 
 Captured while using the app against the real model; none blocking, ordered loosely. **Most of the UI/UX items below
