@@ -1,0 +1,6 @@
+# The built SPA is staged here by cmd/taita/build.sh because //go:embed can't
+# reach ../../web/dist. Keep this directory tracked so the embed compiles on a
+# fresh checkout (the embed is satisfied by this .gitignore alone), but ignore
+# the generated output.
+*
+!.gitignore
