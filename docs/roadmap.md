@@ -142,7 +142,7 @@ GUI at all** — see [`cli.md`](cli.md). Merged to `main`:
   (truecolor blocks, or sixel). Validated headless **over SSH** on a real server, image generation included
   (`COLORTERM=truecolor` for full colour, since OpenSSH doesn't forward it).
 - **A headless config surface** — `/connections` (#92) manages saved connections/personas, and the **`/settings` hub**
-  (#93: connections · Forge · global MCP) configures everything **live, no restart** — a server with no desktop set up
+  (#93: connections · Forge · global MCP; a DNS resolver for Android/Termux followed in v0.3.1) configures everything **live, no restart** — a server with no desktop set up
   entirely from the terminal. The desktop's global settings, reached from the TUI.
 - **`llamingo -setup`** — Windows PATH + Explorer right-click self-registration (user-context, no admin, self-healing,
   embedded icon; on Win11, Shift+right-click for the classic menu).
