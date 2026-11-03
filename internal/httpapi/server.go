@@ -26,10 +26,11 @@ import (
 
 // Server is the HTTP handler for the core API.
 type Server struct {
-	be   backend.Backend
-	st   *store.Store
-	mux  *http.ServeMux
-	mode string // "local" (a client sidecar) or "server" (taita); see GET /api/mode
+	be    backend.Backend
+	st    *store.Store
+	mux   *http.ServeMux
+	mode  string     // "local" (a client sidecar) or "server" (taita); see GET /api/mode
+	taita *taitaLink // set → this local sidecar proxies a linked taita (serverproxy.go)
 
 	// Agentic wiring: the tool loop's permission gate reaches the user over the
 	// chat stream. The broker + prompter are app-wide; gates are per-conversation
@@ -87,6 +88,8 @@ func New(be backend.Backend, st *store.Store, opts ...Option) *Server {
 	}
 	s.mux.HandleFunc("GET /api/props", s.handleProps)
 	s.mux.HandleFunc("GET /api/mode", s.handleMode)
+	s.mux.HandleFunc("GET /api/server/chats", s.handleServerChats)
+	s.mux.HandleFunc("POST /api/server/chats", s.handleServerChats)
 	s.mux.HandleFunc("GET /api/chats", s.handleListChats)
 	s.mux.HandleFunc("POST /api/chats", s.handleNewChat)
 	s.mux.HandleFunc("GET /api/projects", s.handleListProjects)
