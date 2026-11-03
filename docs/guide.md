@@ -250,18 +250,21 @@ published there):
 export LLAMINGO_DNS=1.1.1.1
 ```
 
-**TLS (HTTPS servers).** Go also can't find Android's CA store, so an HTTPS server fails with
-`x509: certificate signed by unknown authority`, valid cert or not. Give it a CA bundle:
+**TLS (HTTPS servers).** HTTPS needs a CA bundle on the device — a Termux setup step, *not* a
+Go limitation like DNS above. `pkg install ca-certificates` provides one and llamingo picks it
+up. It only fails when that bundle is missing or broken, which a stale Termux can be: if `pkg`
+can't reach its mirrors, the absent CA store also breaks apt's own HTTPS (so "all mirrors look
+bad"), and llamingo's HTTPS then gives `x509: certificate signed by unknown authority`, valid
+cert or not. Fixes:
 
 ```sh
 pkg install ca-certificates
-export SSL_CERT_FILE=$PREFIX/etc/tls/cert.pem
+# if pkg is stuck, copy a bundle in (e.g. https://curl.se/ca/cacert.pem) and point Go at it:
+export SSL_CERT_FILE=~/cacert.pem
 ```
 
-If `pkg` is unavailable, copy a bundle onto the device instead — download
-`https://curl.se/ca/cacert.pem`, put it in `~`, and point `SSL_CERT_FILE` at it; for a private
-CA, append your CA's PEM to that file. Put these `export` lines (and the colour one above) in
-`~/.bashrc` so they persist.
+For a private CA, append your CA's PEM to the bundle. Put the `export` lines (and the colour
+one above) in `~/.bashrc` so they persist.
 
 ### Driving Termux from your computer
 
