@@ -335,6 +335,53 @@ func TestSessionWiresImageTool(t *testing.T) {
 	}
 }
 
+// buildTools re-reads config, so Forge configured after Open (as the /settings editor
+// does) is picked up by a live rebuild — no restart. This is what reloadTools swaps in.
+func TestBuildToolsPicksUpForgeLive(t *testing.T) {
+	srv := lcpptest.NewServer()
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Open with no image config — generate_image is absent.
+	sess, err := Open(be, st, t.TempDir(), allowPrompter{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	if hasImageTool(sess) {
+		t.Fatal("generate_image wired before Forge was configured")
+	}
+
+	// Configure Forge + a model (what /settings writes), then rebuild live.
+	if err := st.SetConfig(store.Config{ForgeURL: "http://forge.invalid:7860"}); err != nil {
+		t.Fatal(err)
+	}
+	cfgJSON, _ := json.Marshal(imagegen.Config{Default: "m", Models: []imagegen.ModelConfig{{Name: "m"}}})
+	if err := os.WriteFile(filepath.Join(st.Root(), "imagegen.json"), cfgJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg, servers, _ := sess.buildTools()
+	sess.reg, sess.servers = reg, servers // what reloadTools swaps in on the UI thread
+
+	if !hasImageTool(sess) {
+		t.Errorf("generate_image not wired after a live rebuild; registry has %d tools", len(sess.Tools()))
+	}
+}
+
+// hasImageTool reports whether the session's registry currently offers generate_image.
+func hasImageTool(s *Session) bool {
+	for _, tl := range s.Tools() {
+		if tl.Name == imagegen.ToolName {
+			return true
+		}
+	}
+	return false
+}
+
 // The image sink keeps the decoded image in memory (for /image and the auto-show) while
 // still persisting it to the conversation's attachments.
 func TestSessionSinkCapturesImage(t *testing.T) {

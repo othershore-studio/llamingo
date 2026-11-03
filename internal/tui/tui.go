@@ -72,6 +72,7 @@ type Session struct {
 	title  string
 	dir    string
 	projID store.ProjectID
+	gate   *permission.Gate // shared permission gate; kept so /settings can rebuild the registry live
 
 	msgs       []backend.Message
 	budget     contextbudget.Budget
@@ -95,30 +96,13 @@ func Open(be backend.Backend, st *store.Store, dir string, prompter permission.P
 		return nil, fmt.Errorf("open project for %s: %w", dir, err)
 	}
 	s := &Session{be: be, st: st, title: filepath.Base(dir), dir: dir, projID: proj.ID}
-
-	// The native tools, then the user's MCP servers and image generation — the same
-	// toolset the desktop assembles (see httpapi.registryFor), so a tool works in both.
-	// One gate (prompter + grants) is shared across the gated tools; global MCP servers
-	// are user-authored and run trusted (nil gate), project .mcp.json is gated.
-	gate := permission.New(prompter, permission.NewMemoryGrantStore())
-	regs := []mcp.Registry{
-		memtool.NewTool(st, gate),
-		localtools.NewTool(func() string { c, _ := st.Config(); return c.Location }),
-		filetools.NewTool(dir, gate, map[string]bool{}),
-	}
-	if g := s.connectServers(mcp.NewRegistry(nil), globalMCPPath(st.Root()), ""); g != nil {
-		regs = append(regs, g)
-	}
-	if p := s.connectServers(mcp.NewRegistry(gate), "", projectMCPPath(dir)); p != nil {
-		regs = append(regs, p)
-	}
-	imageOn := false
-	if img := imageTool(st, s, gate); img != nil {
-		regs = append(regs, img)
-		imageOn = true
-	}
-	s.reg = mcp.Combine(regs...)
-	s.summarizeTools(imageOn)
+	// One permission gate (prompter + grants) is shared across the gated tools and kept on
+	// the session, so /settings can rebuild the tool registry live. Global MCP servers are
+	// user-authored and run trusted (nil gate); project .mcp.json is gated.
+	s.gate = permission.New(prompter, permission.NewMemoryGrantStore())
+	reg, servers, notes := s.buildTools()
+	s.reg, s.servers = reg, servers
+	s.notes = append(s.notes, notes...)
 
 	// -c resumes the project's most recent session that has content, skipping the empty
 	// shells a launch used to leave behind. Otherwise the session is created lazily on the
@@ -157,20 +141,20 @@ func (s *Session) ensureSession() error {
 // connects each declared server into reg, tracking it for Close. A server that won't
 // start is noted and skipped, never fatal. Returns nil when none connected, so an empty
 // registry isn't combined in.
-func (s *Session) connectServers(reg *mcp.ServerRegistry, globalPath, projectPath string) *mcp.ServerRegistry {
+func (s *Session) connectServers(reg *mcp.ServerRegistry, globalPath, projectPath string, notes *[]string) *mcp.ServerRegistry {
 	servers, err := mcp.Load(globalPath, projectPath)
 	if err != nil {
-		s.notes = append(s.notes, "[red]mcp: config error: "+tview.Escape(err.Error())+"[-]")
+		*notes = append(*notes, "[red]mcp: config error: "+tview.Escape(err.Error())+"[-]")
 	}
 	n := 0
 	for _, srv := range servers {
 		c, err := mcp.Connect(srv)
 		if err != nil {
-			s.notes = append(s.notes, "[yellow]mcp: couldn't start "+tview.Escape(srv.Name)+"[-]")
+			*notes = append(*notes, "[yellow]mcp: couldn't start "+tview.Escape(srv.Name)+"[-]")
 			continue
 		}
 		if err := reg.Add(context.Background(), srv, c); err != nil {
-			s.notes = append(s.notes, "[yellow]mcp: "+tview.Escape(srv.Name)+" — "+tview.Escape(err.Error())+"[-]")
+			*notes = append(*notes, "[yellow]mcp: "+tview.Escape(srv.Name)+" — "+tview.Escape(err.Error())+"[-]")
 			_ = c.Close()
 			continue
 		}
@@ -180,25 +164,48 @@ func (s *Session) connectServers(reg *mcp.ServerRegistry, globalPath, projectPat
 		reg.Close()
 		return nil
 	}
-	s.servers = append(s.servers, reg)
 	return reg
 }
 
-// summarizeTools adds a one-line startup note of the MCP tools available and whether image
-// generation is on, so parity is visible at a glance (the detail is in /tools).
-func (s *Session) summarizeTools(imageOn bool) {
+// buildTools connects the configured MCP servers and assembles the session's tool registry
+// — the native tools, the global (trusted) and project (gated) MCP servers, and image
+// generation when Forge is configured. It returns the registry, the server registries to
+// track for Close, and the notes to surface (connect errors + a one-line tool summary). It
+// reads only immutable session fields and does not mutate s, so a live rebuild
+// (reloadTools) can run the slow MCP connects off the UI thread and swap the result in.
+func (s *Session) buildTools() (mcp.Registry, []*mcp.ServerRegistry, []string) {
+	var notes []string
+	var servers []*mcp.ServerRegistry
+	regs := []mcp.Registry{
+		memtool.NewTool(s.st, s.gate),
+		localtools.NewTool(func() string { c, _ := s.st.Config(); return c.Location }),
+		filetools.NewTool(s.dir, s.gate, map[string]bool{}),
+	}
+	if g := s.connectServers(mcp.NewRegistry(nil), globalMCPPath(s.st.Root()), "", &notes); g != nil {
+		regs = append(regs, g)
+		servers = append(servers, g)
+	}
+	if p := s.connectServers(mcp.NewRegistry(s.gate), "", projectMCPPath(s.dir), &notes); p != nil {
+		regs = append(regs, p)
+		servers = append(servers, p)
+	}
+	imageOn := false
+	if img := imageTool(s.st, s, s.gate); img != nil {
+		regs = append(regs, img)
+		imageOn = true
+	}
 	mcpTools := 0
-	for _, sr := range s.servers {
+	for _, sr := range servers {
 		mcpTools += len(sr.Tools())
 	}
-	if mcpTools == 0 && !imageOn {
-		return
+	if mcpTools > 0 || imageOn {
+		img := "off"
+		if imageOn {
+			img = "on"
+		}
+		notes = append(notes, fmt.Sprintf("[::d]tools: %d from MCP · image generation %s[-]", mcpTools, img))
 	}
-	img := "off"
-	if imageOn {
-		img = "on"
-	}
-	s.notes = append(s.notes, fmt.Sprintf("[::d]tools: %d from MCP · image generation %s[-]", mcpTools, img))
+	return mcp.Combine(regs...), servers, notes
 }
 
 // Close shuts the session's MCP server connections. Called once, on exit.
@@ -822,6 +829,29 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 		}()
 	}
 
+	// reloadTools rebuilds the tool registry from the current config, so a Forge or MCP
+	// change made in /settings applies without a restart. The MCP reconnect is slow, so it
+	// runs off the UI thread; the fresh registry is swapped in and the old server
+	// connections closed on the UI thread once it's ready.
+	reloadTools := func() {
+		v.notice("[::d]applying — reconnecting tools…[-]")
+		v.render()
+		old := sess.servers
+		go func() {
+			reg, servers, notes := sess.buildTools()
+			app.QueueUpdateDraw(func() {
+				sess.reg, sess.servers = reg, servers
+				for _, sr := range old {
+					sr.Close()
+				}
+				for _, n := range notes {
+					v.notice(n)
+				}
+				v.render()
+			})
+		}()
+	}
+
 	// switchConnection points this session at another saved connection for the rest of the
 	// run — a fresh backend (its URL, token, sampling) and persona, then re-probe the model
 	// and re-meter. It doesn't change which connection is active globally (that stays the
@@ -1091,8 +1121,8 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 	// The settings hub (/settings): one entry point onto the global config the desktop
 	// manages — connections, image generation (Forge), and the global MCP servers — so a
 	// headless / CLI-only install can be set up without the GUI. Image-gen and MCP changes
-	// are written to the same files the app reads and take effect on the next launch (the
-	// tool registry is assembled once at startup); connection changes apply live.
+	// are written to the same files the app reads and applied live via reloadTools (a
+	// background registry rebuild); connection changes apply live too.
 	var (
 		showSettings     func()
 		showForge        func()
@@ -1178,12 +1208,13 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 			}
 			pages.RemovePage("forge")
 			if url == "" {
-				v.notice("[::d]image generation off — restart llamingo to apply[-]")
+				v.notice("[::d]image generation off[-]")
 			} else {
-				v.notice("[::d]Forge URL saved — restart llamingo to apply[-]")
+				v.notice("[::d]Forge URL saved[-]")
 			}
 			v.render()
-			showSettings()
+			reloadTools()
+			app.SetFocus(input)
 		})
 		form.AddButton("Save & fetch models", func() {
 			url := forgeURL()
@@ -1198,6 +1229,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 			pages.RemovePage("forge")
 			v.notice("[::d]fetching models from Forge…[-]")
 			v.render()
+			app.SetFocus(input)
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				defer cancel()
@@ -1219,11 +1251,11 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 					if def == "" {
 						def = "none auto-pickable"
 					}
-					v.notice(fmt.Sprintf("[::d]Forge: %d models (default: %s) — restart llamingo to apply[-]", len(merged.Models), tview.Escape(def)))
+					v.notice(fmt.Sprintf("[::d]Forge: %d models (default: %s)[-]", len(merged.Models), tview.Escape(def)))
 					v.render()
+					reloadTools()
 				})
 			}()
-			showSettings()
 		})
 		form.AddButton("Cancel", func() {
 			pages.RemovePage("forge")
@@ -1349,8 +1381,9 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 				return
 			}
 			pages.RemovePage("mcpEdit")
-			v.notice("[::d]saved MCP server " + tview.Escape(name) + " — restart llamingo to apply[-]")
+			v.notice("[::d]saved MCP server " + tview.Escape(name) + "[-]")
 			v.render()
+			reloadTools()
 			showMCP()
 		})
 		form.AddButton("Cancel", func() {
@@ -1378,7 +1411,8 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 					if err := mcp.SaveServers(p, servers); err != nil {
 						v.notice("[red]couldn't save: " + tview.Escape(err.Error()) + "[-]")
 					} else {
-						v.notice("[::d]deleted MCP server " + tview.Escape(name) + " — restart llamingo to apply[-]")
+						v.notice("[::d]deleted MCP server " + tview.Escape(name) + "[-]")
+						reloadTools()
 					}
 					v.render()
 				}
