@@ -12,5 +12,7 @@ find cmd/taita/web/dist -mindepth 1 ! -name .gitignore -delete
 cp -r web/dist/* cmd/taita/web/dist/
 
 echo "==> Building taita"
-go build -o taita ./cmd/taita
-echo "==> Done: ./taita (run with -fake for a no-model demo)"
+# No -o: let `go build` name the binary per platform (taita.exe on Windows,
+# taita on Linux) so the result runs natively, not only under Git Bash.
+go build ./cmd/taita
+echo "==> Done: taita.exe (Windows) / ./taita (Linux) — run with -fake for a no-model demo"
