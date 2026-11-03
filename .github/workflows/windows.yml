@@ -46,13 +46,13 @@ jobs:
         run: >-
           Compress-Archive
           -Path build\bin\llamingo.exe
-          -DestinationPath llamingo-windows-amd64.zip
+          -DestinationPath llamingo-desktop-windows-amd64.zip
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llamingo-windows-amd64
-          path: llamingo-windows-amd64.zip
+          name: llamingo-desktop-windows-amd64
+          path: llamingo-desktop-windows-amd64.zip
           if-no-files-found: error
 
       # On a version tag, also attach the zip to that tag's GitHub Release
@@ -61,4 +61,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: llamingo-windows-amd64.zip
+          files: llamingo-desktop-windows-amd64.zip

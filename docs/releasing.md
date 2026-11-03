@@ -4,7 +4,7 @@ Releases are built and published by GitHub Actions on a **version tag** — noth
 runs on ordinary pushes. One tag produces a GitHub Release with its downloads
 attached:
 
-- **Windows desktop** (Wails) — `llamingo-windows-amd64.zip` (the `.exe`). Built by
+- **Windows desktop** (Wails) — `llamingo-desktop-windows-amd64.zip` (the `.exe`). Built by
   [`windows.yml`](../.github/workflows/windows.yml). **Unsigned** — SmartScreen will
   say "unknown publisher"; an Authenticode step can slot in later once a
   code-signing certificate exists.
