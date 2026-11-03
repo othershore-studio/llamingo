@@ -66,12 +66,16 @@ at the *same* URL become two **personas**: a low-temperature **"Coder"** and a
 high-temperature **"Creative"** are different entries you switch between, even though
 one model is running.
 
-- **Add / edit connections** in the desktop Settings. One is *active* at a time; that
-  is the one new chats use.
-- **In the terminal**, `/model` (alias `/connection`) opens a picker of your saved
-  connections and switches the current session to one — its backend, sampling, and
-  persona — for the rest of the run. (It doesn't change which connection is globally
-  active; that stays the desktop's to set.)
+- **Add / edit connections** in the desktop Settings — or in the terminal with
+  `/connections`: add, edit, activate, or delete a server (and its persona) without the
+  GUI, which is what you need on a **headless server** where there's no desktop app. The
+  first connection you add becomes active automatically. Both surfaces write the same
+  `config.json`, so changes cross between them. One connection is *active* at a time;
+  that is the one new chats use.
+- **To switch for just the current session**, `/model` (alias `/connection`) opens a
+  picker and points this run at another saved connection — its backend, sampling, and
+  persona. (`/connections` → *Use* sets the globally active one; `/model` is the
+  lighter per-session switch.)
 
 One `llama-server` serves one model, so switching the connection is how you switch
 model.
@@ -97,6 +101,7 @@ project, the connection alias, and the live context budget.
 | `/new` | start a fresh session in this project |
 | `/resume` | open a past session (a picker, newest first) |
 | `/model` | switch connection / model for this session |
+| `/connections` | add, edit, activate or delete saved servers |
 | `/tools` | turn this chat's tools on and off (System and MCP) |
 | `/memory` | show what's in saved memory |
 | `/prompt` | show the system prompt the model is actually given |
