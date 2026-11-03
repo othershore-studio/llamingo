@@ -26,9 +26,10 @@ import (
 
 // Server is the HTTP handler for the core API.
 type Server struct {
-	be  backend.Backend
-	st  *store.Store
-	mux *http.ServeMux
+	be   backend.Backend
+	st   *store.Store
+	mux  *http.ServeMux
+	mode string // "local" (a client sidecar) or "server" (taita); see GET /api/mode
 
 	// Agentic wiring: the tool loop's permission gate reaches the user over the
 	// chat stream. The broker + prompter are app-wide; gates are per-conversation
@@ -55,12 +56,24 @@ type Server struct {
 	fileReads   map[string]map[string]bool
 }
 
-// New wires the API over the given backend and store.
-func New(be backend.Backend, st *store.Store) *Server {
+// Option configures a Server at construction; without any, it runs in "local"
+// mode (a client's sidecar). taita passes ServerMode() for its per-user cores.
+type Option func(*Server)
+
+// ServerMode marks this core as a taita server rather than a local client's
+// sidecar, surfaced at GET /api/mode so the shared web UI adapts (server =
+// chat-only, no Projects, one server-owned chat list). See the memory note
+// taita-build-plan → TWO CHAT LISTS.
+func ServerMode() Option { return func(s *Server) { s.mode = "server" } }
+
+// New wires the API over the given backend and store. Without options it is a
+// local client sidecar; pass ServerMode() for a taita core.
+func New(be backend.Backend, st *store.Store, opts ...Option) *Server {
 	br := newBroker()
 	s := &Server{
 		be:          be,
 		st:          st,
+		mode:        "local",
 		mux:         http.NewServeMux(),
 		broker:      br,
 		prompter:    newSSEPrompter(br),
@@ -69,7 +82,11 @@ func New(be backend.Backend, st *store.Store) *Server {
 		projectRegs: map[string]*projectReg{},
 		fileReads:   map[string]map[string]bool{},
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
 	s.mux.HandleFunc("GET /api/props", s.handleProps)
+	s.mux.HandleFunc("GET /api/mode", s.handleMode)
 	s.mux.HandleFunc("GET /api/chats", s.handleListChats)
 	s.mux.HandleFunc("POST /api/chats", s.handleNewChat)
 	s.mux.HandleFunc("GET /api/projects", s.handleListProjects)
@@ -117,6 +134,13 @@ func (s *Server) handleProps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"model": modelDisplayName(p.ModelID, p.ModelAlias), "nCtx": p.NCtx, "thinkingSupported": thinkingSupported(p.ChatTemplate)})
+}
+
+// GET /api/mode — whether this core is a local client sidecar ("local") or a
+// taita server ("server"). Backend-independent (unlike /api/props), so the shared
+// web UI can pick its layout even when the model is down. See taita-build-plan.
+func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"mode": s.mode})
 }
 
 // thinkingSupported reports whether the model's chat template exposes an

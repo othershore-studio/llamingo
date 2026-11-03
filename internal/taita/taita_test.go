@@ -118,3 +118,22 @@ func countChats(t *testing.T, rec *httptest.ResponseRecorder) int {
 	}
 	return len(chats)
 }
+
+// taita's per-user cores run in server mode, which the UI reads from /api/mode to
+// drop Projects and show a single server-owned chat list.
+func TestServerModeDeclared(t *testing.T) {
+	srv := newServer(t, nil)
+	rec, _ := do(t, srv, "GET", "/api/mode", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v; body = %s", err, rec.Body)
+	}
+	if body.Mode != "server" {
+		t.Errorf("mode = %q, want %q (taita cores run in server mode)", body.Mode, "server")
+	}
+}

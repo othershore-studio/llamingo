@@ -124,7 +124,7 @@ func (s *Server) coreFor(key string) (*httpapi.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := httpapi.New(s.be, st)
+	c := httpapi.New(s.be, st, httpapi.ServerMode())
 	s.cores[key] = c
 	return c, nil
 }

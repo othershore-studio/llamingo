@@ -79,6 +79,12 @@
 
   let conn = $state(null) // { model, nCtx }
   let chats = $state([])
+  // Server/Taita chats on a LOCAL client are a cache of a linked taita (wired in
+  // P3); serverLinked flips true once a taita connection is configured. In a
+  // taita-served browser serverMode is true and `chats` already IS the server's.
+  let serverChats = $state([])
+  let serverLinked = $state(false)
+  let serverMode = $state(false) // this core is a taita server (GET /api/mode)
   let activeId = $state(null)
   let streamingChatId = $state(null) // the chat the in-flight stream belongs to
   let streamMessages = null // its live message array, so switching chats mid-stream keeps the turn alive
@@ -280,8 +286,13 @@
       conn = null
       reachable = false
     }
+    // Mode is server-declared (backend-independent), so the layout is correct even
+    // when the model is down: taita → "server" (one chat list, no Projects).
+    try {
+      serverMode = (await apiFetch('/api/mode').then((r) => r.json()))?.mode === 'server'
+    } catch {}
     chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
-    projects = (await apiFetch('/api/projects').then((r) => r.json())) ?? []
+    projects = serverMode ? [] : ((await apiFetch('/api/projects').then((r) => r.json())) ?? [])
     if (!activeId) {
       if (chats.length) await selectChat(chats[0].id)
       // No chats yet: land in a ready one so the toolset + budget show from message
@@ -1158,7 +1169,7 @@
       <div class="drawer-scrim" onclick={() => (drawerOpen = false)}></div>
     {/if}
     <aside class="left" class:collapsed={!sidebarShown} style="--sidebar-w:{sidebarWidth}px; margin-left:{sidebarShown ? '0px' : -sidebarWidth + 'px'}">
-      <div class="switcher">Chats</div>
+      <div class="switcher">{serverLinked && !serverMode ? 'Local Chats' : 'Chats'}</div>
       <button class="new" onclick={newChat}>+ New chat</button>
       <ul class="list">
         {#each chats as c}
@@ -1193,7 +1204,22 @@
         {/each}
       </ul>
 
-      {#if !mobileClient}
+      {#if serverLinked && !serverMode}
+      <div class="switcher">Server Chats</div>
+      <ul class="list">
+        {#each serverChats as c}
+          <li class="rowwrap">
+            <button class="row" class:active={c.id === activeId} onclick={() => selectChat(c.id)}>
+              {c.title || 'Untitled'}
+            </button>
+          </li>
+        {:else}
+          <li class="row muted">No server chats yet</li>
+        {/each}
+      </ul>
+      {/if}
+
+      {#if !mobileClient && !serverMode}
       <div class="switcher">Projects</div>
       <button class="new" onclick={() => (openingFolder = !openingFolder)}>+ Open folder</button>
       {#if openingFolder}
