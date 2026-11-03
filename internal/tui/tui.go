@@ -13,6 +13,8 @@ package tui
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -23,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +50,7 @@ const helpText = "\n[::d]commands:\n" +
 	"  /new      start a fresh session\n" +
 	"  /resume   open a past session\n" +
 	"  /model    switch connection / model\n" +
+	"  /connections  add, edit or activate a saved server\n" +
 	"  /tools    turn tools on/off for this chat\n" +
 	"  /memory   show what's in saved memory\n" +
 	"  /prompt   show the system prompt sent to the model\n" +
@@ -860,7 +864,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 	showModels := func() {
 		cfg, err := st.Config()
 		if err != nil || len(cfg.Connections) == 0 {
-			v.notice("[::d]no saved connections — add them in the desktop app[-]")
+			v.notice("[::d]no saved connections — /connections to add one[-]")
 			v.render()
 			return
 		}
@@ -888,6 +892,194 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 			app.SetFocus(input)
 		})
 		pages.AddPage("models", centeredModal(list), true, true)
+		app.SetFocus(list)
+	}
+
+	// The connection manager (/connections): the terminal face of the desktop's
+	// Connections settings, so a headless / CLI-only user can add, edit, activate and
+	// delete saved llama-servers (and their personas) without the GUI or hand-editing
+	// config.json. Every change goes through store.SetConfig — the same file the desktop
+	// reads — so edits cross between the two. The list rebuilds from fresh config on each
+	// return, so saves and deletes show immediately.
+	var (
+		showConnections    func()
+		connActions        func(store.Connection)
+		editConnection     func(*store.Connection)
+		confirmDelete      func(store.Connection)
+		activateConnection func(store.Connection)
+	)
+
+	// activateConnection persists a connection as active (mirroring its fields into the
+	// top-level config, like the desktop's /activate) and applies it to the running
+	// session, then returns to the chat.
+	activateConnection = func(c store.Connection) {
+		cfg, _ := st.Config()
+		if err := st.SetConfig(applyActive(cfg, c)); err != nil {
+			v.notice("[red]couldn't save: " + tview.Escape(err.Error()) + "[-]")
+			v.render()
+			app.SetFocus(input)
+			return
+		}
+		switchConnection(c) // new backend + persona + status for this session
+		v.notice("[::d]" + tview.Escape(c.Name) + " is now the default connection[-]")
+		v.render()
+		app.SetFocus(input)
+	}
+
+	confirmDelete = func(c store.Connection) {
+		modal := tview.NewModal().
+			SetText("Delete connection \"" + c.Name + "\"?").
+			AddButtons([]string{"Delete", "Cancel"}).
+			SetDoneFunc(func(_ int, label string) {
+				pages.RemovePage("connDelete")
+				if label == "Delete" {
+					cfg, _ := st.Config()
+					cfg.Connections = removeConn(cfg.Connections, c.ID)
+					if cfg.ActiveID == c.ID {
+						cfg.ActiveID = "" // the active connection is gone
+					}
+					if err := st.SetConfig(cfg); err != nil {
+						v.notice("[red]couldn't save: " + tview.Escape(err.Error()) + "[-]")
+					} else {
+						v.notice("[::d]deleted connection " + tview.Escape(c.Name) + "[-]")
+					}
+					v.render()
+				}
+				showConnections()
+			})
+		pages.AddPage("connDelete", modal, true, true)
+		app.SetFocus(modal)
+	}
+
+	// connActions offers the three things you can do with a saved connection; Esc backs
+	// out to the list.
+	connActions = func(c store.Connection) {
+		list := tview.NewList().ShowSecondaryText(false)
+		list.SetBorder(true).SetTitle(" " + tview.Escape(c.Name) + " — Enter chooses · Esc back ")
+		list.AddItem("Use (set as active)", "", 0, func() {
+			pages.RemovePage("connActions")
+			activateConnection(c)
+		})
+		list.AddItem("Edit…", "", 0, func() {
+			pages.RemovePage("connActions")
+			editConnection(&c)
+		})
+		list.AddItem("Delete…", "", 0, func() {
+			pages.RemovePage("connActions")
+			confirmDelete(c)
+		})
+		list.SetDoneFunc(func() {
+			pages.RemovePage("connActions")
+			showConnections()
+		})
+		pages.AddPage("connActions", centeredModal(list), true, true)
+		app.SetFocus(list)
+	}
+
+	// editConnection is the add/edit form. existing == nil adds a new one. URL is required;
+	// temperature and min-p are optional numbers (blank = the server default). Saving the
+	// first connection (none active yet) also activates it, so a fresh headless setup is
+	// connected right away.
+	editConnection = func(existing *store.Connection) {
+		c := store.Connection{}
+		title := " add connection — Tab moves · Esc cancels "
+		if existing != nil {
+			c = *existing
+			title = " edit connection — Tab moves · Esc cancels "
+		}
+		form := tview.NewForm()
+		form.SetBorder(true).SetTitle(title)
+		form.AddInputField("Name", c.Name, 40, nil, nil)
+		form.AddInputField("URL", c.URL, 40, nil, nil)
+		form.AddInputField("Token", c.Token, 40, nil, nil)
+		form.AddInputField("Temperature", floatStr(c.Temperature), 10, nil, nil)
+		form.AddInputField("Min-P", floatStr(c.MinP), 10, nil, nil)
+		form.AddInputField("System prompt", c.SystemPrompt, 60, nil, nil)
+		field := func(label string) string {
+			return strings.TrimSpace(form.GetFormItemByLabel(label).(*tview.InputField).GetText())
+		}
+		form.AddButton("Save", func() {
+			url := field("URL")
+			if url == "" {
+				form.SetTitle(" URL is required — Esc cancels ")
+				return
+			}
+			temp, okT := parseFloatPtr(field("Temperature"))
+			minp, okM := parseFloatPtr(field("Min-P"))
+			if !okT || !okM {
+				form.SetTitle(" temperature / min-p must be numbers — Esc cancels ")
+				return
+			}
+			c.Name = field("Name")
+			if c.Name == "" {
+				c.Name = connName(url)
+			}
+			c.URL, c.Token = url, field("Token")
+			c.Temperature, c.MinP = temp, minp
+			c.SystemPrompt = field("System prompt")
+			newOne := c.ID == ""
+			if newOne {
+				c.ID = newConnID()
+			}
+			cfg, _ := st.Config()
+			cfg.Connections = upsertConn(cfg.Connections, c)
+			if err := st.SetConfig(cfg); err != nil {
+				form.SetTitle(" couldn't save — Esc cancels ")
+				return
+			}
+			pages.RemovePage("connEdit")
+			if newOne && cfg.ActiveID == "" {
+				activateConnection(c) // first connection — make it live, then back to chat
+				return
+			}
+			v.notice("[::d]saved connection " + tview.Escape(c.Name) + "[-]")
+			v.render()
+			showConnections()
+		})
+		form.AddButton("Cancel", func() {
+			pages.RemovePage("connEdit")
+			showConnections()
+		})
+		form.SetCancelFunc(func() {
+			pages.RemovePage("connEdit")
+			showConnections()
+		})
+		pages.AddPage("connEdit", centeredModal(form), true, true)
+		app.SetFocus(form)
+	}
+
+	// showConnections lists the saved connections (active one marked) plus an add row;
+	// Enter opens a connection's actions or the add form, Esc closes.
+	showConnections = func() {
+		cfg, _ := st.Config()
+		conns := cfg.Connections
+		list := tview.NewList().ShowSecondaryText(true)
+		list.SetBorder(true).SetTitle(" connections — Enter opens · Esc closes ")
+		for _, c := range conns {
+			marker := "  "
+			if c.ID != "" && c.ID == cfg.ActiveID {
+				marker = "▸ " // the active connection
+			}
+			secondary := c.URL
+			if strings.TrimSpace(c.SystemPrompt) != "" {
+				secondary += " · persona"
+			}
+			list.AddItem(marker+tview.Escape(c.Name), tview.Escape(secondary), 0, nil)
+		}
+		list.AddItem("＋ Add connection…", "", 0, nil)
+		list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
+			pages.RemovePage("connections")
+			if i == len(conns) { // the add row
+				editConnection(nil)
+				return
+			}
+			connActions(conns[i])
+		})
+		list.SetDoneFunc(func() {
+			pages.RemovePage("connections")
+			app.SetFocus(input)
+		})
+		pages.AddPage("connections", centeredModal(list), true, true)
 		app.SetFocus(list)
 	}
 
@@ -1016,6 +1208,9 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 				return
 			case "/model", "/connection":
 				showModels()
+				return
+			case "/connections", "/conn":
+				showConnections()
 				return
 			case "/image":
 				if len(sess.images) == 0 {
@@ -1157,9 +1352,15 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 			return nil
 		case tcell.KeyEscape:
 			// The image and thought views have no key handling of their own; close here.
-			if name, _ := pages.GetFrontPage(); name == "image" || name == "thought" {
+			name, _ := pages.GetFrontPage()
+			if name == "image" || name == "thought" {
 				pages.RemovePage(name)
 				app.SetFocus(input)
+				return nil
+			}
+			if name == "connDelete" { // the delete-confirm modal has no Esc of its own
+				pages.RemovePage("connDelete")
+				showConnections()
 				return nil
 			}
 			return ev
@@ -1238,7 +1439,12 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 	if setupHint != "" {
 		v.notice(setupHint)
 	}
-	if len(sess.notes) > 0 || setupHint != "" {
+	noConns := false
+	if cfg, cerr := st.Config(); cerr == nil && len(cfg.Connections) == 0 {
+		v.notice("[::d]no saved connections yet — /connections to add your llama-server[-]")
+		noConns = true
+	}
+	if len(sess.notes) > 0 || setupHint != "" || noConns {
 		v.render()
 	}
 	// Mouse is off by default so the terminal's own text selection (mark + right-click to
@@ -1311,6 +1517,81 @@ func blockString(title, body string) string {
 		return head + "[::d](empty)[-]"
 	}
 	return head + fmt.Sprintf("[::d]%s[-]", tview.Escape(body))
+}
+
+// upsertConn replaces the connection sharing c's id, or appends c when it's new.
+func upsertConn(conns []store.Connection, c store.Connection) []store.Connection {
+	for i := range conns {
+		if conns[i].ID == c.ID {
+			conns[i] = c
+			return conns
+		}
+	}
+	return append(conns, c)
+}
+
+// removeConn drops the connection with id (a no-op if none matches).
+func removeConn(conns []store.Connection, id string) []store.Connection {
+	kept := make([]store.Connection, 0, len(conns))
+	for _, c := range conns {
+		if c.ID != id {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
+// applyActive mirrors a connection's fields into the top-level config (which the live
+// backend and startup read) and marks it active — the same contract as the desktop's
+// /api/connections/activate.
+func applyActive(cfg store.Config, c store.Connection) store.Config {
+	cfg.ActiveID = c.ID
+	cfg.URL, cfg.Token = c.URL, c.Token
+	cfg.Temperature, cfg.MinP = c.Temperature, c.MinP
+	cfg.SystemPrompt = c.SystemPrompt
+	return cfg
+}
+
+// newConnID returns a short random id for a saved connection (stable across url/name edits).
+func newConnID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// connName labels a connection by its host:port when the user hasn't named it —
+// e.g. "http://localhost:8080/" -> "localhost:8080".
+func connName(url string) string {
+	h := strings.TrimPrefix(strings.TrimPrefix(url, "https://"), "http://")
+	if i := strings.IndexByte(h, '/'); i >= 0 {
+		h = h[:i]
+	}
+	if h == "" {
+		return url
+	}
+	return h
+}
+
+// floatStr renders an optional sampling value for the edit form — empty when unset.
+func floatStr(p *float64) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*p, 'g', -1, 64)
+}
+
+// parseFloatPtr reads an optional float from the form: blank = unset (nil, ok); a valid
+// number = its pointer; anything else = not ok, so the save is rejected.
+func parseFloatPtr(s string) (*float64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, true
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil, false
+	}
+	return &f, true
 }
 
 // item is one entry in the transcript's display model. The transcript is rebuilt from
