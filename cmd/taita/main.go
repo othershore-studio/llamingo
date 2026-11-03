@@ -35,8 +35,8 @@ func main() {
 	addr := flag.String("addr", ":8788", "listen address")
 	url := flag.String("url", "", "llama-server base URL (default: $LLAMINGO_URL, then http://localhost:8080)")
 	token := flag.String("token", "", "optional bearer token (default: $LLAMINGO_TOKEN)")
-	dataFlag := flag.String("data", "", "per-user store root (default: $TAITA_DATA, then ~/taita/data)")
-	configFlag := flag.String("config", "", "server config dir (default: $TAITA_CONFIG, then ~/taita/config); reserved until centralized config lands")
+	dataFlag := flag.String("data", "", "per-user store root (default: $TAITA_DATA, then ~/.taita/data)")
+	configFlag := flag.String("config", "", "server config dir (default: $TAITA_CONFIG, then ~/.taita/config); reserved until centralized config lands")
 	fake := flag.Bool("fake", false, "serve against an in-process fake llama-server (demo/preview; no model needed)")
 	flag.Parse()
 
@@ -81,11 +81,11 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// defaultDir is ~/taita/<sub>, or taita/<sub> relative if the home dir is unknown.
+// defaultDir is ~/.taita/<sub>, or .taita/<sub> relative if the home dir is unknown.
 func defaultDir(sub string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join("taita", sub)
+		return filepath.Join(".taita", sub)
 	}
-	return filepath.Join(home, "taita", sub)
+	return filepath.Join(home, ".taita", sub)
 }
