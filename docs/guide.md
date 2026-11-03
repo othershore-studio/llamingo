@@ -102,7 +102,7 @@ project, the connection alias, and the live context budget.
 | `/resume` | open a past session (a picker, newest first) |
 | `/model` | switch connection / model for this session |
 | `/connections` | add, edit, activate or delete saved servers |
-| `/settings` | hub: connections, image gen (Forge), global MCP servers |
+| `/settings` | hub: connections, image gen (Forge), global MCP, DNS |
 | `/tools` | turn this chat's tools on and off (System and MCP) |
 | `/memory` | show what's in saved memory |
 | `/prompt` | show the system prompt the model is actually given |

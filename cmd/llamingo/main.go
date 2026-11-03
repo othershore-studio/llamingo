@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,6 +38,7 @@ func run() error {
 	url := flag.String("url", "", "llama-server base URL (default: the active saved connection, else http://localhost:8080)")
 	token := flag.String("token", "", "bearer token for an auth-fronted proxy (default: the active connection's)")
 	system := flag.String("system", "", "system prompt (default: the active connection's persona)")
+	dns := flag.String("dns", "", "DNS server for name resolution, host or host:port (default: LLAMINGO_DNS, else the saved setting; for Android/Termux where Go finds no nameserver)")
 	msg := flag.String("m", "", "user message (default: read from stdin)")
 	dataDir := flag.String("data-dir", env("LLAMINGO_DATA_DIR", defaultDataDir()), "data directory for projects, chats, and config")
 	resumeLast := flag.Bool("c", false, "resume this project's most recent session (interactive)")
@@ -51,6 +53,9 @@ func run() error {
 	st, err := store.Open(*dataDir)
 	if err != nil {
 		return err
+	}
+	if d := effectiveDNS(*dns, st); d != "" {
+		setDNSResolver(d) // for Android/Termux where Go's resolver finds no nameserver; inert otherwise
 	}
 	conn := resolveConnection(st, *url, set["url"], *token, set["token"], *system, set["system"])
 
@@ -260,6 +265,44 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// effectiveDNS resolves the DNS override: the -dns flag, else LLAMINGO_DNS, else the saved
+// config setting. Empty means "use the OS resolver" — the default everywhere DNS already works.
+func effectiveDNS(flagVal string, st *store.Store) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if e := os.Getenv("LLAMINGO_DNS"); e != "" {
+		return e
+	}
+	cfg, _ := st.Config()
+	return cfg.DNS
+}
+
+// setDNSResolver points Go's default resolver at an explicit DNS server. On Android/Termux the
+// pure-Go resolver finds no nameserver (no usable /etc/resolv.conf), falls back to [::1]:53,
+// and every hostname lookup fails; a configured server fixes it. Called only when one is set,
+// so it never changes behavior where DNS already works. Set once at startup, before any
+// connection, so there's no concurrent access to net.DefaultResolver.
+func setDNSResolver(server string) {
+	addr := dnsHostPort(server)
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+	}
+}
+
+// dnsHostPort appends the DNS port (53) to a bare host, leaving an existing host:port
+// untouched. Handles IPv4, IPv6 (bracketed on output), and hostnames.
+func dnsHostPort(s string) string {
+	s = strings.TrimSpace(s)
+	if _, _, err := net.SplitHostPort(s); err == nil {
+		return s
+	}
+	return net.JoinHostPort(s, "53")
 }
 
 func defaultDataDir() string {
