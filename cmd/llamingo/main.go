@@ -242,6 +242,8 @@ func runSetup() error {
 		fmt.Println("  menu:", err)
 	} else {
 		fmt.Println(`  menu: installed — right-click a folder and choose "Call a llaminGO here".`)
+		fmt.Println(`        On Windows 11 it's in the classic menu: Shift+right-click (or "Show`)
+		fmt.Println(`        more options") to see it.`)
 	}
 	return nil
 }

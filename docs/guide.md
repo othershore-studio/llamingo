@@ -209,4 +209,6 @@ context; `-data-dir` or `LLAMINGO_DATA_DIR` moves the root if you want it elsewh
 On Windows, **`llamingo -setup`** optionally adds the binary's folder to your PATH (so
 `llamingo` runs from anywhere) and an Explorer right-click menu on folders — *"Call a
 llaminGO here"* and a resume variant. It's your user context only (no admin) and
-reversible; re-run it if you move the binary and it will repoint itself.
+reversible; re-run it if you move the binary and it will repoint itself. On **Windows 11**
+the entry lives in the *classic* context menu, so use **Shift+right-click** (or "Show more
+options") to see it — registry menu entries don't appear in the new compact menu.
