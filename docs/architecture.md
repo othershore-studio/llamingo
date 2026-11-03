@@ -34,7 +34,10 @@ Why this matters:
 - **Streaming is in the spine from commit one.** SSE token streaming interleaves with both the live token budget and
   the MCP loop, so it is a core concern, not a late feature.
 
-Terminal images in the CLI: capability-detect (Kitty / iTerm / sixel), else print a path/URL.
+Terminal images in the CLI are **shipped**: generated images render inline in the transcript (half-block
+cells — fg = top pixel, bg = bottom — double the vertical resolution), plus an `/image` full viewer —
+truecolour colour-blocks, or sixel where the terminal advertises it. Colour depth follows the terminal
+(`COLORTERM=truecolor` over SSH).
 
 ## Backend seam
 
