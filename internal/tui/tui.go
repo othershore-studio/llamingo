@@ -51,6 +51,7 @@ const helpText = "\n[::d]commands:\n" +
 	"  /resume   open a past session\n" +
 	"  /model    switch connection / model\n" +
 	"  /connections  add, edit or activate a saved server\n" +
+	"  /settings  connections · image gen (Forge) · MCP servers\n" +
 	"  /tools    turn tools on/off for this chat\n" +
 	"  /memory   show what's in saved memory\n" +
 	"  /prompt   show the system prompt sent to the model\n" +
@@ -895,6 +896,10 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 		app.SetFocus(list)
 	}
 
+	// settingsReturn is where a top-level config editor returns when closed — the chat by
+	// default, or the /settings hub when the editor was opened from there.
+	settingsReturn := func() { app.SetFocus(input) }
+
 	// The connection manager (/connections): the terminal face of the desktop's
 	// Connections settings, so a headless / CLI-only user can add, edit, activate and
 	// delete saved llama-servers (and their personas) without the GUI or hand-editing
@@ -1077,10 +1082,310 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 		})
 		list.SetDoneFunc(func() {
 			pages.RemovePage("connections")
-			app.SetFocus(input)
+			settingsReturn()
 		})
 		pages.AddPage("connections", centeredModal(list), true, true)
 		app.SetFocus(list)
+	}
+
+	// The settings hub (/settings): one entry point onto the global config the desktop
+	// manages — connections, image generation (Forge), and the global MCP servers — so a
+	// headless / CLI-only install can be set up without the GUI. Image-gen and MCP changes
+	// are written to the same files the app reads and take effect on the next launch (the
+	// tool registry is assembled once at startup); connection changes apply live.
+	var (
+		showSettings     func()
+		showForge        func()
+		showMCP          func()
+		mcpActions       func(string, mcp.ServerConfig)
+		editMCP          func(string, mcp.ServerConfig)
+		confirmDeleteMCP func(string)
+	)
+
+	showSettings = func() {
+		cfg, _ := st.Config()
+		list := tview.NewList().ShowSecondaryText(true)
+		list.SetBorder(true).SetTitle(" settings — Enter opens · Esc closes ")
+
+		connStatus := fmt.Sprintf("%d saved", len(cfg.Connections))
+		for _, c := range cfg.Connections {
+			if c.ID == cfg.ActiveID && strings.TrimSpace(c.Name) != "" {
+				connStatus += " · " + c.Name + " active"
+				break
+			}
+		}
+		list.AddItem("Connections", connStatus, 0, func() {
+			pages.RemovePage("settings")
+			settingsReturn = showSettings // sub-editor returns to the hub
+			showConnections()
+		})
+
+		imgStatus := "off"
+		if strings.TrimSpace(cfg.ForgeURL) != "" {
+			ic, _ := imagegen.LoadConfig(filepath.Join(st.Root(), "imagegen.json"))
+			imgStatus = fmt.Sprintf("on · %d models", len(ic.Models))
+		}
+		list.AddItem("Image generation (Forge)", imgStatus, 0, func() {
+			pages.RemovePage("settings")
+			showForge()
+		})
+
+		gs, _ := mcp.LoadServers(globalMCPPath(st.Root()))
+		list.AddItem("MCP servers (global)", fmt.Sprintf("%d configured", len(gs)), 0, func() {
+			pages.RemovePage("settings")
+			showMCP()
+		})
+
+		list.SetDoneFunc(func() {
+			pages.RemovePage("settings")
+			app.SetFocus(input)
+		})
+		pages.AddPage("settings", centeredModal(list), true, true)
+		app.SetFocus(list)
+	}
+
+	// showForge sets the Forge image server and seeds the model list from it. "Save & fetch
+	// models" calls Forge's /sdapi/v1/sd-models, merges the checkpoints into imagegen.json
+	// (keeping any choices), and picks a safe default — the same Merge/SafeDefault the
+	// desktop uses. An empty URL turns image generation off.
+	showForge = func() {
+		cfg, _ := st.Config()
+		path := filepath.Join(st.Root(), "imagegen.json")
+		imgCfg, _ := imagegen.LoadConfig(path)
+		status := "off"
+		if strings.TrimSpace(cfg.ForgeURL) != "" {
+			status = fmt.Sprintf("on · %d models", len(imgCfg.Models))
+			if imgCfg.Default != "" {
+				status += " · default " + imgCfg.Default
+			}
+		}
+		form := tview.NewForm()
+		form.SetBorder(true).SetTitle(" image generation (Forge) — " + status + " · Esc back ")
+		form.AddInputField("Forge URL", cfg.ForgeURL, 50, nil, nil)
+		forgeURL := func() string {
+			return strings.TrimSpace(form.GetFormItemByLabel("Forge URL").(*tview.InputField).GetText())
+		}
+		saveURL := func(url string) error {
+			c, _ := st.Config()
+			c.ForgeURL = url
+			return st.SetConfig(c)
+		}
+		form.AddButton("Save", func() {
+			url := forgeURL()
+			if err := saveURL(url); err != nil {
+				form.SetTitle(" couldn't save — Esc back ")
+				return
+			}
+			pages.RemovePage("forge")
+			if url == "" {
+				v.notice("[::d]image generation off — restart llamingo to apply[-]")
+			} else {
+				v.notice("[::d]Forge URL saved — restart llamingo to apply[-]")
+			}
+			v.render()
+			showSettings()
+		})
+		form.AddButton("Save & fetch models", func() {
+			url := forgeURL()
+			if url == "" {
+				form.SetTitle(" enter a Forge URL first — Esc back ")
+				return
+			}
+			if err := saveURL(url); err != nil {
+				form.SetTitle(" couldn't save — Esc back ")
+				return
+			}
+			pages.RemovePage("forge")
+			v.notice("[::d]fetching models from Forge…[-]")
+			v.render()
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				names, err := imagegen.NewForgeNeo(url).ListModels(ctx)
+				app.QueueUpdateDraw(func() {
+					if err != nil {
+						v.notice("[red]Forge: " + tview.Escape(err.Error()) + "[-]")
+						v.render()
+						return
+					}
+					merged := imgCfg.Merge(names)
+					merged.Default = imagegen.SafeDefault(merged, merged.Default)
+					if err := imagegen.SaveConfig(path, merged); err != nil {
+						v.notice("[red]couldn't save models: " + tview.Escape(err.Error()) + "[-]")
+						v.render()
+						return
+					}
+					def := merged.Default
+					if def == "" {
+						def = "none auto-pickable"
+					}
+					v.notice(fmt.Sprintf("[::d]Forge: %d models (default: %s) — restart llamingo to apply[-]", len(merged.Models), tview.Escape(def)))
+					v.render()
+				})
+			}()
+			showSettings()
+		})
+		form.AddButton("Cancel", func() {
+			pages.RemovePage("forge")
+			showSettings()
+		})
+		form.SetCancelFunc(func() {
+			pages.RemovePage("forge")
+			showSettings()
+		})
+		pages.AddPage("forge", centeredModal(form), true, true)
+		app.SetFocus(form)
+	}
+
+	// showMCP lists the global MCP servers (~/.llamingo/mcp.json) with an add row; a server
+	// offers Edit and Delete. Changes persist to the same file Open connects from, so they
+	// take effect on the next launch.
+	showMCP = func() {
+		servers, _ := mcp.LoadServers(globalMCPPath(st.Root()))
+		names := make([]string, 0, len(servers))
+		for n := range servers {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		list := tview.NewList().ShowSecondaryText(true)
+		list.SetBorder(true).SetTitle(" MCP servers (global) — Enter opens · Esc back ")
+		for _, n := range names {
+			sc := servers[n]
+			secondary := sc.Transport()
+			switch {
+			case sc.Command != "":
+				secondary += " · " + sc.Command
+			case sc.URL != "":
+				secondary += " · " + sc.URL
+			}
+			list.AddItem(tview.Escape(n), tview.Escape(secondary), 0, nil)
+		}
+		list.AddItem("＋ Add server…", "", 0, nil)
+		list.SetSelectedFunc(func(i int, _, _ string, _ rune) {
+			pages.RemovePage("mcp")
+			if i == len(names) { // the add row
+				editMCP("", mcp.ServerConfig{})
+				return
+			}
+			mcpActions(names[i], servers[names[i]])
+		})
+		list.SetDoneFunc(func() {
+			pages.RemovePage("mcp")
+			showSettings()
+		})
+		pages.AddPage("mcp", centeredModal(list), true, true)
+		app.SetFocus(list)
+	}
+
+	mcpActions = func(name string, sc mcp.ServerConfig) {
+		list := tview.NewList().ShowSecondaryText(false)
+		list.SetBorder(true).SetTitle(" " + tview.Escape(name) + " — Enter chooses · Esc back ")
+		list.AddItem("Edit…", "", 0, func() {
+			pages.RemovePage("mcpActions")
+			editMCP(name, sc)
+		})
+		list.AddItem("Delete…", "", 0, func() {
+			pages.RemovePage("mcpActions")
+			confirmDeleteMCP(name)
+		})
+		list.SetDoneFunc(func() {
+			pages.RemovePage("mcpActions")
+			showMCP()
+		})
+		pages.AddPage("mcpActions", centeredModal(list), true, true)
+		app.SetFocus(list)
+	}
+
+	// editMCP is the add/edit form. Fill Command for a stdio server (with optional Args and
+	// Env), or URL for an http one (with optional Headers); the transport is inferred from
+	// which you set. Env/Headers are space-separated KEY=VALUE pairs.
+	editMCP = func(origName string, sc mcp.ServerConfig) {
+		title := " add MCP server — Esc cancels "
+		if origName != "" {
+			title = " edit MCP server — Esc cancels "
+		}
+		form := tview.NewForm()
+		form.SetBorder(true).SetTitle(title)
+		form.AddInputField("Name", origName, 30, nil, nil)
+		form.AddInputField("Command (stdio)", sc.Command, 40, nil, nil)
+		form.AddInputField("Args (space-separated)", strings.Join(sc.Args, " "), 50, nil, nil)
+		form.AddInputField("Env (K=V …)", kvJoin(sc.Env), 50, nil, nil)
+		form.AddInputField("URL (http)", sc.URL, 50, nil, nil)
+		form.AddInputField("Headers (K=V …)", kvJoin(sc.Headers), 50, nil, nil)
+		fld := func(label string) string {
+			return strings.TrimSpace(form.GetFormItemByLabel(label).(*tview.InputField).GetText())
+		}
+		form.AddButton("Save", func() {
+			name := fld("Name")
+			if name == "" {
+				form.SetTitle(" name is required — Esc cancels ")
+				return
+			}
+			cmd, url := fld("Command (stdio)"), fld("URL (http)")
+			if cmd == "" && url == "" {
+				form.SetTitle(" set a Command or a URL — Esc cancels ")
+				return
+			}
+			var ns mcp.ServerConfig
+			if cmd != "" {
+				ns.Command = cmd
+				ns.Args = strings.Fields(fld("Args (space-separated)"))
+				ns.Env = kvParse(fld("Env (K=V …)"))
+			} else {
+				ns.URL = url
+				ns.Headers = kvParse(fld("Headers (K=V …)"))
+			}
+			p := globalMCPPath(st.Root())
+			servers, _ := mcp.LoadServers(p)
+			if servers == nil {
+				servers = map[string]mcp.ServerConfig{}
+			}
+			if origName != "" && origName != name {
+				delete(servers, origName) // renamed
+			}
+			servers[name] = ns
+			if err := mcp.SaveServers(p, servers); err != nil {
+				form.SetTitle(" couldn't save — Esc cancels ")
+				return
+			}
+			pages.RemovePage("mcpEdit")
+			v.notice("[::d]saved MCP server " + tview.Escape(name) + " — restart llamingo to apply[-]")
+			v.render()
+			showMCP()
+		})
+		form.AddButton("Cancel", func() {
+			pages.RemovePage("mcpEdit")
+			showMCP()
+		})
+		form.SetCancelFunc(func() {
+			pages.RemovePage("mcpEdit")
+			showMCP()
+		})
+		pages.AddPage("mcpEdit", centeredModal(form), true, true)
+		app.SetFocus(form)
+	}
+
+	confirmDeleteMCP = func(name string) {
+		modal := tview.NewModal().
+			SetText("Delete MCP server \"" + name + "\"?").
+			AddButtons([]string{"Delete", "Cancel"}).
+			SetDoneFunc(func(_ int, label string) {
+				pages.RemovePage("mcpDelete")
+				if label == "Delete" {
+					p := globalMCPPath(st.Root())
+					servers, _ := mcp.LoadServers(p)
+					delete(servers, name)
+					if err := mcp.SaveServers(p, servers); err != nil {
+						v.notice("[red]couldn't save: " + tview.Escape(err.Error()) + "[-]")
+					} else {
+						v.notice("[::d]deleted MCP server " + tview.Escape(name) + " — restart llamingo to apply[-]")
+					}
+					v.render()
+				}
+				showMCP()
+			})
+		pages.AddPage("mcpDelete", modal, true, true)
+		app.SetFocus(modal)
 	}
 
 	// showResume overlays a picker of the project's saved sessions (newest first); Enter
@@ -1210,7 +1515,11 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 				showModels()
 				return
 			case "/connections", "/conn":
+				settingsReturn = func() { app.SetFocus(input) }
 				showConnections()
+				return
+			case "/settings", "/config":
+				showSettings()
 				return
 			case "/image":
 				if len(sess.images) == 0 {
@@ -1361,6 +1670,11 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 			if name == "connDelete" { // the delete-confirm modal has no Esc of its own
 				pages.RemovePage("connDelete")
 				showConnections()
+				return nil
+			}
+			if name == "mcpDelete" { // same — the MCP delete-confirm modal
+				pages.RemovePage("mcpDelete")
+				showMCP()
 				return nil
 			}
 			return ev
@@ -1592,6 +1906,40 @@ func parseFloatPtr(s string) (*float64, bool) {
 		return nil, false
 	}
 	return &f, true
+}
+
+// kvJoin renders a string map as space-separated KEY=VALUE pairs (sorted), for an edit
+// form field; the empty map is "".
+func kvJoin(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+m[k])
+	}
+	return strings.Join(parts, " ")
+}
+
+// kvParse reads space-separated KEY=VALUE pairs back into a map (nil when empty). Values
+// can't contain spaces — fine for env vars and headers; anything exotic is hand-edited.
+func kvParse(s string) map[string]string {
+	fields := strings.Fields(s)
+	m := make(map[string]string, len(fields))
+	for _, f := range fields {
+		if i := strings.IndexByte(f, '='); i > 0 {
+			m[f[:i]] = f[i+1:]
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // item is one entry in the transcript's display model. The transcript is rebuilt from
