@@ -66,6 +66,14 @@ func (s *Server) segmentsFor(convID string, messages []backend.Message, tools []
 			segs = append(segs, contextbudget.Segment{Name: "system", Messages: []backend.Message{{Role: backend.RoleSystem, Content: sp}}})
 		}
 	}
+	// The user's own standing instructions (per-user prefs), added after the
+	// connection's persona segment so the connection's character leads and the
+	// user's preferences layer on top. Empty = none.
+	if p, err := s.st.Prefs(); err == nil {
+		if up := strings.TrimSpace(p.SystemPrompt); up != "" {
+			segs = append(segs, contextbudget.Segment{Name: "user-prompt", Messages: []backend.Message{{Role: backend.RoleSystem, Content: up}}})
+		}
+	}
 	// In a project session, tell the model its working directory so it uses relative
 	// paths (the file tools are confined to this folder). A project can opt out.
 	if note := s.workingDirNote(convID); note != "" {

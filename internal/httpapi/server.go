@@ -124,6 +124,8 @@ func New(be backend.Backend, st *store.Store, opts ...Option) *Server {
 	s.mux.HandleFunc("GET /api/conversations/{id}/attachments/{name}", s.handleGetAttachment)
 	s.mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	s.mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	s.mux.HandleFunc("GET /api/prefs", s.handleGetPrefs)
+	s.mux.HandleFunc("PUT /api/prefs", s.handlePutPrefs)
 	s.mux.HandleFunc("GET /api/autostart", s.handleGetAutostart)
 	s.mux.HandleFunc("PUT /api/autostart", s.handlePutAutostart)
 	s.mux.HandleFunc("GET /api/imagegen", s.handleGetImagegen)

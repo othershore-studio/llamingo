@@ -144,6 +144,25 @@
     }
     return workingWord
   }
+  // Auto-scroll: follow the latest message as it streams, unless the reader has
+  // scrolled up (then the "↓ Latest" pill invites them back).
+  let threadEl = $state(null)
+  let atBottom = $state(true)
+  function onThreadScroll() {
+    const el = threadEl
+    if (el) atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }
+  function scrollToLatest() {
+    const el = threadEl
+    if (el) { el.scrollTop = el.scrollHeight; atBottom = true }
+  }
+  $effect(() => {
+    // Re-run when the thread grows: a new message, or more streamed content /
+    // reasoning on the last one. Only follow when the reader is already at the end.
+    const last = messages[messages.length - 1]
+    void (messages.length + (last?.content?.length ?? 0) + (last?.reasoning?.length ?? 0))
+    if (atBottom && threadEl) threadEl.scrollTop = threadEl.scrollHeight
+  })
   let budget = $state(null) // { used, nCtx, level }
   let error = $state(null)
   let convSummaries = $state([]) // compaction summaries, each anchored at its fold point in the thread
@@ -179,6 +198,9 @@
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
   let settingsTaitaUrl = $state('') // editable Taita server URL (links this client's Server Chats)
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
+  let prefsOpen = $state(false) // the per-user Preferences modal (everyone, not just admin)
+  let prefsLocation = $state('') // the user's own location override (per-user, /api/prefs)
+  let prefsSystemPrompt = $state('') // the user's own standing instructions (per-user, /api/prefs)
   let autostartSupported = $state(false) // this build can manage login autostart (desktop, per-OS)
   let autostartEnabled = $state(false) // launch llaminGO at login
   let autostartMinimized = $state(false) // the login launch starts hidden in the tray
@@ -360,6 +382,7 @@
     }
     messages = msgs
     convSummaries = sums
+    atBottom = true // opening a chat lands on its latest message
     loadBudget(id)
   }
 
@@ -856,6 +879,7 @@
     // sidebar name once the turn lands (below).
     const firstMessage = messages.length === 0
     input = ''
+    atBottom = true // sending jumps to the newest message
     const now = new Date().toISOString()
     messages.push({ role: 'user', content: text, time: now })
     messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], time: now })
@@ -1052,6 +1076,27 @@
       localStorage.setItem('llamingo.showDetail', v ? 'on' : 'off')
     } catch {}
   }
+  // Per-user preferences (location + a personal prompt) — everyone's to set, kept
+  // in the user's own store, separate from the admin's server config (Settings).
+  async function openPrefs() {
+    try {
+      const p = await apiFetch('/api/prefs').then((r) => r.json())
+      prefsLocation = p.location ?? ''
+      prefsSystemPrompt = p.systemPrompt ?? ''
+    } catch {
+      prefsLocation = ''
+      prefsSystemPrompt = ''
+    }
+    prefsOpen = true
+  }
+  async function savePrefs() {
+    await apiFetch('/api/prefs', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ location: prefsLocation.trim(), systemPrompt: prefsSystemPrompt.trim() }),
+    })
+    prefsOpen = false
+  }
   // The hamburger toggles the saved sidebar when wide, but only the transient
   // drawer when thin — so toggling on a phone never rewrites the saved preference.
   function toggleNav() {
@@ -1226,6 +1271,7 @@
   {#if actionsMenu}
     <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
     <nav class="sysmenu actionsmenu" class:up={narrow}>
+      <button onclick={() => { actionsMenu = false; openPrefs() }}>Preferences</button>
       <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
       {#if !serverMode || me?.admin}
         <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
@@ -1374,7 +1420,7 @@
     {/if}
 
     <main class="conversation">
-      <div class="thread">
+      <div class="thread" bind:this={threadEl} onscroll={onThreadScroll}>
         {#if error}<p class="error">{error}</p>{/if}
         {#each messages as m, i}
           {#if showDetail && m.reasoning}
@@ -1416,6 +1462,9 @@
         {/each}
         {#if compacting}
           <div class="compacting muted">Compacting…</div>
+        {/if}
+        {#if !atBottom && messages.length}
+          <button class="jumpdown" onclick={scrollToLatest} title="Jump to the latest message">↓ Latest</button>
         {/if}
       </div>
       {#if pending}
@@ -1684,6 +1733,34 @@
     </div>
   {/if}
 
+  {#if prefsOpen}
+    <div class="modal-backdrop" onclick={() => (prefsOpen = false)}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-head">
+          <span>Preferences</span>
+          <button class="x" onclick={() => (prefsOpen = false)}>✕</button>
+        </div>
+        <div class="modal-body">
+          <label class="setting">
+            <span>Your location <span class="muted">(optional, for place-aware tools — overrides any server default)</span></span>
+            <input class="field" bind:value={prefsLocation} placeholder="e.g. Quito, Ecuador — blank to share none" onkeydown={(e) => e.key === 'Enter' && savePrefs()} />
+          </label>
+          <label class="setting">
+            <span>Your prompt <span class="muted">(optional; your standing instructions, added on top of the connection's persona)</span></span>
+            <textarea class="field" rows="3" bind:value={prefsSystemPrompt} placeholder="e.g. Keep answers short. I'm a nurse."></textarea>
+          </label>
+          <label class="setting">
+            <span>Show thinking &amp; tool activity <span class="muted">(off = chat only; saved per browser)</span></span>
+            <input type="checkbox" checked={showDetail} onchange={(e) => setShowDetail(e.currentTarget.checked)} style="width:auto" />
+          </label>
+        </div>
+        <div class="modal-foot">
+          <button class="primary" onclick={savePrefs}>Save</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if settingsOpen}
     <div class="modal-backdrop" onclick={() => (settingsOpen = false)}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
@@ -1725,6 +1802,7 @@
           {/if}
         </div>
 
+        {#if !serverMode}
         <div class="group-head">Server (Taita)</div>
         <label class="setting">
           <span>Taita server URL <span class="muted">(optional; shows that server's chats under "Server Chats")</span></span>
@@ -1735,6 +1813,7 @@
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
         </label>
+        {/if}
 
         <div class="group-head">Image generation</div>
         <label class="setting">
@@ -1849,9 +1928,10 @@
           {/if}
         </div>
 
+        {#if serverMode}
         <div class="group-head">Location</div>
         <label class="setting">
-          <span>Location <span class="muted">(optional, for place-aware tools — set how broad you like)</span></span>
+          <span>Server default <span class="muted">(used for anyone who hasn't set their own, for place-aware tools)</span></span>
           <input
             class="field"
             bind:value={settingsLocation}
@@ -1859,6 +1939,7 @@
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
         </label>
+        {/if}
 
         {#if isDesktop && autostartSupported}
           <div class="group-head">Startup</div>
@@ -1873,12 +1954,6 @@
             </label>
           {/if}
         {/if}
-
-        <div class="group-head">Display</div>
-        <label class="setting">
-          <span>Show thinking &amp; tool activity <span class="muted">(off = chat only; view-only, saved per browser)</span></span>
-          <input type="checkbox" checked={showDetail} onchange={(e) => setShowDetail(e.currentTarget.checked)} style="width:auto" />
-        </label>
 
         <div class="group-head">Debug</div>
         <label class="setting">
@@ -2231,6 +2306,27 @@
     flex: 1;
     overflow-y: auto;
     padding: 16px;
+  }
+  /* "Jump to latest" pill — sticky to the bottom of the scrollport, shown only
+     when the reader has scrolled up away from a growing conversation. */
+  .jumpdown {
+    position: sticky;
+    bottom: 10px;
+    display: block;
+    width: fit-content;
+    margin: 8px auto 0;
+    padding: 5px 13px;
+    border: 0.5px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  }
+  .jumpdown:hover {
+    background: var(--paper);
   }
   .empty {
     text-align: center;
