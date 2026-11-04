@@ -91,6 +91,40 @@ func TestWrongPasswordRejected(t *testing.T) {
 	}
 }
 
+// TestLoginMergesAnonChats proves the claim step: a session's anonymous chats
+// follow the user into the account store on login, and move (not copy) — the
+// anonymous store is empty afterward.
+func TestLoginMergesAnonChats(t *testing.T) {
+	srv := newServer(t, nil)
+
+	// As an anonymous session, create a scratch chat.
+	rec, sid := do(t, srv, "POST", "/api/chats", "", `{"title":"scratch"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create chat: status = %d; body = %s", rec.Code, rec.Body)
+	}
+	rec, sid = do(t, srv, "GET", "/api/chats", sid, "")
+	if n := countChats(t, rec); n != 1 {
+		t.Fatalf("anonymous sees %d chats, want 1", n)
+	}
+
+	// Signing in (first profile → admin) carries the scratch chat into the account.
+	rec, sid = do(t, srv, "POST", "/api/login", sid, `{"name":"Dad","password":"s3cret"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login: status = %d; body = %s", rec.Code, rec.Body)
+	}
+	rec, sid = do(t, srv, "GET", "/api/chats", sid, "")
+	if n := countChats(t, rec); n != 1 {
+		t.Fatalf("after login sees %d chats, want 1 (merged in)", n)
+	}
+
+	// The chat moved, not copied: the anonymous store is now empty.
+	rec, sid = do(t, srv, "POST", "/api/logout", sid, "")
+	rec, _ = do(t, srv, "GET", "/api/chats", sid, "")
+	if n := countChats(t, rec); n != 0 {
+		t.Fatalf("after logout sees %d chats, want 0 (moved, not copied)", n)
+	}
+}
+
 // TestLoginSwitchesStoreAndLogout proves login serves the account's own store,
 // logout returns to the anonymous store, and the identity (and its chats) persist
 // across a re-login — the folder-anchored session model.

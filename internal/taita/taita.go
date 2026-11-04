@@ -177,6 +177,32 @@ func (s *Server) rootFor(key string) (string, error) {
 	return filepath.Join(append([]string{s.dataRoot}, parts...)...), nil
 }
 
+// mergeClaim moves an anonymous session's chats into the account's store (the P2
+// "claim") so a user's pre-login scratch chats follow them in. Best-effort: the
+// caller must not fail a login if this errors — the chats then simply stay under
+// the anon folder. The session.json anchor is untouched (it lives in the anon
+// root, not under chat/).
+func (s *Server) mergeClaim(anonKey, user string) error {
+	anonRoot, err := s.rootFor(anonKey)
+	if err != nil {
+		return err
+	}
+	userRoot, err := s.rootFor("users/" + normName(user))
+	if err != nil {
+		return err
+	}
+	src, err := store.Open(anonRoot)
+	if err != nil {
+		return err
+	}
+	dst, err := store.Open(userRoot)
+	if err != nil {
+		return err
+	}
+	_, err = dst.AbsorbChats(src)
+	return err
+}
+
 // validSID reports whether a cookie value is a well-formed session id (16 bytes,
 // hex). A malformed or missing value is treated as "no session" and replaced.
 func validSID(s string) bool {

@@ -172,8 +172,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, sess *sessi
 		}
 	}
 
-	// Claim this session for the account by writing the anchor sidecar. (Merging
-	// the session's anonymous chats into the account's store is the next increment.)
+	// Claim: the session's anonymous chats follow the user into the account store.
+	// Best-effort — a merge error must never block the login (the chats then just
+	// stay under the anon folder).
+	_ = s.mergeClaim(sess.anonKey, a.Name)
+
+	// Record the claim on the anchor sidecar so the session resolves to the account.
 	m, _ := s.readSession(sess.anonKey)
 	if m.Created.IsZero() {
 		m.Created = time.Now().UTC()

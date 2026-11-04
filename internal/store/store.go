@@ -79,6 +79,42 @@ func (s *Store) ListChats() ([]ConversationMeta, error) {
 	return s.listConversations(filepath.Join(s.root, "chat"))
 }
 
+// AbsorbChats moves every free chat from src into s, leaving src with none, and
+// returns the number moved. It is the claim step: when an anonymous session signs
+// in, its scratch chats follow the user into their account store. Chat IDs are
+// random, so names don't collide; each chat moves with a single rename (src and s
+// share the data root, hence the same volume). A destination that already holds
+// that id is left untouched in src rather than clobbered.
+func (s *Store) AbsorbChats(src *Store) (int, error) {
+	srcChat := filepath.Join(src.root, "chat")
+	entries, err := os.ReadDir(srcChat)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: absorb chats: %w", err)
+	}
+	dstChat := filepath.Join(s.root, "chat")
+	if err := os.MkdirAll(dstChat, 0o755); err != nil {
+		return 0, fmt.Errorf("store: absorb chats: %w", err)
+	}
+	moved := 0
+	for _, e := range entries {
+		if !e.IsDir() || !fileExists(filepath.Join(srcChat, e.Name(), "meta.json")) {
+			continue // skip stray files and half-written dirs
+		}
+		to := filepath.Join(dstChat, e.Name())
+		if _, err := os.Stat(to); err == nil {
+			continue // id already present at the destination — don't clobber
+		}
+		if err := os.Rename(filepath.Join(srcChat, e.Name()), to); err != nil {
+			return moved, fmt.Errorf("store: absorb chat %s: %w", e.Name(), err)
+		}
+		moved++
+	}
+	return moved, nil
+}
+
 // OpenProject returns the project for absPath, creating it on first use. Lookup
 // is by ProjectID, so re-opening the same folder reuses the existing project
 // rather than forking one.
