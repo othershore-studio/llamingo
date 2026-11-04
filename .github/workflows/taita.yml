@@ -1,0 +1,101 @@
+# Builds the taita gateway (`cmd/taita`) for every OS/arch and attaches one zip per
+# target to the GitHub Release. Taita is the optional multi-user server — a single
+# CGO-free binary with the chat web UI embedded.
+#
+# Runs only when you ask for it — on a version tag (`git tag v0.1.0 && git push --tags`),
+# which also attaches the zips to the matching GitHub Release, or via the "Run workflow"
+# button (Actions tab). Nothing runs on ordinary pushes.
+#
+# Like the CLI, taita is CGO-free, so one Linux runner cross-compiles every target and it
+# needs no signing. The one extra step vs cli.yml: the web UI is built and staged into
+# cmd/taita/web/dist first, because //go:embed can't reach ../../web/dist (the same trick
+# cmd/taita/build.sh and mobile/build-apk.sh use).
+name: Taita release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-taita:
+    runs-on: ubuntu-latest
+    # Needed so a tagged run can attach the zips to the GitHub Release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin Go to the toolchain go.mod declares, so CI matches the dev machine.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Build the SPA and stage it into the embed dir. //go:embed can't reach
+      # ../../web/dist, so cmd/taita/web/dist is the embed root (tracked via its
+      # .gitignore); fill it from the fresh build — the same trick build.sh uses.
+      - name: Build + stage the web UI
+        run: |
+          set -eu
+          npm --prefix web ci
+          npm --prefix web run build
+          find cmd/taita/web/dist -mindepth 1 ! -name .gitignore -delete
+          cp -r web/dist/* cmd/taita/web/dist/
+
+      - name: Build every target
+        run: |
+          set -eu
+          mkdir -p out
+          cat > README.txt <<'EOF'
+          llaminGO — taita (the optional multi-user gateway)
+
+          Taita serves the llaminGO chat UI to any browser on your network and gives
+          every visitor their own store, funneling everyone through one llama-server.
+          The web UI is embedded — this one binary is the whole server.
+
+              ./taita -url http://localhost:8080      # point at your llama-server
+              ./taita -fake                            # no-model demo, no backend needed
+
+          Listens on :8788 by default (-addr to change). The first profile to sign in
+          becomes the admin (name it up front with -admin NAME); `taita admin` recovers
+          it from the console. Config and data default to ~/.taita/config and
+          ~/.taita/data (-config / -data, or $TAITA_CONFIG / $TAITA_DATA).
+
+          Guide: https://github.com/othershore-studio/llamingo/blob/main/docs/taita.md
+          EOF
+          build() {
+            goos=$1; goarch=$2; ext=${3:-}
+            echo "building $goos/$goarch"
+            rm -rf pkg && mkdir pkg
+            GOOS=$goos GOARCH=$goarch CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w" -o "pkg/taita$ext" ./cmd/taita
+            cp README.txt pkg/README.txt
+            (cd pkg && zip -q -j "../out/taita-$goos-$goarch.zip" ./*)
+          }
+          build windows amd64 .exe
+          build linux   amd64
+          build linux   arm64
+          build darwin  amd64
+          build darwin  arm64
+          ls -l out
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: taita-binaries
+          path: out/*.zip
+          if-no-files-found: error
+
+      # On a version tag, also attach the zips to that tag's GitHub Release
+      # (created if it doesn't exist yet).
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.zip
