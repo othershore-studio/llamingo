@@ -9,8 +9,10 @@ Taita is **grown from `cmd/llamingo-serve`** and shares the same core (`internal
 it is **not** a fork and **not** a flag on the client. Same repo, shared core, so there is no sync problem
 between the client and the server.
 
-> Status: in active build on branch `taita-foundation` (local, unpushed). P0 done, P1 essentially working,
-> P3 mechanism landed; **P2 (accounts) is the current phase.** See [Phase plan](#10-phase-plan--status).
+> Status: **P0–P2 done; the P3 two-worlds client landed** on branch `client-rework` (pushed; PR open against
+> `main`). Server chats open, stream, rename and delete from a linked client. What remains in P3 is the
+> download-by-chat cache (the proxy is live today, not cached) and the tool-permission handshake over a server
+> chat's stream; the P4 long tail follows. See [Phase plan](#10-phase-plan--status).
 
 ---
 
@@ -91,18 +93,28 @@ client/server boundary:
   sync engine.
 - **`folder/` (projects) stays local** — projects need a local llaminGO (local files, project MCP, etc.).
 
-**Two chat lists.** A real client can hold chats of two origins: **local-only** (made direct-to-llama) and
-**server** (cached from a linked taita). So the client UI shows **two lists** — "Local Chats" + "Server
-Chats" — which also makes cache-vs-local visible. A browser served *by* taita has no local store, so it shows
-**one** list (every chat is a server chat). `App.svelte` is shared, so it adapts: **1 list when taita-served
-(`serverMode`), 2 lists on a local client with a link (`serverLinked`).**
+**Two chat lists.** A browser-facing client can hold chats of two origins: **local-only** (made
+direct-to-llama) and **server** (from a linked taita). So the client UI shows **two lists** — "Local Chats" +
+"Server Chats" — which also makes server-vs-local visible. A browser served *by* taita has no local store, so
+it shows **one** list (every chat is a server chat). `App.svelte` is shared, so it adapts: **1 list when
+taita-served (`serverMode`), 2 lists on a local client with a link (`serverLinked`).** The **CLI is the third
+case and deliberately has neither** — it is project-anchored, with no free-chat list, so it has no server
+world at all (§12).
+
+**The active chat's origin is the only router.** `activeOrigin` (`'local' | 'server'`) follows the selected
+chat and nothing else: a local chat routes to the local core (`/api/…`), a server chat to the sidecar
+(`/api/server/…`). No pill or toggle cross-redirects a turn. In a server chat the model pill is **read-only**
+(the server sets the model) and props/budget come from taita.
 
 - `GET /api/mode` → `{mode: "local"|"server", serverLinked: bool}`. `ServerMode()` is an `httpapi.Option` set
   by `internal/taita`; it is backend-independent (unlike `/props`).
-- P3 proxy: `httpapi.WithTaita(url)` / `setTaita(url)` gives the sidecar a cookie-jar `http.Client`;
-  `GET/POST /api/server/chats` proxies to `<taita>/api/chats`. The cookie jar keeps the sidecar pinned to one
-  server-side folder. `config.TaitaURL` persists the link and is editable live in the Settings window
-  (`PUT /api/settings` → `setTaita`).
+- The link: `httpapi.WithTaita(url)` / `setTaita(url)` gives the sidecar a cookie-jar `http.Client`;
+  `config.TaitaURL` persists it, editable live in Settings (`PUT /api/settings` → `setTaita`). The cookie jar
+  keeps the sidecar pinned to one server-side folder.
+- The server-chat surface, all under `/api/server/*`, proxied to the taita with the session jar: `chats`
+  (list / `+ New`), `conversations/{id}` (open / rename / delete), `conversations/{id}/budget` + `/tools`,
+  `chat/stream`, `props`, `memory`. `proxyToTaita` **streams and flushes**, so a server chat's SSE turn is
+  live, not buffered. The round trip is covered by `TestServerChatsProxyRoundTrip`.
 
 **Self-loop gotcha:** if the Taita URL points back at the same server/store (e.g. the client's own loopback),
 the proxy fetches that server's own `/api/chats` and "Server Chats" shows the local chats duplicated. Point
@@ -149,6 +161,13 @@ settings, just chat** — config is the admin/owner's job. The admin is named by
 (that account becomes admin on sign-in, no land-grab), or defaults to the first account to sign in; either way
 the admin must set a password. `taita admin` (console, server stopped — the bbolt DB is single-writer) recovers
 it: `list` / `set NAME [admin|user]` / `passwd NAME`.
+
+**Per-user prefs vs admin config.** "No settings" means no *server* config. Each user (anon included) still
+has **personal prefs** in their own data store (`prefs.json`, `GET/PUT /api/prefs`, never admin-gated):
+**location** (overrides the admin's server default), a **personal system prompt** (appended after the
+connection's persona, in `segmentsFor`), and **show-thinking**. So the knobs that are the *user's* (how their
+own chat behaves) live per-user; the knobs that are the *server's* (which backend / Forge / MCP) stay
+admin-only (§8). This split is the `user-not-admin-lens` made concrete.
 
 **Accounts are a P2 artifact** — P0/P1 are anon-only, pure files.
 
@@ -219,13 +238,15 @@ for Windows, so one `.sh` is enough.
   Forge / MCP / activate / fetch) to the admin — real server-side enforcement, not just UI-hidden. Verified by
   `TestConfigIsCentralAndAdminGated` and in-browser (`073c126`). **P2 complete: accounts, roles, central
   admin-owned config.** Config *reads* stay open (the UI gates them); hiding connection tokens from non-admins
-  is a hardening follow-up. **Next: rework the clients** — P3's client repoint + making server chats
-  openable/streamable.
-- **P3 — clients see remote** — mechanism landed: the two-list split + the sidecar→taita proxy + the Settings
-  URL field (commits `0a015fc`, `7d1b47f`, `106a94c`; round-trip unit-tested). A *meaningful* client
-  connection (persistent, cross-device identity) needs P2 accounts — anon only tests the plumbing.
-  **Next sub-steps:** proxy *open + stream* a server chat (`/api/server/conversations/{id}` +
-  `/api/server/chat/stream`) + a "+ New" on the Server list; then the download-by-chat cache.
+  is a hardening follow-up. This unblocked the **P3 client rework** (below).
+- **P3 — clients see remote** ✅ (client-facing) — the two-worlds client landed on branch `client-rework`
+  (pushed; PR open): `activeOrigin` routing, the full `/api/server/*` surface (open / stream / rename / delete
+  / `+ New` / budget / tools / props / memory) with a streaming-flushing proxy, and the model pill read-only in
+  a server chat (`27e2243`, `853c0c7`, `1a0e977`; round-trip in `TestServerChatsProxyRoundTrip`). Built on the
+  earlier mechanism — the two-list split + sidecar→taita proxy + the Settings URL field (`0a015fc`, `7d1b47f`,
+  `106a94c`). **Remaining in P3:** the download-by-chat cache (today the proxy is live, not cached), and the
+  tool-permission handshake over a server chat's stream (no `/api/server/permission` route yet — a gap shared
+  with the web client).
 - **P4 — long tail** — lazy chat loading, quotas, centralized connections/Forge/MCP config, per-chat named
   connections, the Forge↔llama GPU interlock, taita Origin gate + hiding the backend token for public exposure.
 
@@ -244,6 +265,38 @@ Client-connection path: **P1 anon browser ✅ → P2 accounts → P3 desktop/cli
    is admin (zero-config fallback). Either way the admin must set a password. Recoverable via the `taita admin`
    console CLI (`list` / `set` / `passwd`), run on the server box with the server stopped.
 4. **P1 auth posture** — presence / shared mesh token; real auth deferred to public (cloudflared) exposure.
+5. **CLI ↔ taita boundary** — **LOCKED (2026-11-03).** The two-worlds client is a **web/desktop feature
+   only.** The CLI is project-anchored (direct-to-core, no free-chat list) while taita is chat-only, so
+   grafting a "Server Chats" list into the terminal fights the tool — rejected. A CLI's only sensible link to
+   a server is *connections*, and "taita as a connection" is a trap (a connection speaks llama's native API;
+   taita speaks `/api`, so it would need a native passthrough that bypasses accounts/chats/MCP and duplicates
+   an NGINX in front of llama). **Connection-sync** — a CLI pulling taita's connection catalog and connecting
+   *direct* (a registry, not a gateway) — is **parked** as a later "easier config" nicety (gated on hiding
+   connection tokens from non-admins). See §12.
+
+## 12. Clients — who gets a server world
+
+Three client shapes, by whether a browser is involved and whether there's a local store:
+
+| Client | Lists | Server world? |
+|---|---|---|
+| **Browser served by taita** (`serverMode`) | 1 (all server) | it *is* the server world |
+| **Desktop / local web client with a link** (`serverLinked`) | 2 (Local + Server) | yes — two-worlds, via the sidecar proxy (§5) |
+| **CLI / TUI** | project sessions only | **no, by design** |
+
+The CLI is **project-anchored**: `llamingo` in a terminal runs `tui.Run(be, st, cwd)` → `st.OpenProject(cwd)`,
+so a session *is* the working directory (the local `folder/` root, keyed by path hash). It has no free-chat
+list. Taita's world is the opposite — **chat-only**, projects hidden (a project is a local dir, meaningless on
+a remote gateway). The two are orthogonal, so a "Server Chats" list in the terminal would fight the tool. The
+one coherent "CLI + taita" is a *separate* thin chat-mode (`llamingo --taita <url>`, for the headless / SSH /
+Termux story), never a graft into the project TUI — and it is not being pursued now.
+
+What the CLI *does* care about is the **connection** (backend + persona), which it already resolves from the
+shared config. "Taita as a connection" does not work: a connection speaks llama.cpp's native API (`/props`,
+`--jinja` `/v1/chat/completions`), taita speaks llaminGO's `/api` (MCP loop server-side). The only bridge is a
+native-API passthrough, which throws away everything taita is and just duplicates an NGINX in front of llama.
+The one idea worth keeping — **connection-sync** (a CLI pulling taita's connection catalog and connecting
+*direct*: a registry, not a gateway) — is parked (§11.5).
 
 ---
 
