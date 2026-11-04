@@ -16,9 +16,15 @@ attached:
   linux-arm64 build also runs under Termux). Built by
   [`cli.yml`](../.github/workflows/cli.yml) — one Linux runner cross-compiles every target,
   CGO-free. **Unsigned**, and it needs none; the windows build carries the embedded icon.
+- **Taita gateway (optional server)** — `taita-<os>-<arch>.zip` for the same five targets
+  (each a static binary with the chat web UI embedded, plus a short README). Built by
+  [`taita.yml`](../.github/workflows/taita.yml) — one Linux runner builds the SPA, stages it
+  into `cmd/taita/web/dist`, and cross-compiles every target, CGO-free. **Unsigned**; it
+  needs none.
 
 The per-push desktop/web build-check stays in [`ci.yml`](../.github/workflows/ci.yml);
-local `wails build` and `./mobile/build-apk.sh` remain for day-to-day testing.
+local `wails build`, `./mobile/build-apk.sh`, and `./cmd/taita/build.sh` remain for
+day-to-day testing.
 
 ## One-time setup (Android signing)
 
