@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/lcpptest"
@@ -81,7 +82,7 @@ func main() {
 	if who == "" {
 		who = "first to sign in"
 	}
-	log.Printf("taita listening on %s (data: %s, config: %s; admin: %s)", *addr, dataDir, configDir, who)
+	log.Printf("taita listening on %s (data: %s, config: %s; admin: %s)", browseURL(*addr), dataDir, configDir, who)
 	log.Fatal(http.ListenAndServe(*addr, gw))
 }
 
@@ -93,6 +94,17 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// browseURL turns a listen address into a URL a person can open in a browser. A
+// bare ":8788" (all interfaces) becomes http://localhost:8788 — the common local
+// case — so the startup line reads as a clickable address rather than a bare port
+// that gets mistaken for the backend's URL above it.
+func browseURL(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return "http://localhost" + addr
+	}
+	return "http://" + addr
 }
 
 // defaultDir is ~/.taita/<sub>, or .taita/<sub> relative if the home dir is unknown.
