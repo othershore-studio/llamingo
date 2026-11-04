@@ -152,6 +152,33 @@ GUI at all** — see [`cli.md`](cli.md). Merged to `main`:
 Still open in the TUI: `/compact` and a richer multi-pane layout. The terminal is now a first-class v1 surface
 alongside desktop and mobile.
 
+## Status (2026-11-03) — Taita, the gateway (v0.4.0)
+
+v2's gateway is no longer hypothetical — **Taita shipped in v0.4.0.** `taita` is a separate single binary
+(grown from the headless `cmd/llamingo-serve`, same repo + shared core) that serves the chat UI to any browser
+and gives every session its own store, funnelling everyone through one `llama-server` and one image queue. Full
+design: [`taita.md`](taita.md). Merged to `main`:
+
+- **The gateway core** (P0–P1) — `internal/taita` composes N single-store `httpapi.Server`s, one per session
+  (anon cookie → folder); `httpapi` is untouched for multi-tenancy. `cmd/taita` embeds the chat-only SPA via
+  `go:embed`. The **frictionless default is no login** — presence is identity.
+- **Accounts** (P2) — optional login (bcrypt) over passwordless profiles, a bbolt accounts registry behind an
+  `Accounts` seam, **roles** (admin vs user), claim/merge of a session's anonymous chats on login, and a
+  **config/data split** so one central, **admin-owned** server config (connection / Forge / MCP) is enforced
+  server-side. The admin is named by `-admin` / first-to-sign-in, recoverable via a `taita admin` console CLI.
+- **Clients see remote** (P3, client-facing) — a desktop/web client linked to a taita gains a second
+  **Server Chats** list beside Local Chats: open / stream / rename / delete / + New a server chat through a
+  sidecar→taita proxy, with **the active chat's origin as the only router** and the model picker read-only in a
+  server chat. Per-user **preferences** (location + personal prompt) live in the per-user store.
+- **The terminal client stays local by design** — project-anchored, no server chats; a CLI↔taita link would
+  only ever be about *connections*, not chats (see [`taita.md`](taita.md) §11–§12).
+- **Release pipeline** — [`taita.yml`](../.github/workflows/taita.yml) cross-compiles the `taita` binary
+  (CGO-free, UI embedded) for five targets beside the desktop / CLI / Android artifacts. **v0.4.0 shipped** —
+  the first release with the gateway.
+
+Still a trusted-LAN/mesh posture: public (tunnel) exposure wants its own origin gate + backend-token hiding,
+and the remote-chat cache ("download, not sync") is still a live proxy — both in the v2 tail below.
+
 ## Backlog — surfaced by real-model testing (2026-10)
 
 Captured while using the app against the real model; none blocking, ordered loosely. **Most of the UI/UX items below
@@ -193,19 +220,25 @@ configuration niceties.
 **Guiding principle:** keep it lean, fast, and transparent — this simplicity (and speed: a lean prompt, no background
 model calls) is preferred over OpenWebUI's feature-heaviness. Everything added stays opt-in and surfaces its cost.
 
-## v2 — the gateway (remote + mobile + sync)
+## v2 — the gateway (Taita) — core shipped in v0.4.0; the tail remains
 
-The **optional** small server that earns its place only when you leave the LAN.
+The **optional** small server that earns its place when you leave the LAN. Its core **shipped in v0.4.0** (see
+the 2026-11-03 status) — the multi-user gateway, accounts, central admin-owned config, and clients that open
+remote chats, all over the same v1 HTTP/SSE adapter (a deploy mode, not a rewrite). What remains:
 
-- Auth + reverse-proxy to llama.cpp + **application-layer sync** of the `chat/` root (data only; each device rebuilds
-  its own index — the DB is never on the wire). Dockerable / `.service`-friendly; bearer-token, auth-proxy posture, no
-  OAuth inside.
-- Serves the same web UI over the network for **off-LAN access** — the local Android app already ships in v1, so no separate mobile rebuild.
-- The same HTTP/SSE adapter from v1, exposed and authenticated — a deploy mode, not a rewrite.
-- *(Open: syncing the `chat/` root is the leaning; not finally committed.)*
-- **Client-compat exploration:** survey other popular clients' project formats and offer a per-project "compatible
-  with" setting. (v1 targets Claude, whose `.mcp.json` + `AGENTS.md` already give a frictionless hand-off to a
-  frontier model when a local task outgrows the window.)
+- **Public-exposure hardening** — taita's own origin gate + hiding the backend token, before any tunnel
+  (cloudflared) exposure. On a trusted LAN the same-origin SPA + session cookie is enough today.
+- **Remote-chat cache** — a linked client proxies a taita's chats live today; the "download a chat, don't sync a
+  chat" cache (two roots = cache, not sync) is next. *(Full app-layer sync of the `chat/` root — data only, the
+  index never on the wire — stays the leaning, not a commitment.)*
+- **Shared tooling across the wire** — the tool-permission handshake over a server chat's stream (today a
+  server chat can't prompt for a gated tool), and later delegating a tool the server lacks back to the connected
+  client (e.g. local Forge in a server chat).
+- **Quotas & fairness** — per-user in-flight caps on the shared GPU, queue visibility, and the Forge↔llama
+  interlock; plus per-chat **named connections** (model-within-one-endpoint selection).
+- **Client-compat exploration** — survey other clients' project formats and offer a per-project "compatible
+  with" setting. (v1 targets Claude, whose `.mcp.json` + `AGENTS.md` already hand off cleanly to a frontier model
+  when a local task outgrows the window.)
 
 ## Later — local tools (permission-gated)
 
