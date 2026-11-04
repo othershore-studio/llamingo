@@ -32,16 +32,26 @@ import (
 var webAssets embed.FS
 
 func main() {
+	// `taita admin ...` is a console toolkit for recovering the admin account
+	// (reassign, reset a password) without the web UI — run on the server box,
+	// where shell access is the proof of ownership. It needs no running server.
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		runAdmin(os.Args[2:])
+		return
+	}
+
 	addr := flag.String("addr", ":8788", "listen address")
 	url := flag.String("url", "", "llama-server base URL (default: $LLAMINGO_URL, then http://localhost:8080)")
 	token := flag.String("token", "", "optional bearer token (default: $LLAMINGO_TOKEN)")
 	dataFlag := flag.String("data", "", "per-user store root (default: $TAITA_DATA, then ~/.taita/data)")
 	configFlag := flag.String("config", "", "server config dir (default: $TAITA_CONFIG, then ~/.taita/config); reserved until centralized config lands")
 	fake := flag.Bool("fake", false, "serve against an in-process fake llama-server (demo/preview; no model needed)")
+	adminFlag := flag.String("admin", "", "designate the admin account by name (default: $TAITA_ADMIN); empty = the first account to sign in")
 	flag.Parse()
 
 	dataDir := firstNonEmpty(*dataFlag, os.Getenv("TAITA_DATA"), defaultDir("data"))
 	configDir := firstNonEmpty(*configFlag, os.Getenv("TAITA_CONFIG"), defaultDir("config"))
+	adminName := firstNonEmpty(*adminFlag, os.Getenv("TAITA_ADMIN"))
 
 	var be backend.Backend
 	if *fake {
@@ -66,8 +76,12 @@ func main() {
 		log.Fatalf("taita: embedded UI: %v", err)
 	}
 
-	gw := taita.New(be, dataDir, dist)
-	log.Printf("taita listening on %s (data: %s, config: %s [reserved])", *addr, dataDir, configDir)
+	gw := taita.New(be, dataDir, dist, taita.WithAdmin(adminName))
+	who := adminName
+	if who == "" {
+		who = "first to sign in"
+	}
+	log.Printf("taita listening on %s (data: %s, config: %s [reserved]; admin: %s)", *addr, dataDir, configDir, who)
 	log.Fatal(http.ListenAndServe(*addr, gw))
 }
 

@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/othershore-studio/llamingo/internal/backend"
+	"github.com/othershore-studio/llamingo/internal/taita"
 )
 
 // identityResp decodes a /api/whoami or /api/login body. User is a pointer so the
@@ -78,6 +81,35 @@ func TestSecondProfileIsPasswordlessUser(t *testing.T) {
 	id := decodeIdentity(t, rec)
 	if id.User == nil || *id.User != "kid" || id.Role != "user" || id.Admin {
 		t.Fatalf("kid identity = %+v", id)
+	}
+}
+
+// TestDesignatedAdmin proves the -admin override: the named account is the admin
+// no matter who signs in first (no land-grab), and others are plain users.
+func TestDesignatedAdmin(t *testing.T) {
+	srv := taita.New(backend.New("http://127.0.0.1:0"), t.TempDir(), nil, taita.WithAdmin("Dad"))
+	t.Cleanup(func() { srv.Close() })
+
+	// A non-designated name that signs in first is a plain user (no password needed).
+	rec, _ := do(t, srv, "POST", "/api/login", "", `{"name":"mom"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mom login: status = %d; body = %s", rec.Code, rec.Body)
+	}
+	if id := decodeIdentity(t, rec); id.Admin || id.Role != "user" {
+		t.Fatalf("mom should be a regular user, got %+v", id)
+	}
+
+	// The designated name (matched case-insensitively) must set a password, and is admin.
+	rec, _ = do(t, srv, "POST", "/api/login", "", `{"name":"dad"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("designated admin without password should be refused, got %d", rec.Code)
+	}
+	rec, _ = do(t, srv, "POST", "/api/login", "", `{"name":"dad","password":"s3cret"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dad login: status = %d; body = %s", rec.Code, rec.Body)
+	}
+	if id := decodeIdentity(t, rec); !id.Admin || id.Role != "admin" {
+		t.Fatalf("dad should be admin, got %+v", id)
 	}
 }
 

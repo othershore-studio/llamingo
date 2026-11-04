@@ -58,17 +58,35 @@ type Server struct {
 	accMu  sync.Mutex
 	acc    Accounts // the account registry (bbolt), opened lazily on first login/whoami
 	accErr error
+
+	adminName string // designated admin account (normalized); "" = first-login-admin
 }
 
 // New builds a gateway. be is the shared llama backend (one connection for every
 // user); dataRoot is where per-user stores live; ui serves the built SPA (nil →
 // non-API paths 404, which is convenient in tests that only exercise the API).
-func New(be backend.Backend, dataRoot string, ui fs.FS) *Server {
+// opts configure it (see WithAdmin).
+func New(be backend.Backend, dataRoot string, ui fs.FS, opts ...Option) *Server {
 	var h http.Handler = http.NotFoundHandler()
 	if ui != nil {
 		h = http.FileServer(http.FS(ui))
 	}
-	return &Server{be: be, dataRoot: dataRoot, ui: h, cores: map[string]*httpapi.Server{}}
+	s := &Server{be: be, dataRoot: dataRoot, ui: h, cores: map[string]*httpapi.Server{}}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// Option configures a Server at construction.
+type Option func(*Server)
+
+// WithAdmin designates which account name is the admin (the server owner). When
+// set, only that name becomes admin on sign-in — no matter who logs in first, so
+// there is no land-grab; empty (the default) falls back to "the first account to
+// sign in is the admin". The recovery CLI (`taita admin`) can reassign it later.
+func WithAdmin(name string) Option {
+	return func(s *Server) { s.adminName = normName(name) }
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

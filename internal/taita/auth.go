@@ -140,16 +140,25 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, sess *sessi
 	a, err := acc.Get(name)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		list, _ := acc.List()
-		first := len(list) == 0
-		if first && req.Password == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "the first profile becomes the admin and needs a password",
-			})
+		// Who becomes admin: the designated name if one is set (no land-grab), else
+		// the first account to sign in (the zero-config fallback). Either way the
+		// admin must set a password — it gates server config.
+		willBeAdmin := false
+		if s.adminName != "" {
+			willBeAdmin = normName(name) == s.adminName
+		} else if list, _ := acc.List(); len(list) == 0 {
+			willBeAdmin = true
+		}
+		if willBeAdmin && req.Password == "" {
+			msg := "the admin profile needs a password"
+			if s.adminName == "" {
+				msg = "the first profile becomes the admin and needs a password"
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": msg})
 			return
 		}
 		a = &Account{Name: name, Role: RoleUser, Created: time.Now().UTC()}
-		if first {
+		if willBeAdmin {
 			a.Role = RoleAdmin
 		}
 		if req.Password != "" {
