@@ -144,6 +144,25 @@
     }
     return workingWord
   }
+  // Auto-scroll: follow the latest message as it streams, unless the reader has
+  // scrolled up (then the "↓ Latest" pill invites them back).
+  let threadEl = $state(null)
+  let atBottom = $state(true)
+  function onThreadScroll() {
+    const el = threadEl
+    if (el) atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }
+  function scrollToLatest() {
+    const el = threadEl
+    if (el) { el.scrollTop = el.scrollHeight; atBottom = true }
+  }
+  $effect(() => {
+    // Re-run when the thread grows: a new message, or more streamed content /
+    // reasoning on the last one. Only follow when the reader is already at the end.
+    const last = messages[messages.length - 1]
+    void (messages.length + (last?.content?.length ?? 0) + (last?.reasoning?.length ?? 0))
+    if (atBottom && threadEl) threadEl.scrollTop = threadEl.scrollHeight
+  })
   let budget = $state(null) // { used, nCtx, level }
   let error = $state(null)
   let convSummaries = $state([]) // compaction summaries, each anchored at its fold point in the thread
@@ -360,6 +379,7 @@
     }
     messages = msgs
     convSummaries = sums
+    atBottom = true // opening a chat lands on its latest message
     loadBudget(id)
   }
 
@@ -856,6 +876,7 @@
     // sidebar name once the turn lands (below).
     const firstMessage = messages.length === 0
     input = ''
+    atBottom = true // sending jumps to the newest message
     const now = new Date().toISOString()
     messages.push({ role: 'user', content: text, time: now })
     messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], time: now })
@@ -1374,7 +1395,7 @@
     {/if}
 
     <main class="conversation">
-      <div class="thread">
+      <div class="thread" bind:this={threadEl} onscroll={onThreadScroll}>
         {#if error}<p class="error">{error}</p>{/if}
         {#each messages as m, i}
           {#if showDetail && m.reasoning}
@@ -1416,6 +1437,9 @@
         {/each}
         {#if compacting}
           <div class="compacting muted">Compacting…</div>
+        {/if}
+        {#if !atBottom && messages.length}
+          <button class="jumpdown" onclick={scrollToLatest} title="Jump to the latest message">↓ Latest</button>
         {/if}
       </div>
       {#if pending}
@@ -1725,6 +1749,7 @@
           {/if}
         </div>
 
+        {#if !serverMode}
         <div class="group-head">Server (Taita)</div>
         <label class="setting">
           <span>Taita server URL <span class="muted">(optional; shows that server's chats under "Server Chats")</span></span>
@@ -1735,6 +1760,7 @@
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
         </label>
+        {/if}
 
         <div class="group-head">Image generation</div>
         <label class="setting">
@@ -2231,6 +2257,27 @@
     flex: 1;
     overflow-y: auto;
     padding: 16px;
+  }
+  /* "Jump to latest" pill — sticky to the bottom of the scrollport, shown only
+     when the reader has scrolled up away from a growing conversation. */
+  .jumpdown {
+    position: sticky;
+    bottom: 10px;
+    display: block;
+    width: fit-content;
+    margin: 8px auto 0;
+    padding: 5px 13px;
+    border: 0.5px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  }
+  .jumpdown:hover {
+    background: var(--paper);
   }
   .empty {
     text-align: center;
