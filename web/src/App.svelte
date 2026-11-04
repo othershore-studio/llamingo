@@ -513,6 +513,13 @@
     }
     await saveMCP()
     await saveConnections()
+    // "Save & connect": point the live backend at the active connection, so editing
+    // its URL (or sampling) connects now — not just on the next restart. This is
+    // what makes the Settings card actually switch the server, matching the button.
+    // activateConnection re-polls /props itself; the checkServer below covers the
+    // no-active-connection case.
+    const active = connections.find(isActiveConn)
+    if (active && (active.url || '').trim()) await activateConnection(active)
     settingsOpen = false
     checkServer() // re-poll so the status reflects any connection change now
   }
