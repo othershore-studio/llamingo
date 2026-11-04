@@ -64,6 +64,18 @@ func TestServerChatsProxyRoundTrip(t *testing.T) {
 		t.Fatalf("server chats = %v, want exactly one titled 'remote one'", chats)
 	}
 
+	// Open that chat through the proxy — it loads from the same taita session, so
+	// the client can route a server chat's turn to taita (the two-worlds model).
+	cid, _ := chats[0]["id"].(string)
+	oc, err := http.Get(sidecar.URL + "/api/server/conversations/" + cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oc.Body.Close()
+	if oc.StatusCode != http.StatusOK {
+		t.Fatalf("open server conversation via proxy: status %d", oc.StatusCode)
+	}
+
 	// A local client with NO taita linked has an empty server list.
 	solo := httptest.NewServer(httpapi.New(be, local()))
 	defer solo.Close()

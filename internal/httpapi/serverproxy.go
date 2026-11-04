@@ -5,7 +5,6 @@
 package httpapi
 
 import (
-	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
@@ -67,6 +66,50 @@ func (s *Server) handleServerChats(w http.ResponseWriter, r *http.Request) {
 	s.proxyToTaita(w, r, link, "/api/chats")
 }
 
+// currentTaita returns the linked taita, or nil, safely.
+func (s *Server) currentTaita() *taitaLink {
+	s.taitaMu.Lock()
+	defer s.taitaMu.Unlock()
+	return s.taita
+}
+
+// handleServerConversation proxies opening a server chat's log to the linked taita.
+func (s *Server) handleServerConversation(w http.ResponseWriter, r *http.Request) {
+	link := s.currentTaita()
+	if link == nil {
+		http.Error(w, "no taita linked", http.StatusBadGateway)
+		return
+	}
+	s.proxyToTaita(w, r, link, "/api/conversations/"+r.PathValue("id"))
+}
+
+// handleServerBudget proxies a server chat's context budget to the linked taita.
+func (s *Server) handleServerBudget(w http.ResponseWriter, r *http.Request) {
+	link := s.currentTaita()
+	if link == nil {
+		http.Error(w, "no taita linked", http.StatusBadGateway)
+		return
+	}
+	path := "/api/conversations/" + r.PathValue("id") + "/budget"
+	if r.URL.RawQuery != "" {
+		path += "?" + r.URL.RawQuery
+	}
+	s.proxyToTaita(w, r, link, path)
+}
+
+// handleServerChatStream proxies a turn in a server chat to the linked taita,
+// streaming the SSE reply back (proxyToTaita flushes). The turn runs on taita with
+// taita's own backend and tools — the "two worlds" model (docs/taita.md): the
+// active chat's origin is the only router.
+func (s *Server) handleServerChatStream(w http.ResponseWriter, r *http.Request) {
+	link := s.currentTaita()
+	if link == nil {
+		http.Error(w, "no taita linked", http.StatusBadGateway)
+		return
+	}
+	s.proxyToTaita(w, r, link, "/api/chat/stream")
+}
+
 // proxyToTaita forwards the request to the linked taita at path, carrying its
 // session cookie jar so the server resolves the same folder every time. Live proxy
 // for now; the download-by-chat cache (two-root "cache, not sync") is a later step.
@@ -89,5 +132,22 @@ func (s *Server) proxyToTaita(w http.ResponseWriter, r *http.Request, link *tait
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	// Stream the body through, flushing so a server chat's SSE turn reaches the
+	// browser live rather than buffering until the connection closes.
+	flusher, _ := w.(http.Flusher)
+	buf := make([]byte, 4096)
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if rerr != nil {
+			return
+		}
+	}
 }

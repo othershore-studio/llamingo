@@ -95,6 +95,7 @@
   let loginError = $state('')
   let loginBusy = $state(false)
   let activeId = $state(null)
+  let activeOrigin = $state('local') // 'local' | 'server' — the active chat's world, and the only router (docs/taita.md two-worlds)
   let streamingChatId = $state(null) // the chat the in-flight stream belongs to
   let streamMessages = null // its live message array, so switching chats mid-stream keeps the turn alive
   let messages = $state([]) // { role, content }
@@ -343,8 +344,14 @@
     }
   }
 
+  // Origin-aware routing: a server chat's ops proxy to the linked taita (/api/server/…);
+  // a local chat's hit the local core. The active chat's origin is the only switch.
+  const convUrl = (id) => (activeOrigin === 'server' ? `/api/server/conversations/${id}` : `/api/conversations/${id}`)
+  const streamUrl = () => (activeOrigin === 'server' ? '/api/server/chat/stream' : '/api/chat/stream')
+
   // Open a conversation: the core owns history, so load its log from disk.
-  async function selectChat(id) {
+  async function selectChat(id, origin = 'local') {
+    activeOrigin = origin
     if (narrow) drawerOpen = false // thin mode: reveal the conversation after picking from the drawer
     // Returning to a chat whose stream is still in flight: show its own live array
     // so the in-progress turn keeps rendering, instead of reloading a partial copy
@@ -359,7 +366,7 @@
     error = null
     budget = null
     report = null
-    const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
+    const entries = (await apiFetch(convUrl(id)).then((r) => r.json())) ?? []
     // Pair each persisted reasoning entry with the assistant answer that follows it,
     // and anchor each compaction summary where it ran: after the message it followed
     // in the log (the summary entry is appended at that moment), shown with its time.
@@ -392,7 +399,7 @@
   // leaves the bar as it was rather than flashing a stale chat's number.
   async function loadBudget(id, fresh = false) {
     try {
-      const b = await apiFetch(`/api/conversations/${id}/budget${fresh ? '?fresh=1' : ''}`).then((r) => (r.ok ? r.json() : null))
+      const b = await apiFetch(`${convUrl(id)}/budget${fresh ? '?fresh=1' : ''}`).then((r) => (r.ok ? r.json() : null))
       if (b && activeId === id) budget = b
     } catch {
       /* leave the bar as-is */
@@ -780,6 +787,17 @@
     chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
     await selectChat(created.id)
   }
+  // Create a chat on the linked taita (the Server Chats "+ New"): it lives in your
+  // taita store, and opening it routes everything to taita.
+  async function newServerChat() {
+    const created = await apiFetch('/api/server/chats', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'New chat' }),
+    }).then((r) => r.json())
+    serverChats = (await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => [])) ?? []
+    await selectChat(created.id, 'server')
+  }
 
   async function loadSessions(projectId) {
     sessions = (await apiFetch(`/api/projects/${projectId}/sessions`).then((r) => r.json())) ?? []
@@ -891,9 +909,13 @@
       // The client sends only the new turn; the core persists both sides.
       await streamChat(activeId, text)
       if (firstMessage) {
-        // The core named this chat from its first message — reload so the sidebar shows it.
-        chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
-        if (expandedProject) await loadSessions(expandedProject)
+        // The core named this chat from its first message — reload the right list.
+        if (activeOrigin === 'server') {
+          serverChats = (await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => [])) ?? []
+        } else {
+          chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+          if (expandedProject) await loadSessions(expandedProject)
+        }
       }
     } catch (e) {
       error = String(e)
@@ -907,7 +929,7 @@
   }
 
   async function streamChat(id, content) {
-    const resp = await apiFetch('/api/chat/stream', {
+    const resp = await apiFetch(streamUrl(), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id, content, thinking: conn?.thinkingSupported ? thinking : undefined }),
@@ -992,7 +1014,7 @@
   async function reconcileFinal(id, arr) {
     if (!id || !arr) return
     try {
-      const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
+      const entries = (await apiFetch(convUrl(id)).then((r) => r.json())) ?? []
       let lastContent = null
       for (const e of entries) {
         if (e.kind === 'msg' && e.role === 'assistant') lastContent = e.content
@@ -1335,10 +1357,11 @@
 
       {#if serverLinked && !serverMode}
       <div class="switcher">Server Chats</div>
+      <button class="new" onclick={newServerChat}>+ New server chat</button>
       <ul class="list">
         {#each serverChats as c}
           <li class="rowwrap">
-            <button class="row" class:active={c.id === activeId} onclick={() => selectChat(c.id)}>
+            <button class="row" class:active={c.id === activeId} onclick={() => selectChat(c.id, 'server')}>
               {c.title || 'Untitled'}
             </button>
           </li>
