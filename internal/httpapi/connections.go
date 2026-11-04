@@ -28,7 +28,7 @@ func (s *Server) handleGetConnections(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "backend is not reconfigurable", http.StatusNotImplemented)
 		return
 	}
-	cfg, _ := s.st.Config()
+	cfg, _ := s.cfg.Config()
 	dirty := false
 	for i := range cfg.Connections {
 		if cfg.Connections[i].ID == "" {
@@ -59,7 +59,7 @@ func (s *Server) handleGetConnections(w http.ResponseWriter, r *http.Request) {
 		activeID = "active"
 	}
 	if dirty {
-		_ = s.st.SetConfig(cfg)
+		_ = s.cfg.SetConfig(cfg)
 	}
 	writeJSON(w, map[string]any{"activeId": activeID, "activeUrl": activeURL, "connections": conns})
 }
@@ -91,9 +91,9 @@ func (s *Server) handlePutConnections(w http.ResponseWriter, r *http.Request) {
 		}
 		clean = append(clean, c)
 	}
-	cfg, _ := s.st.Config()
+	cfg, _ := s.cfg.Config()
 	cfg.Connections = clean
-	if err := s.st.SetConfig(cfg); err != nil {
+	if err := s.cfg.SetConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -128,12 +128,12 @@ func (s *Server) handleActivateConnection(w http.ResponseWriter, r *http.Request
 		http.Error(w, "url is required", http.StatusBadRequest)
 		return
 	}
-	cfg, _ := s.st.Config()
+	cfg, _ := s.cfg.Config()
 	cfg.ActiveID = strings.TrimSpace(body.ID)
 	cfg.URL, cfg.Token = url, strings.TrimSpace(body.Token)
 	cfg.Temperature, cfg.MinP = body.Temperature, body.MinP
 	cfg.SystemPrompt = strings.TrimSpace(body.SystemPrompt)
-	if err := s.st.SetConfig(cfg); err != nil {
+	if err := s.cfg.SetConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -79,6 +79,21 @@
 
   let conn = $state(null) // { model, nCtx }
   let chats = $state([])
+  // Server/Taita chats on a LOCAL client are a cache of a linked taita (wired in
+  // P3); serverLinked flips true once a taita connection is configured. In a
+  // taita-served browser serverMode is true and `chats` already IS the server's.
+  let serverChats = $state([])
+  let serverLinked = $state(false)
+  let serverMode = $state(false) // this core is a taita server (GET /api/mode)
+  // Accounts (server/taita mode only): whoami drives who is signed in and whether
+  // the admin-only server settings are offered. null until resolved; {user:null}
+  // while anonymous.
+  let me = $state(null)
+  let loginOpen = $state(false)
+  let loginName = $state('')
+  let loginPassword = $state('')
+  let loginError = $state('')
+  let loginBusy = $state(false)
   let activeId = $state(null)
   let streamingChatId = $state(null) // the chat the in-flight stream belongs to
   let streamMessages = null // its live message array, so switching chats mid-stream keeps the turn alive
@@ -162,6 +177,7 @@
   const isActiveConn = (c) => !!activeConnId && c.id === activeConnId
   let settingsLocation = $state('') // editable user location (for place-aware tools)
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
+  let settingsTaitaUrl = $state('') // editable Taita server URL (links this client's Server Chats)
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
   let autostartSupported = $state(false) // this build can manage login autostart (desktop, per-OS)
   let autostartEnabled = $state(false) // launch llaminGO at login
@@ -280,8 +296,22 @@
       conn = null
       reachable = false
     }
+    // Mode is server-declared (backend-independent), so the layout is correct even
+    // when the model is down: taita → "server" (one chat list, no Projects).
+    try {
+      const m = await apiFetch('/api/mode').then((r) => r.json())
+      serverMode = m?.mode === 'server'
+      serverLinked = !!m?.serverLinked
+    } catch {}
+    // In server mode, resolve the signed-in identity (anonymous → {user:null}).
+    if (serverMode) {
+      try { me = await apiFetch('/api/whoami').then((r) => r.json()) } catch { me = null }
+    } else {
+      me = null
+    }
     chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
-    projects = (await apiFetch('/api/projects').then((r) => r.json())) ?? []
+    serverChats = serverLinked ? await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => []) : []
+    projects = serverMode ? [] : ((await apiFetch('/api/projects').then((r) => r.json())) ?? [])
     if (!activeId) {
       if (chats.length) await selectChat(chats[0].id)
       // No chats yet: land in a ready one so the toolset + budget show from message
@@ -387,10 +417,49 @@
   }
 
   // The llama-server connection, persisted to config.json and hot-swapped live.
+  function openLogin() {
+    loginName = ''
+    loginPassword = ''
+    loginError = ''
+    loginOpen = true
+  }
+  // Sign in / "become this profile": the server creates an unknown name, requires
+  // a password only where the profile has one, and switches this session to that
+  // account's store — so reload everything for the new identity.
+  async function doLogin() {
+    loginError = ''
+    const name = loginName.trim()
+    if (!name) { loginError = 'Enter a profile name.'; return }
+    loginBusy = true
+    try {
+      const r = await apiFetch('/api/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, password: loginPassword }),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) { loginError = data.error || 'Sign in failed.'; return }
+      me = data
+      loginOpen = false
+      activeId = null
+      await refresh()
+    } catch {
+      loginError = 'Sign in failed.'
+    } finally {
+      loginBusy = false
+    }
+  }
+  async function doLogout() {
+    try { await apiFetch('/api/logout', { method: 'POST' }) } catch {}
+    me = null
+    activeId = null
+    await refresh()
+  }
   async function openSettings() {
     const s = await apiFetch('/api/settings').then((r) => r.json())
     settingsLocation = s.location ?? ''
     settingsForgeUrl = s.forgeUrl ?? ''
+    settingsTaitaUrl = s.taitaUrl ?? ''
     settingsDebug = s.debug ?? false
     // Login autostart is a desktop-only, per-OS setting (the OS entry is the source
     // of truth); the browser skips it and the controls stay hidden.
@@ -428,8 +497,14 @@
     await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), debug: settingsDebug }),
+      body: JSON.stringify({ location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), taitaUrl: settingsTaitaUrl.trim(), debug: settingsDebug }),
     })
+    // The taita link may have changed — refresh the Server Chats list + flag.
+    try {
+      const m = await apiFetch('/api/mode').then((r) => r.json())
+      serverLinked = !!m?.serverLinked
+      serverChats = serverLinked ? await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => []) : []
+    } catch {}
     // Image models: persist the user's choices, or seed them from Forge on a first
     // connect (an empty list + a Forge URL). See internal/imagegen.
     if (settingsForgeUrl.trim()) {
@@ -438,6 +513,13 @@
     }
     await saveMCP()
     await saveConnections()
+    // "Save & connect": point the live backend at the active connection, so editing
+    // its URL (or sampling) connects now — not just on the next restart. This is
+    // what makes the Settings card actually switch the server, matching the button.
+    // activateConnection re-polls /props itself; the checkServer below covers the
+    // no-active-connection case.
+    const active = connections.find(isActiveConn)
+    if (active && (active.url || '').trim()) await activateConnection(active)
     settingsOpen = false
     checkServer() // re-poll so the status reflects any connection change now
   }
@@ -1145,7 +1227,9 @@
     <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
     <nav class="sysmenu actionsmenu" class:up={narrow}>
       <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
-      <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
+      {#if !serverMode || me?.admin}
+        <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
+      {/if}
     </nav>
   {/if}
 
@@ -1158,7 +1242,17 @@
       <div class="drawer-scrim" onclick={() => (drawerOpen = false)}></div>
     {/if}
     <aside class="left" class:collapsed={!sidebarShown} style="--sidebar-w:{sidebarWidth}px; margin-left:{sidebarShown ? '0px' : -sidebarWidth + 'px'}">
-      <div class="switcher">Chats</div>
+      {#if serverMode}
+        <div class="profile">
+          {#if me?.user}
+            <span class="profile-who" title={me.admin ? 'Admin' : 'Signed in'}>{me.admin ? '★ ' : ''}{me.user}</span>
+            <button class="profile-btn" onclick={doLogout}>Sign out</button>
+          {:else}
+            <button class="profile-btn signin" onclick={openLogin}>Sign in</button>
+          {/if}
+        </div>
+      {/if}
+      <div class="switcher">{serverLinked && !serverMode ? 'Local Chats' : 'Chats'}</div>
       <button class="new" onclick={newChat}>+ New chat</button>
       <ul class="list">
         {#each chats as c}
@@ -1193,7 +1287,22 @@
         {/each}
       </ul>
 
-      {#if !mobileClient}
+      {#if serverLinked && !serverMode}
+      <div class="switcher">Server Chats</div>
+      <ul class="list">
+        {#each serverChats as c}
+          <li class="rowwrap">
+            <button class="row" class:active={c.id === activeId} onclick={() => selectChat(c.id)}>
+              {c.title || 'Untitled'}
+            </button>
+          </li>
+        {:else}
+          <li class="row muted">No server chats yet</li>
+        {/each}
+      </ul>
+      {/if}
+
+      {#if !mobileClient && !serverMode}
       <div class="switcher">Projects</div>
       <button class="new" onclick={() => (openingFolder = !openingFolder)}>+ Open folder</button>
       {#if openingFolder}
@@ -1549,6 +1658,32 @@
     </div>
   {/if}
 
+  {#if loginOpen}
+    <div class="modal-backdrop" onclick={() => (loginOpen = false)}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-head">
+          <span>Sign in</span>
+          <button class="x" onclick={() => (loginOpen = false)}>✕</button>
+        </div>
+        <div class="modal-body">
+          <label class="setting">
+            <span>Profile name</span>
+            <input class="field" bind:value={loginName} placeholder="e.g. Dad" onkeydown={(e) => e.key === 'Enter' && doLogin()} />
+          </label>
+          <label class="setting">
+            <span>Password <span class="muted">(optional for a new profile; required if it has one)</span></span>
+            <input class="field" type="password" bind:value={loginPassword} onkeydown={(e) => e.key === 'Enter' && doLogin()} />
+          </label>
+          <div class="muted">A new name creates a profile. The first profile becomes the admin and needs a password.</div>
+          {#if loginError}<div class="login-err">{loginError}</div>{/if}
+        </div>
+        <div class="modal-foot">
+          <button class="primary" onclick={doLogin} disabled={loginBusy}>{loginBusy ? 'Signing in…' : 'Sign in'}</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if settingsOpen}
     <div class="modal-backdrop" onclick={() => (settingsOpen = false)}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
@@ -1589,6 +1724,17 @@
             <div class="imgmodels-hint muted">No saved connections. Add one, or it falls back to $LLAMINGO_URL.</div>
           {/if}
         </div>
+
+        <div class="group-head">Server (Taita)</div>
+        <label class="setting">
+          <span>Taita server URL <span class="muted">(optional; shows that server's chats under "Server Chats")</span></span>
+          <input
+            class="field"
+            bind:value={settingsTaitaUrl}
+            placeholder="https://taita.example.com"
+            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
+          />
+        </label>
 
         <div class="group-head">Image generation</div>
         <label class="setting">
@@ -1988,6 +2134,43 @@
   }
   .new:hover {
     background: var(--paper);
+  }
+  .profile {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 4px 8px;
+  }
+  .profile-who {
+    font-size: 13px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .profile-btn {
+    margin-left: auto;
+    flex-shrink: 0;
+    background: none;
+    border: 0.5px solid var(--border);
+    border-radius: 7px;
+    padding: 3px 9px;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .profile-btn:hover {
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .profile-btn.signin {
+    color: var(--clay);
+    border-color: color-mix(in srgb, var(--clay) 40%, transparent);
+  }
+  .login-err {
+    color: #d66;
+    font-size: 13px;
   }
   .list {
     list-style: none;

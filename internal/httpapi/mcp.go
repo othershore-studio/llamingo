@@ -31,7 +31,7 @@ type mcpServerView struct {
 // its scope and whether it is currently connected. Global URL-based servers are
 // UI-editable; project servers (a repo file) and stdio servers are read-only.
 func (s *Server) mcpServersView(convID string) []mcpServerView {
-	gservers, _ := mcp.LoadServers(globalMCPPath(s.st.Root()))
+	gservers, _ := mcp.LoadServers(globalMCPPath(s.cfg.Root()))
 	out := scopeView(gservers, connectedNames(s.globalServers()), "global", true)
 	if convID != "" {
 		if root, ok, _ := s.st.ProjectRoot(convID); ok && root != "" {
@@ -93,7 +93,7 @@ func (s *Server) handlePutMCP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	path := globalMCPPath(s.st.Root())
+	path := globalMCPPath(s.cfg.Root())
 	existing, _ := mcp.LoadServers(path)
 	next := map[string]mcp.ServerConfig{}
 	// Preserve command-based (stdio) servers — those stay edited in the file.

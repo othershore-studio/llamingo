@@ -1,7 +1,7 @@
 # CLAUDE.md — llaminGO
 
 Operational guide for working in this repo. Design rationale lives in [`docs/`](docs/)
-(`architecture.md`, `ui.md`, `roadmap.md`); this file is the practical "how to work here."
+(`architecture.md`, `ui.md`, `roadmap.md`, `taita.md`); this file is the practical "how to work here."
 
 ## What this is
 
@@ -29,8 +29,24 @@ with `--jinja`) for honest context metering and a client-owned MCP loop. See `do
 - `internal/permission/` — the scope × risk permission gate + grant store.
 - `internal/imagegen/` — the native image tool (Forge Neo) + per-model recipes/config.
 - `internal/memtool`, `internal/localtools`, `internal/filetools`, `internal/debuglog` — the other native tools + debug logging.
-- `cmd/llamingo/` — the CLI shell; `cmd/llamingo-serve/` — the HTTP server the desktop/web UI points at.
-- `web/` — the Svelte 5 web UI (`web/src/App.svelte`); `build/` — the Wails desktop app scaffolding.
+- `cmd/llamingo/` — the CLI shell; `cmd/llamingo-serve/` — the headless HTTP/SSE core (API only, **not** browser-facing — see Taita below).
+- `internal/taita/` — the **v2 multi-user gateway**: a registry of per-session single-store `httpapi.Server`s (so `httpapi` itself stays untouched); `cmd/taita/` — the `taita` server binary (embeds the web UI, runs in server mode).
+- `web/` — the Svelte 5 web UI (`web/src/App.svelte`), shared by the desktop webview and taita; `build/` — the Wails desktop app scaffolding.
+
+## Taita (the v2 server) — the browser-surface invariant
+
+**Taita** (`cmd/taita` + `internal/taita`) is llaminGO's optional multi-user gateway: a separate binary, grown from
+`cmd/llamingo-serve` and sharing `internal/httpapi` + `internal/store`, that serves the web UI to a plain browser and
+gives each session its own store. Full design + the phase plan: [`docs/taita.md`](docs/taita.md).
+
+One invariant keeps drifting across compactions — **which surfaces a browser may open:**
+
+- **Desktop (Wails)** — the only browser-facing *local* client. Its webview is Origin-gated (`httpapi.CORS`) so no
+  stray page reaches the loopback core, which holds the backend token and the store.
+- **`llamingo-serve`** — the **headless** loopback core, **API only**. Do **not** give it a web UI; that bypasses the
+  CORS gate (a `-web` flag was tried and reverted, commit `cca6898`).
+- **`taita`** — the browser-facing *server* surface (server mode); needs its own Origin gate before any public
+  (tunnel) exposure.
 
 ## Build & test
 

@@ -13,6 +13,46 @@ import (
 	"github.com/othershore-studio/llamingo/internal/store"
 )
 
+func TestAbsorbChats(t *testing.T) {
+	src, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// dst keeps one chat; src has two that should move over.
+	if _, err := dst.NewChat("kept"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.NewChat("scratch one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.NewChat("scratch two"); err != nil {
+		t.Fatal(err)
+	}
+
+	moved, err := dst.AbsorbChats(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved != 2 {
+		t.Fatalf("moved = %d, want 2", moved)
+	}
+	if chats, _ := dst.ListChats(); len(chats) != 3 {
+		t.Fatalf("dst has %d chats, want 3 (1 kept + 2 absorbed)", len(chats))
+	}
+	if chats, _ := src.ListChats(); len(chats) != 0 {
+		t.Fatalf("src has %d chats, want 0 (moved, not copied)", len(chats))
+	}
+
+	// Absorbing an empty source is a no-op.
+	if moved, err := dst.AbsorbChats(src); err != nil || moved != 0 {
+		t.Fatalf("second absorb: moved = %d, err = %v; want 0, nil", moved, err)
+	}
+}
+
 func TestChatsCreateAndList(t *testing.T) {
 	s, err := store.Open(t.TempDir())
 	if err != nil {

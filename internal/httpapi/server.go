@@ -26,9 +26,13 @@ import (
 
 // Server is the HTTP handler for the core API.
 type Server struct {
-	be  backend.Backend
-	st  *store.Store
-	mux *http.ServeMux
+	be      backend.Backend
+	st      *store.Store
+	cfg     *store.Store // SERVER config (connections/Forge/MCP/settings); == st unless WithConfigStore — taita shares one central config store across its per-user cores
+	mux     *http.ServeMux
+	mode    string     // "local" (a client sidecar) or "server" (taita); see GET /api/mode
+	taitaMu sync.Mutex // guards taita (relinkable at runtime via Settings)
+	taita   *taitaLink // set → this local sidecar proxies a linked taita (serverproxy.go)
 
 	// Agentic wiring: the tool loop's permission gate reaches the user over the
 	// chat stream. The broker + prompter are app-wide; gates are per-conversation
@@ -55,12 +59,32 @@ type Server struct {
 	fileReads   map[string]map[string]bool
 }
 
-// New wires the API over the given backend and store.
-func New(be backend.Backend, st *store.Store) *Server {
+// Option configures a Server at construction; without any, it runs in "local"
+// mode (a client's sidecar). taita passes ServerMode() for its per-user cores.
+type Option func(*Server)
+
+// ServerMode marks this core as a taita server rather than a local client's
+// sidecar, surfaced at GET /api/mode so the shared web UI adapts (server =
+// chat-only, no Projects, one server-owned chat list). See the memory note
+// taita-build-plan → TWO CHAT LISTS.
+func ServerMode() Option { return func(s *Server) { s.mode = "server" } }
+
+// WithConfigStore points this core's SERVER CONFIG (connections, Forge, MCP,
+// settings) at a store separate from its data (chat) store. taita passes one
+// shared config store to every per-user core, so the whole server has a single,
+// central, admin-owned configuration; without it, config lives in the data store
+// — exactly today's single-user behavior. See docs/taita.md (config/data split).
+func WithConfigStore(cs *store.Store) Option { return func(s *Server) { s.cfg = cs } }
+
+// New wires the API over the given backend and store. Without options it is a
+// local client sidecar; pass ServerMode() for a taita core.
+func New(be backend.Backend, st *store.Store, opts ...Option) *Server {
 	br := newBroker()
 	s := &Server{
 		be:          be,
 		st:          st,
+		cfg:         st,
+		mode:        "local",
 		mux:         http.NewServeMux(),
 		broker:      br,
 		prompter:    newSSEPrompter(br),
@@ -69,7 +93,20 @@ func New(be backend.Backend, st *store.Store) *Server {
 		projectRegs: map[string]*projectReg{},
 		fileReads:   map[string]map[string]bool{},
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	// A linked taita persists in config (set via Settings); adopt it at startup,
+	// unless an option already linked one (e.g. tests).
+	if !s.taitaLinked() {
+		if cfg, cerr := s.cfg.Config(); cerr == nil {
+			s.setTaita(cfg.TaitaURL)
+		}
+	}
 	s.mux.HandleFunc("GET /api/props", s.handleProps)
+	s.mux.HandleFunc("GET /api/mode", s.handleMode)
+	s.mux.HandleFunc("GET /api/server/chats", s.handleServerChats)
+	s.mux.HandleFunc("POST /api/server/chats", s.handleServerChats)
 	s.mux.HandleFunc("GET /api/chats", s.handleListChats)
 	s.mux.HandleFunc("POST /api/chats", s.handleNewChat)
 	s.mux.HandleFunc("GET /api/projects", s.handleListProjects)
@@ -117,6 +154,13 @@ func (s *Server) handleProps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"model": modelDisplayName(p.ModelID, p.ModelAlias), "nCtx": p.NCtx, "thinkingSupported": thinkingSupported(p.ChatTemplate)})
+}
+
+// GET /api/mode — whether this core is a local client sidecar ("local") or a
+// taita server ("server"). Backend-independent (unlike /api/props), so the shared
+// web UI can pick its layout even when the model is down. See taita-build-plan.
+func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"mode": s.mode, "serverLinked": s.taitaLinked()})
 }
 
 // thinkingSupported reports whether the model's chat template exposes an
@@ -214,8 +258,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "backend is not reconfigurable", http.StatusNotImplemented)
 		return
 	}
-	cfg, _ := s.st.Config()
-	writeJSON(w, map[string]any{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location, "forgeUrl": cfg.ForgeURL, "debug": cfg.Debug})
+	cfg, _ := s.cfg.Config()
+	writeJSON(w, map[string]any{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location, "forgeUrl": cfg.ForgeURL, "taitaUrl": cfg.TaitaURL, "debug": cfg.Debug})
 }
 
 // PUT /api/settings {url, token, location, forgeUrl, debug} — persist and hot-swap
@@ -231,6 +275,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		Token    string `json:"token"`
 		Location string `json:"location"`
 		ForgeURL string `json:"forgeUrl"`
+		TaitaURL string `json:"taitaUrl"`
 		Debug    bool   `json:"debug"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -238,7 +283,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Read-modify-write so any fields this form does not own survive a settings save.
-	cfg, _ := s.st.Config()
+	cfg, _ := s.cfg.Config()
 	// The connection now lives in its own card (/api/connections); a Settings save
 	// that omits the URL leaves the active connection untouched and updates only the
 	// fields below. A URL is still honored (and hot-swapped) for back-compat.
@@ -249,14 +294,16 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.Location = strings.TrimSpace(body.Location)
 	cfg.ForgeURL = strings.TrimSpace(body.ForgeURL)
+	cfg.TaitaURL = strings.TrimSpace(body.TaitaURL)
 	cfg.Debug = body.Debug
-	if err := s.st.SetConfig(cfg); err != nil {
+	if err := s.cfg.SetConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if url != "" {
 		rc.SetConnection(url, body.Token)
 	}
+	s.setTaita(cfg.TaitaURL) // relink the client's Server Chats (empty = unlink)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -447,7 +494,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	ctx := withEmitter(r.Context(), emit)
 	// Debug mode: tee this turn's raw llama/Forge/tool payloads into the chat's
 	// own logs/ folder (see internal/debuglog). Off unless the setting is on.
-	if cfg, _ := s.st.Config(); cfg.Debug {
+	if cfg, _ := s.cfg.Config(); cfg.Debug {
 		if dir, derr := s.st.LogDir(body.ID); derr == nil {
 			ctx = debuglog.With(ctx, &debuglog.Sink{Dir: dir})
 		}

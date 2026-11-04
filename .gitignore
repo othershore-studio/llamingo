@@ -3,6 +3,8 @@
 /dist/
 /llamingo
 /llamingo.exe
+/taita
+/taita.exe
 
 # Wails desktop build: ignore the compiled binary, keep build/ scaffolding
 # (appicon.png, windows/ manifest + icon) committed as the customization point.

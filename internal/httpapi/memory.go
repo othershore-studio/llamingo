@@ -61,7 +61,7 @@ func (s *Server) segmentsFor(convID string, messages []backend.Message, tools []
 	var segs []contextbudget.Segment
 	// The active connection's system prompt (a persona's instructions), prepended as
 	// a system message and metered like any other segment. Empty = none.
-	if cfg, err := s.st.Config(); err == nil {
+	if cfg, err := s.cfg.Config(); err == nil {
 		if sp := strings.TrimSpace(cfg.SystemPrompt); sp != "" {
 			segs = append(segs, contextbudget.Segment{Name: "system", Messages: []backend.Message{{Role: backend.RoleSystem, Content: sp}}})
 		}
