@@ -218,9 +218,11 @@ Client-connection path: **P1 anon browser ✅ → P2 accounts → P3 desktop/cli
 ## 11. Open decisions
 
 1. **config/ vs data/ split** — settings in `config/`, per-user in `data/`. *Locked: yes* (it's forced, §8).
-2. **Account model (the live P2 call)** — password vs passwordless. Lean: **hybrid** — passwordless profiles
-   by default (presence = identity on the trusted mesh), a profile *may* set a password (opt-in), and the
-   **admin account requires one** (it gates server config). Matches both the user-first lens and public-safety.
+2. **Account model** — **LOCKED (2026-11-03): hybrid.** Passwordless profiles by default (presence = identity
+   on the trusted mesh); a profile *may* set a password (opt-in); the **admin account requires one** (it gates
+   server config). Matches both the user-first lens and public-safety. Login = "become this profile": an
+   existing passwordless name you just become, a password-protected name requires the password, an unknown
+   name is created (passwordless) and becomes yours — the Netflix-profile UX.
 3. **Admin designation** — lean: the **first** registered account is admin, overridable by a `config/` flag or
    env (`TAITA_ADMIN=name`).
 4. **P1 auth posture** — presence / shared mesh token; real auth deferred to public (cloudflared) exposure.

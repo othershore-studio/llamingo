@@ -53,7 +53,11 @@ type Server struct {
 	ui       http.Handler
 
 	mu    sync.Mutex
-	cores map[string]*httpapi.Server // keyed by store subpath, e.g. "annon/<hash>"
+	cores map[string]*httpapi.Server // keyed by store subpath, e.g. "annon/<hash>" or "users/<name>"
+
+	accMu  sync.Mutex
+	acc    Accounts // the account registry (bbolt), opened lazily on first login/whoami
+	accErr error
 }
 
 // New builds a gateway. be is the shared llama backend (one connection for every
@@ -68,9 +72,24 @@ func New(be backend.Backend, dataRoot string, ui fs.FS) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	key := s.ensureSession(w, r)
+	sess := s.ensureSession(w, r)
+
+	// taita-level identity endpoints are handled here, before the per-session core:
+	// they operate on the session anchor and the account registry, not on a store.
+	switch r.URL.Path {
+	case "/api/login":
+		s.handleLogin(w, r, sess)
+		return
+	case "/api/logout":
+		s.handleLogout(w, r, sess)
+		return
+	case "/api/whoami":
+		s.handleWhoami(w, r, sess)
+		return
+	}
+
 	if strings.HasPrefix(r.URL.Path, "/api/") {
-		core, err := s.coreFor(key)
+		core, err := s.coreFor(sess.key)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -81,11 +100,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.ui.ServeHTTP(w, r)
 }
 
-// ensureSession reads the anonymous session cookie, minting one (and setting it
-// on the response) when it is absent or malformed, and returns the store subpath
-// for that session: "annon/<sha256(sid)>". The raw sid lives only in the cookie;
-// only its hash names a folder.
-func (s *Server) ensureSession(w http.ResponseWriter, r *http.Request) string {
+// ensureSession reads the session cookie, minting one (and setting it on the
+// response) when it is absent or malformed, then resolves the request's identity.
+// The raw sid lives only in the cookie; only its hash ("annon/<sha256(sid)>")
+// names the anon folder. If that folder's sidecar session.json names a still-valid
+// account, the session is logged in and serves the account's own store
+// ("users/<name>"); otherwise it is anonymous.
+func (s *Server) ensureSession(w http.ResponseWriter, r *http.Request) *session {
 	sid := ""
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		sid = c.Value
@@ -103,7 +124,21 @@ func (s *Server) ensureSession(w http.ResponseWriter, r *http.Request) string {
 		})
 	}
 	sum := sha256.Sum256([]byte(sid))
-	return "annon/" + hex.EncodeToString(sum[:16]) // 128-bit folder name
+	anonKey := "annon/" + hex.EncodeToString(sum[:16]) // 128-bit folder name
+	sess := &session{sid: sid, anonKey: anonKey, key: anonKey}
+
+	// Resolve login: the sidecar session.json in the anon folder (the session
+	// anchor) names the claimed account, if any. A deleted account falls back to
+	// anonymous. This is the only per-request store read, and logins persist across
+	// restarts because the anchor is a file, not in-process state.
+	if meta, ok := s.readSession(anonKey); ok && meta.User != "" {
+		if acc, err := s.accounts(); err == nil {
+			if a, err := acc.Get(meta.User); err == nil {
+				sess.user, sess.role, sess.key = a.Name, a.Role, "users/"+normName(a.Name)
+			}
+		}
+	}
+	return sess
 }
 
 // coreFor returns the httpapi.Server for a store subpath, creating and caching it

@@ -23,7 +23,9 @@ func newServer(t *testing.T, ui fs.FS) *taita.Server {
 	t.Helper()
 	// The chat-list/create endpoints exercised here never call the backend, so a
 	// bare one pointed at an unused address is enough (no model, no network).
-	return taita.New(backend.New("http://127.0.0.1:0"), t.TempDir(), ui)
+	srv := taita.New(backend.New("http://127.0.0.1:0"), t.TempDir(), ui)
+	t.Cleanup(func() { srv.Close() }) // release the bbolt accounts DB before TempDir cleanup
+	return srv
 }
 
 // do issues one request, carrying sid as the session cookie when non-empty, and
