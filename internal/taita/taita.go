@@ -60,6 +60,9 @@ type Server struct {
 	accErr error
 
 	adminName string // designated admin account (normalized); "" = first-login-admin
+
+	configRoot  string       // shared server config dir; "" = per-user config (each core uses its data store)
+	configStore *store.Store // opened lazily from configRoot, shared across all cores
 }
 
 // New builds a gateway. be is the shared llama backend (one connection for every
@@ -89,6 +92,14 @@ func WithAdmin(name string) Option {
 	return func(s *Server) { s.adminName = normName(name) }
 }
 
+// WithConfigDir points every per-user core at ONE shared config store at dir, so
+// connections / Forge / MCP / settings are a single central configuration for the
+// whole server rather than per-user. Empty leaves config per-user (each core uses
+// its own data store). See docs/taita.md (config/data split).
+func WithConfigDir(dir string) Option {
+	return func(s *Server) { s.configRoot = strings.TrimSpace(dir) }
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sess := s.ensureSession(w, r)
 
@@ -103,6 +114,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case "/api/whoami":
 		s.handleWhoami(w, r, sess)
+		return
+	}
+
+	// Server config is the admin's job: only an admin may change connections,
+	// Forge, MCP or settings. The web UI already hides these for non-admins — this
+	// is the real server-side enforcement (reads stay open; writes are refused).
+	// See docs/taita.md §6.
+	if sess.role != RoleAdmin && adminWriteRoutes[r.Method+" "+r.URL.Path] {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "admin only — ask the server owner"})
 		return
 	}
 
@@ -177,9 +197,31 @@ func (s *Server) coreFor(key string) (*httpapi.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := httpapi.New(s.be, st, httpapi.ServerMode())
+	opts := []httpapi.Option{httpapi.ServerMode()}
+	if s.configRoot != "" {
+		cfg, err := s.sharedConfigLocked()
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, httpapi.WithConfigStore(cfg))
+	}
+	c := httpapi.New(s.be, st, opts...)
 	s.cores[key] = c
 	return c, nil
+}
+
+// sharedConfigLocked opens the one central config store on first use and caches
+// it. The caller must hold s.mu (coreFor does).
+func (s *Server) sharedConfigLocked() (*store.Store, error) {
+	if s.configStore != nil {
+		return s.configStore, nil
+	}
+	cs, err := store.Open(s.configRoot)
+	if err != nil {
+		return nil, err
+	}
+	s.configStore = cs
+	return cs, nil
 }
 
 // rootFor resolves a "/"-separated store subpath to an absolute directory under

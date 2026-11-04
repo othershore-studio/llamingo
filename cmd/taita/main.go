@@ -76,12 +76,12 @@ func main() {
 		log.Fatalf("taita: embedded UI: %v", err)
 	}
 
-	gw := taita.New(be, dataDir, dist, taita.WithAdmin(adminName))
+	gw := taita.New(be, dataDir, dist, taita.WithAdmin(adminName), taita.WithConfigDir(configDir))
 	who := adminName
 	if who == "" {
 		who = "first to sign in"
 	}
-	log.Printf("taita listening on %s (data: %s, config: %s [reserved]; admin: %s)", *addr, dataDir, configDir, who)
+	log.Printf("taita listening on %s (data: %s, config: %s; admin: %s)", *addr, dataDir, configDir, who)
 	log.Fatal(http.ListenAndServe(*addr, gw))
 }
 

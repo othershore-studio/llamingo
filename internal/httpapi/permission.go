@@ -256,7 +256,7 @@ func (s *Server) budgetTools(convID string) []backend.ToolDef {
 // present, else nil. Generated images save into that conversation's attachments/
 // — the same sink the persisted tool images use.
 func (s *Server) imageTool(convID string, gate *permission.Gate) mcp.Registry {
-	cfg, _ := s.st.Config()
+	cfg, _ := s.cfg.Config()
 	url := cfg.ForgeURL
 	if url == "" {
 		url = os.Getenv("LLAMINGO_FORGE_URL")
@@ -264,7 +264,7 @@ func (s *Server) imageTool(convID string, gate *permission.Gate) mcp.Registry {
 	if url == "" {
 		return nil
 	}
-	imgCfg, err := imagegen.LoadConfig(filepath.Join(s.st.Root(), "imagegen.json"))
+	imgCfg, err := imagegen.LoadConfig(filepath.Join(s.cfg.Root(), "imagegen.json"))
 	if err != nil {
 		log.Printf("mcp: image config: %v", err)
 		return nil
@@ -288,7 +288,7 @@ func (s convSink) Save(ctx context.Context, name string, data []byte) (string, e
 // locationSetting returns the user's configured location ("" if unset or on a
 // read error). The local get_location tool reads it through this.
 func (s *Server) locationSetting() string {
-	c, err := s.st.Config()
+	c, err := s.cfg.Config()
 	if err != nil {
 		return ""
 	}
@@ -313,7 +313,7 @@ func (s *Server) globalServers() mcp.Registry {
 // user-authored and trusted, so the gate is unused here.
 func (s *Server) connectGlobalServers() *mcp.ServerRegistry {
 	reg := mcp.NewRegistry(nil)
-	servers, err := mcp.Load(globalMCPPath(s.st.Root()), "")
+	servers, err := mcp.Load(globalMCPPath(s.cfg.Root()), "")
 	if err != nil {
 		log.Printf("mcp: load global config: %v", err)
 	}

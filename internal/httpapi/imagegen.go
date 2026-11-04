@@ -19,7 +19,7 @@ import (
 // imagegenConfigPath is where the image-model config lives — next to the app
 // config under the store root. Shared with the tool wiring in permission.go.
 func (s *Server) imagegenConfigPath() string {
-	return filepath.Join(s.st.Root(), "imagegen.json")
+	return filepath.Join(s.cfg.Root(), "imagegen.json")
 }
 
 // forgeBaseURL resolves the Forge Neo base URL: the one just typed in the request
@@ -29,7 +29,7 @@ func (s *Server) forgeBaseURL(typed string) string {
 	if u := strings.TrimSpace(typed); u != "" {
 		return u
 	}
-	cfg, _ := s.st.Config()
+	cfg, _ := s.cfg.Config()
 	if cfg.ForgeURL != "" {
 		return cfg.ForgeURL
 	}

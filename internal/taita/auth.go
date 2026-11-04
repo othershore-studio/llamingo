@@ -100,6 +100,18 @@ func (s *Server) writeSession(anonKey string, m sessionMeta) error {
 	return os.WriteFile(filepath.Join(root, "session.json"), b, 0o600)
 }
 
+// adminWriteRoutes are the config-mutating endpoints taita restricts to the admin.
+// Keyed by "METHOD path". Reads are intentionally absent — the UI gates them, and
+// hiding connection tokens from non-admins is a separate hardening item (§3/§11).
+var adminWriteRoutes = map[string]bool{
+	"PUT /api/settings":              true,
+	"PUT /api/connections":           true,
+	"POST /api/connections/activate": true,
+	"PUT /api/imagegen":              true,
+	"POST /api/imagegen/fetch":       true,
+	"PUT /api/mcp":                   true,
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
