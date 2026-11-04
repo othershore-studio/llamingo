@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -288,11 +289,15 @@ func (s convSink) Save(ctx context.Context, name string, data []byte) (string, e
 // locationSetting returns the user's configured location ("" if unset or on a
 // read error). The local get_location tool reads it through this.
 func (s *Server) locationSetting() string {
-	c, err := s.cfg.Config()
-	if err != nil {
-		return ""
+	// The user's own location (per-user prefs) wins; the server default (central
+	// config) is the fallback for someone who hasn't set theirs.
+	if p, err := s.st.Prefs(); err == nil && strings.TrimSpace(p.Location) != "" {
+		return p.Location
 	}
-	return c.Location
+	if c, err := s.cfg.Config(); err == nil {
+		return c.Location
+	}
+	return ""
 }
 
 // globalServers connects the user's global MCP servers once and caches the

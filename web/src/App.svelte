@@ -198,6 +198,9 @@
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
   let settingsTaitaUrl = $state('') // editable Taita server URL (links this client's Server Chats)
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
+  let prefsOpen = $state(false) // the per-user Preferences modal (everyone, not just admin)
+  let prefsLocation = $state('') // the user's own location override (per-user, /api/prefs)
+  let prefsSystemPrompt = $state('') // the user's own standing instructions (per-user, /api/prefs)
   let autostartSupported = $state(false) // this build can manage login autostart (desktop, per-OS)
   let autostartEnabled = $state(false) // launch llaminGO at login
   let autostartMinimized = $state(false) // the login launch starts hidden in the tray
@@ -1073,6 +1076,27 @@
       localStorage.setItem('llamingo.showDetail', v ? 'on' : 'off')
     } catch {}
   }
+  // Per-user preferences (location + a personal prompt) — everyone's to set, kept
+  // in the user's own store, separate from the admin's server config (Settings).
+  async function openPrefs() {
+    try {
+      const p = await apiFetch('/api/prefs').then((r) => r.json())
+      prefsLocation = p.location ?? ''
+      prefsSystemPrompt = p.systemPrompt ?? ''
+    } catch {
+      prefsLocation = ''
+      prefsSystemPrompt = ''
+    }
+    prefsOpen = true
+  }
+  async function savePrefs() {
+    await apiFetch('/api/prefs', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ location: prefsLocation.trim(), systemPrompt: prefsSystemPrompt.trim() }),
+    })
+    prefsOpen = false
+  }
   // The hamburger toggles the saved sidebar when wide, but only the transient
   // drawer when thin — so toggling on a phone never rewrites the saved preference.
   function toggleNav() {
@@ -1247,6 +1271,7 @@
   {#if actionsMenu}
     <div class="sysmenu-backdrop" onclick={() => (actionsMenu = false)}></div>
     <nav class="sysmenu actionsmenu" class:up={narrow}>
+      <button onclick={() => { actionsMenu = false; openPrefs() }}>Preferences</button>
       <button onclick={() => { actionsMenu = false; openMemory() }}>Memory</button>
       {#if !serverMode || me?.admin}
         <button onclick={() => { actionsMenu = false; openSettings() }}>Settings</button>
@@ -1708,6 +1733,34 @@
     </div>
   {/if}
 
+  {#if prefsOpen}
+    <div class="modal-backdrop" onclick={() => (prefsOpen = false)}>
+      <div class="modal" onclick={(e) => e.stopPropagation()}>
+        <div class="modal-head">
+          <span>Preferences</span>
+          <button class="x" onclick={() => (prefsOpen = false)}>✕</button>
+        </div>
+        <div class="modal-body">
+          <label class="setting">
+            <span>Your location <span class="muted">(optional, for place-aware tools — overrides any server default)</span></span>
+            <input class="field" bind:value={prefsLocation} placeholder="e.g. Quito, Ecuador — blank to share none" onkeydown={(e) => e.key === 'Enter' && savePrefs()} />
+          </label>
+          <label class="setting">
+            <span>Your prompt <span class="muted">(optional; your standing instructions, added on top of the connection's persona)</span></span>
+            <textarea class="field" rows="3" bind:value={prefsSystemPrompt} placeholder="e.g. Keep answers short. I'm a nurse."></textarea>
+          </label>
+          <label class="setting">
+            <span>Show thinking &amp; tool activity <span class="muted">(off = chat only; saved per browser)</span></span>
+            <input type="checkbox" checked={showDetail} onchange={(e) => setShowDetail(e.currentTarget.checked)} style="width:auto" />
+          </label>
+        </div>
+        <div class="modal-foot">
+          <button class="primary" onclick={savePrefs}>Save</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if settingsOpen}
     <div class="modal-backdrop" onclick={() => (settingsOpen = false)}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
@@ -1875,9 +1928,10 @@
           {/if}
         </div>
 
+        {#if serverMode}
         <div class="group-head">Location</div>
         <label class="setting">
-          <span>Location <span class="muted">(optional, for place-aware tools — set how broad you like)</span></span>
+          <span>Server default <span class="muted">(used for anyone who hasn't set their own, for place-aware tools)</span></span>
           <input
             class="field"
             bind:value={settingsLocation}
@@ -1885,6 +1939,7 @@
             onkeydown={(e) => e.key === 'Enter' && saveSettings()}
           />
         </label>
+        {/if}
 
         {#if isDesktop && autostartSupported}
           <div class="group-head">Startup</div>
@@ -1899,12 +1954,6 @@
             </label>
           {/if}
         {/if}
-
-        <div class="group-head">Display</div>
-        <label class="setting">
-          <span>Show thinking &amp; tool activity <span class="muted">(off = chat only; view-only, saved per browser)</span></span>
-          <input type="checkbox" checked={showDetail} onchange={(e) => setShowDetail(e.currentTarget.checked)} style="width:auto" />
-        </label>
 
         <div class="group-head">Debug</div>
         <label class="setting">
