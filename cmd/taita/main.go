@@ -22,6 +22,7 @@ import (
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/lcpptest"
+	"github.com/othershore-studio/llamingo/internal/store"
 	"github.com/othershore-studio/llamingo/internal/taita"
 )
 
@@ -60,12 +61,14 @@ func main() {
 		log.Printf("backend: in-process FAKE llama-server at %s", srv.URL)
 		be = backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
 	} else {
-		// The -url flag wins, then the env var, then the default. Taita's own
-		// centralized connection config (config/) is a later increment; for now the
-		// one shared backend comes from the flag/env.
-		resolved := firstNonEmpty(*url, os.Getenv("LLAMINGO_URL"), "http://localhost:8080")
+		// Adopt the admin's saved connection (set in the Settings UI) as the backend,
+		// so pointing taita at a llama-server sticks across restarts. Order: an
+		// explicit -url / $LLAMINGO_URL wins, then the saved connection, then the
+		// localhost default. Same for the token.
+		savedURL, savedToken := savedConnection(configDir)
+		resolved := firstNonEmpty(*url, os.Getenv("LLAMINGO_URL"), savedURL, "http://localhost:8080")
 		var opts []backend.Option
-		if tok := firstNonEmpty(*token, os.Getenv("LLAMINGO_TOKEN")); tok != "" {
+		if tok := firstNonEmpty(*token, os.Getenv("LLAMINGO_TOKEN"), savedToken); tok != "" {
 			opts = append(opts, backend.WithToken(tok))
 		}
 		log.Printf("backend: llama-server at %s", resolved)
@@ -94,6 +97,29 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// savedConnection returns the backend url + token the admin configured through the
+// Settings UI, read from the central config store: the connection recorded active
+// if there is one, else the first saved connection (configured but not yet
+// activated — e.g. added and saved without clicking the radio). Empty when nothing
+// is saved, so the caller falls back to the localhost default.
+func savedConnection(configDir string) (url, token string) {
+	cs, err := store.Open(configDir)
+	if err != nil {
+		return "", ""
+	}
+	c, err := cs.Config()
+	if err != nil {
+		return "", ""
+	}
+	if c.URL != "" {
+		return c.URL, c.Token
+	}
+	if len(c.Connections) > 0 {
+		return c.Connections[0].URL, c.Connections[0].Token
+	}
+	return "", ""
 }
 
 // browseURL turns a listen address into a URL a person can open in a browser. A
