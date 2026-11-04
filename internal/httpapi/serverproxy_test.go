@@ -76,6 +76,39 @@ func TestServerChatsProxyRoundTrip(t *testing.T) {
 		t.Fatalf("open server conversation via proxy: status %d", oc.StatusCode)
 	}
 
+	// Rename it through the proxy — the title updates on taita.
+	rn, _ := http.NewRequest(http.MethodPut, sidecar.URL+"/api/server/conversations/"+cid, strings.NewReader(`{"title":"renamed"}`))
+	rn.Header.Set("Content-Type", "application/json")
+	if rnResp, err := http.DefaultClient.Do(rn); err != nil {
+		t.Fatal(err)
+	} else {
+		rnResp.Body.Close()
+	}
+	gotR, _ := http.Get(sidecar.URL + "/api/server/chats")
+	rnBody, _ := io.ReadAll(gotR.Body)
+	gotR.Body.Close()
+	var chatsR []map[string]any
+	_ = json.Unmarshal(rnBody, &chatsR)
+	if len(chatsR) != 1 || chatsR[0]["title"] != "renamed" {
+		t.Fatalf("after rename, server chats = %v, want one titled 'renamed'", chatsR)
+	}
+
+	// Delete it through the proxy — the list is empty again.
+	del, _ := http.NewRequest(http.MethodDelete, sidecar.URL+"/api/server/conversations/"+cid, nil)
+	if delResp, err := http.DefaultClient.Do(del); err != nil {
+		t.Fatal(err)
+	} else {
+		delResp.Body.Close()
+	}
+	gotD, _ := http.Get(sidecar.URL + "/api/server/chats")
+	delBody, _ := io.ReadAll(gotD.Body)
+	gotD.Body.Close()
+	var chatsD []map[string]any
+	_ = json.Unmarshal(delBody, &chatsD)
+	if len(chatsD) != 0 {
+		t.Fatalf("after delete, server chats = %v, want empty", chatsD)
+	}
+
 	// A local client with NO taita linked has an empty server list.
 	solo := httptest.NewServer(httpapi.New(be, local()))
 	defer solo.Close()

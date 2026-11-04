@@ -109,6 +109,8 @@ func New(be backend.Backend, st *store.Store, opts ...Option) *Server {
 	s.mux.HandleFunc("POST /api/server/chats", s.handleServerChats)
 	s.mux.HandleFunc("GET /api/server/props", s.proxyServer(func(*http.Request) string { return "/api/props" }))
 	s.mux.HandleFunc("GET /api/server/conversations/{id}", s.proxyServer(serverConvPath))
+	s.mux.HandleFunc("PUT /api/server/conversations/{id}", s.proxyServer(serverConvPath))
+	s.mux.HandleFunc("DELETE /api/server/conversations/{id}", s.proxyServer(serverConvPath))
 	s.mux.HandleFunc("GET /api/server/conversations/{id}/budget", s.proxyServer(serverConvBudgetPath))
 	s.mux.HandleFunc("GET /api/server/conversations/{id}/tools", s.proxyServer(serverConvToolsPath))
 	s.mux.HandleFunc("PUT /api/server/conversations/{id}/tools", s.proxyServer(serverConvToolsPath))

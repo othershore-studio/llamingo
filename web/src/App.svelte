@@ -173,6 +173,7 @@
   let editingId = $state(null) // conversation id being renamed inline, if any
   let editTitle = $state('') // the in-progress rename text
   let confirmDeleteId = $state(null) // conversation id awaiting delete confirmation
+  let editingOrigin = 'local' // the world of the chat being renamed, so commitRename routes the write
   let copiedAt = $state(null) // index of the message whose copy button just fired
 
   let projects = $state([])
@@ -339,7 +340,8 @@
 
   // Origin-aware routing: a server chat's ops proxy to the linked taita (/api/server/…);
   // a local chat's hit the local core. The active chat's origin is the only switch.
-  const convUrl = (id) => (activeOrigin === 'server' ? `/api/server/conversations/${id}` : `/api/conversations/${id}`)
+  const convUrlFor = (id, origin) => (origin === 'server' ? `/api/server/conversations/${id}` : `/api/conversations/${id}`)
+  const convUrl = (id) => convUrlFor(id, activeOrigin)
   const streamUrl = () => (activeOrigin === 'server' ? '/api/server/chat/stream' : '/api/chat/stream')
   const memoryUrl = () => (activeOrigin === 'server' ? '/api/server/memory' : '/api/memory')
 
@@ -816,25 +818,31 @@
   // Inline rename: double-click a chat/session to edit its title in place, then
   // Enter (or blur) to persist and Escape to cancel. The title lives in the
   // conversation's meta.json; the list is reloaded so the new name shows.
-  function startRename(id, title) {
+  function startRename(id, title, origin = 'local') {
     editingId = id
     editTitle = title
+    editingOrigin = origin
   }
   function cancelRename() {
     editingId = null
   }
   async function commitRename() {
     const id = editingId
+    const origin = editingOrigin
     const title = editTitle.trim()
     editingId = null
     if (!id || !title) return
-    await apiFetch(`/api/conversations/${id}`, {
+    await apiFetch(convUrlFor(id, origin), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title }),
     })
-    chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
-    if (expandedProject) await loadSessions(expandedProject)
+    if (origin === 'server') {
+      serverChats = (await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => [])) ?? []
+    } else {
+      chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+      if (expandedProject) await loadSessions(expandedProject)
+    }
   }
   // Focus and select an inline-rename input as soon as it appears.
   function renameInput(node) {
@@ -845,15 +853,20 @@
   // Delete a chat/session after an inline confirm. The directory is removed and
   // the lists reload; if the active conversation went away, fall back to the
   // newest remaining one (or the empty state).
-  async function doDelete(id) {
+  async function doDelete(id, origin = 'local') {
     confirmDeleteId = null
-    await apiFetch(`/api/conversations/${id}`, { method: 'DELETE' })
-    chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
-    if (expandedProject) await loadSessions(expandedProject)
+    await apiFetch(convUrlFor(id, origin), { method: 'DELETE' })
+    if (origin === 'server') {
+      serverChats = (await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => [])) ?? []
+    } else {
+      chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+      if (expandedProject) await loadSessions(expandedProject)
+    }
     if (activeId === id) {
       activeId = null
       messages = []
-      if (chats.length) await selectChat(chats[0].id)
+      const rest = origin === 'server' ? serverChats : chats
+      if (rest.length) await selectChat(rest[0].id, origin)
     }
   }
 
@@ -1371,9 +1384,30 @@
       <ul class="list">
         {#each serverChats as c}
           <li class="rowwrap">
-            <button class="row" class:active={c.id === activeId} onclick={() => selectChat(c.id, 'server')}>
-              {c.title || 'Untitled'}
-            </button>
+            {#if editingId === c.id}
+              <input
+                class="field rename"
+                bind:value={editTitle}
+                use:renameInput
+                onkeydown={(e) => { if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') cancelRename() }}
+                onblur={commitRename}
+              />
+            {:else if confirmDeleteId === c.id}
+              <span class="confirmdel">Delete this chat?</span>
+              <button class="del-yes" onclick={() => doDelete(c.id, 'server')}>Delete</button>
+              <button class="del-no" onclick={() => (confirmDeleteId = null)}>Cancel</button>
+            {:else}
+              <button
+                class="row"
+                class:active={c.id === activeId}
+                onclick={() => selectChat(c.id, 'server')}
+                ondblclick={() => startRename(c.id, c.title, 'server')}
+                title="Double-click to rename"
+              >
+                {c.title || 'Untitled'}
+              </button>
+              <button class="del" aria-label="Delete chat" title="Delete chat" onclick={() => (confirmDeleteId = c.id)}>✕</button>
+            {/if}
           </li>
         {:else}
           <li class="row muted">No server chats yet</li>
