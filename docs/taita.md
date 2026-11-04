@@ -145,7 +145,10 @@ anon folder once claimed.
 
 **Roles.** `admin` vs `user`. The Taita server's own config (connections / Forge / MCP — the centralized
 config in `config/`) is edited **only** through an admin-only settings UI. Regular users and anon get **no
-settings, just chat** — config is the admin/owner's job.
+settings, just chat** — config is the admin/owner's job. The admin is named by `-admin <name>` / `$TAITA_ADMIN`
+(that account becomes admin on sign-in, no land-grab), or defaults to the first account to sign in; either way
+the admin must set a password. `taita admin` (console, server stopped — the bbolt DB is single-writer) recovers
+it: `list` / `set NAME [admin|user]` / `passwd NAME`.
 
 **Accounts are a P2 artifact** — P0/P1 are anon-only, pure files.
 
@@ -208,7 +211,9 @@ for Windows, so one `.sh` is enough.
   **Done:** the accounts seam (`b7a41ba`); login/logout/whoami + folder-anchored session identity (`ec7b460`);
   the login UI — sidebar sign-in/profile + admin-gated settings, browser-verified vs `-fake` (`7e279da`);
   **claim/merge** — a session's anonymous chats follow it into the account on login, moved not copied
-  (`Store.AbsorbChats`, `78e4d55`). **Remaining:** the config/data split + **server-side** role enforcement —
+  (`Store.AbsorbChats`, `78e4d55`); **admin designation + recovery** — `-admin`/`$TAITA_ADMIN` names the admin
+  (else first-to-sign-in), plus a `taita admin` console CLI (`list`/`set`/`passwd`) for recovery (`f65b7e6`).
+  **Remaining:** the config/data split + **server-side** role enforcement —
   today roles are UI-gated only (a non-admin's browser hides Settings, but the per-user core would still
   answer `/api/settings` for that user's own store). Likely shape: an additive `httpapi.WithConfigStore`
   Option (default = the data store, so desktop/mobile/CLI stay byte-for-byte) + taita opens one shared config
@@ -231,8 +236,10 @@ Client-connection path: **P1 anon browser ✅ → P2 accounts → P3 desktop/cli
    server config). Matches both the user-first lens and public-safety. Login = "become this profile": an
    existing passwordless name you just become, a password-protected name requires the password, an unknown
    name is created (passwordless) and becomes yours — the Netflix-profile UX.
-3. **Admin designation** — lean: the **first** registered account is admin, overridable by a `config/` flag or
-   env (`TAITA_ADMIN=name`).
+3. **Admin designation** — **LOCKED (2026-11-03): option A.** `-admin <name>` / `$TAITA_ADMIN` names the admin
+   (becomes admin on sign-in, no matter who logs in first); with no designation, the first account to sign in
+   is admin (zero-config fallback). Either way the admin must set a password. Recoverable via the `taita admin`
+   console CLI (`list` / `set` / `passwd`), run on the server box with the server stopped.
 4. **P1 auth posture** — presence / shared mesh token; real auth deferred to public (cloudflared) exposure.
 
 ---
