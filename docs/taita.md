@@ -206,18 +206,21 @@ for Windows, so one `.sh` is enough.
   round-trip streamed).
 - **P1 — free gateway (MVP)** — anon sessions + embedded chat UI + no login. The frictionless family chat on
   the mesh. (Essentially working from P0; needs the config/data split finished to be clean.)
-- **P2 — accounts** ◀ *current* — the bbolt `Accounts` registry + optional login (bcrypt) + claim/merge +
+- **P2 — accounts** ✅ — the bbolt `Accounts` registry + optional login (bcrypt) + claim/merge +
   **roles** (admin vs user) + an admin-gated server-config UI. Forge becomes a logged-in perk.
   **Done:** the accounts seam (`b7a41ba`); login/logout/whoami + folder-anchored session identity (`ec7b460`);
   the login UI — sidebar sign-in/profile + admin-gated settings, browser-verified vs `-fake` (`7e279da`);
   **claim/merge** — a session's anonymous chats follow it into the account on login, moved not copied
   (`Store.AbsorbChats`, `78e4d55`); **admin designation + recovery** — `-admin`/`$TAITA_ADMIN` names the admin
   (else first-to-sign-in), plus a `taita admin` console CLI (`list`/`set`/`passwd`) for recovery (`f65b7e6`).
-  **Remaining:** the config/data split + **server-side** role enforcement —
-  today roles are UI-gated only (a non-admin's browser hides Settings, but the per-user core would still
-  answer `/api/settings` for that user's own store). Likely shape: an additive `httpapi.WithConfigStore`
-  Option (default = the data store, so desktop/mobile/CLI stay byte-for-byte) + taita opens one shared config
-  store and gates config *writes* to the admin.
+  the **config/data split** — `httpapi.WithConfigStore` repoints every config access off the data store
+  (default = data store, so desktop/mobile/CLI stay byte-for-byte); taita opens ONE shared config store
+  (`WithConfigDir`, the `config/` root) across all cores and gates config *writes* (settings / connections /
+  Forge / MCP / activate / fetch) to the admin — real server-side enforcement, not just UI-hidden. Verified by
+  `TestConfigIsCentralAndAdminGated` and in-browser (`073c126`). **P2 complete: accounts, roles, central
+  admin-owned config.** Config *reads* stay open (the UI gates them); hiding connection tokens from non-admins
+  is a hardening follow-up. **Next: rework the clients** — P3's client repoint + making server chats
+  openable/streamable.
 - **P3 — clients see remote** — mechanism landed: the two-list split + the sidecar→taita proxy + the Settings
   URL field (commits `0a015fc`, `7d1b47f`, `106a94c`; round-trip unit-tested). A *meaningful* client
   connection (persistent, cross-device identity) needs P2 accounts — anon only tests the plumbing.
