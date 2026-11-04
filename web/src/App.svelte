@@ -95,6 +95,8 @@
   let loginError = $state('')
   let loginBusy = $state(false)
   let activeId = $state(null)
+  let activeOrigin = $state('local') // 'local' | 'server' — the active chat's world, and the only router (docs/taita.md two-worlds)
+  let propsOrigin = 'local' // which world the loaded props (conn) reflect, so we only reload on a world change
   let streamingChatId = $state(null) // the chat the in-flight stream belongs to
   let streamMessages = null // its live message array, so switching chats mid-stream keeps the turn alive
   let messages = $state([]) // { role, content }
@@ -171,6 +173,7 @@
   let editingId = $state(null) // conversation id being renamed inline, if any
   let editTitle = $state('') // the in-progress rename text
   let confirmDeleteId = $state(null) // conversation id awaiting delete confirmation
+  let editingOrigin = 'local' // the world of the chat being renamed, so commitRename routes the write
   let copiedAt = $state(null) // index of the message whose copy button just fired
 
   let projects = $state([])
@@ -309,15 +312,7 @@
     // A failing /props (e.g. the model is down) must not block the chat list,
     // which comes from the local store and is always available: load props on
     // its own and fall back to "unreachable" instead of throwing.
-    try {
-      const r = await apiFetch('/api/props')
-      if (!r.ok) throw new Error('props unavailable')
-      conn = await r.json()
-      reachable = true
-    } catch {
-      conn = null
-      reachable = false
-    }
+    await loadProps()
     // Mode is server-declared (backend-independent), so the layout is correct even
     // when the model is down: taita → "server" (one chat list, no Projects).
     try {
@@ -343,8 +338,32 @@
     }
   }
 
+  // Origin-aware routing: a server chat's ops proxy to the linked taita (/api/server/…);
+  // a local chat's hit the local core. The active chat's origin is the only switch.
+  const convUrlFor = (id, origin) => (origin === 'server' ? `/api/server/conversations/${id}` : `/api/conversations/${id}`)
+  const convUrl = (id) => convUrlFor(id, activeOrigin)
+  const streamUrl = () => (activeOrigin === 'server' ? '/api/server/chat/stream' : '/api/chat/stream')
+  const memoryUrl = () => (activeOrigin === 'server' ? '/api/server/memory' : '/api/memory')
+
+  // Load the model/context for the active chat's world (taita's for a server chat,
+  // the local backend's otherwise), so the status pill tells the truth.
+  async function loadProps() {
+    try {
+      const r = await apiFetch(activeOrigin === 'server' ? '/api/server/props' : '/api/props')
+      if (!r.ok) throw new Error('props unavailable')
+      conn = await r.json()
+      reachable = true
+    } catch {
+      conn = null
+      reachable = false
+    }
+    propsOrigin = activeOrigin
+  }
+
   // Open a conversation: the core owns history, so load its log from disk.
-  async function selectChat(id) {
+  async function selectChat(id, origin = 'local') {
+    activeOrigin = origin
+    if (origin !== propsOrigin) await loadProps() // the model + context differ per world
     if (narrow) drawerOpen = false // thin mode: reveal the conversation after picking from the drawer
     // Returning to a chat whose stream is still in flight: show its own live array
     // so the in-progress turn keeps rendering, instead of reloading a partial copy
@@ -359,7 +378,7 @@
     error = null
     budget = null
     report = null
-    const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
+    const entries = (await apiFetch(convUrl(id)).then((r) => r.json())) ?? []
     // Pair each persisted reasoning entry with the assistant answer that follows it,
     // and anchor each compaction summary where it ran: after the message it followed
     // in the log (the summary entry is appended at that moment), shown with its time.
@@ -392,7 +411,7 @@
   // leaves the bar as it was rather than flashing a stale chat's number.
   async function loadBudget(id, fresh = false) {
     try {
-      const b = await apiFetch(`/api/conversations/${id}/budget${fresh ? '?fresh=1' : ''}`).then((r) => (r.ok ? r.json() : null))
+      const b = await apiFetch(`${convUrl(id)}/budget${fresh ? '?fresh=1' : ''}`).then((r) => (r.ok ? r.json() : null))
       if (b && activeId === id) budget = b
     } catch {
       /* leave the bar as-is */
@@ -423,14 +442,14 @@
   // Personal memory is injected into every prompt (metered as its own segment)
   // and editable here. An edit made outside the app is flagged until accepted.
   async function openMemory() {
-    const m = await apiFetch('/api/memory').then((r) => r.json())
+    const m = await apiFetch(memoryUrl()).then((r) => r.json())
     memoryContent = m.content ?? ''
     memoryTampered = !!m.tampered
     memoryOpen = true
   }
 
   async function saveMemory() {
-    await apiFetch('/api/memory', {
+    await apiFetch(memoryUrl(), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ content: memoryContent }),
@@ -659,7 +678,7 @@
   async function openTools() {
     if (!activeId) return
     try {
-      const d = await apiFetch(`/api/conversations/${activeId}/tools`).then((r) => r.json())
+      const d = await apiFetch(`${convUrl(activeId)}/tools`).then((r) => r.json())
       toolGroups = (d.groups ?? []).map((g) => ({ ...g, _open: g.kind === 'system' }))
     } catch {
       toolGroups = []
@@ -669,7 +688,7 @@
   async function saveTools() {
     if (!activeId) return
     const disabled = toolGroups.flatMap((g) => g.tools.filter((t) => !t.enabled).map((t) => t.name))
-    await apiFetch(`/api/conversations/${activeId}/tools`, {
+    await apiFetch(`${convUrl(activeId)}/tools`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ disabled }),
@@ -749,7 +768,7 @@
   }
 
   async function ackMemory() {
-    await apiFetch('/api/memory/ack', { method: 'POST' })
+    await apiFetch(`${memoryUrl()}/ack`, { method: 'POST' })
     memoryTampered = false
   }
 
@@ -780,6 +799,17 @@
     chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
     await selectChat(created.id)
   }
+  // Create a chat on the linked taita (the Server Chats "+ New"): it lives in your
+  // taita store, and opening it routes everything to taita.
+  async function newServerChat() {
+    const created = await apiFetch('/api/server/chats', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'New chat' }),
+    }).then((r) => r.json())
+    serverChats = (await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => [])) ?? []
+    await selectChat(created.id, 'server')
+  }
 
   async function loadSessions(projectId) {
     sessions = (await apiFetch(`/api/projects/${projectId}/sessions`).then((r) => r.json())) ?? []
@@ -788,25 +818,31 @@
   // Inline rename: double-click a chat/session to edit its title in place, then
   // Enter (or blur) to persist and Escape to cancel. The title lives in the
   // conversation's meta.json; the list is reloaded so the new name shows.
-  function startRename(id, title) {
+  function startRename(id, title, origin = 'local') {
     editingId = id
     editTitle = title
+    editingOrigin = origin
   }
   function cancelRename() {
     editingId = null
   }
   async function commitRename() {
     const id = editingId
+    const origin = editingOrigin
     const title = editTitle.trim()
     editingId = null
     if (!id || !title) return
-    await apiFetch(`/api/conversations/${id}`, {
+    await apiFetch(convUrlFor(id, origin), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ title }),
     })
-    chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
-    if (expandedProject) await loadSessions(expandedProject)
+    if (origin === 'server') {
+      serverChats = (await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => [])) ?? []
+    } else {
+      chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+      if (expandedProject) await loadSessions(expandedProject)
+    }
   }
   // Focus and select an inline-rename input as soon as it appears.
   function renameInput(node) {
@@ -817,15 +853,20 @@
   // Delete a chat/session after an inline confirm. The directory is removed and
   // the lists reload; if the active conversation went away, fall back to the
   // newest remaining one (or the empty state).
-  async function doDelete(id) {
+  async function doDelete(id, origin = 'local') {
     confirmDeleteId = null
-    await apiFetch(`/api/conversations/${id}`, { method: 'DELETE' })
-    chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
-    if (expandedProject) await loadSessions(expandedProject)
+    await apiFetch(convUrlFor(id, origin), { method: 'DELETE' })
+    if (origin === 'server') {
+      serverChats = (await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => [])) ?? []
+    } else {
+      chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+      if (expandedProject) await loadSessions(expandedProject)
+    }
     if (activeId === id) {
       activeId = null
       messages = []
-      if (chats.length) await selectChat(chats[0].id)
+      const rest = origin === 'server' ? serverChats : chats
+      if (rest.length) await selectChat(rest[0].id, origin)
     }
   }
 
@@ -891,9 +932,13 @@
       // The client sends only the new turn; the core persists both sides.
       await streamChat(activeId, text)
       if (firstMessage) {
-        // The core named this chat from its first message — reload so the sidebar shows it.
-        chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
-        if (expandedProject) await loadSessions(expandedProject)
+        // The core named this chat from its first message — reload the right list.
+        if (activeOrigin === 'server') {
+          serverChats = (await apiFetch('/api/server/chats').then((r) => (r.ok ? r.json() : [])).catch(() => [])) ?? []
+        } else {
+          chats = (await apiFetch('/api/chats').then((r) => r.json())) ?? []
+          if (expandedProject) await loadSessions(expandedProject)
+        }
       }
     } catch (e) {
       error = String(e)
@@ -907,7 +952,7 @@
   }
 
   async function streamChat(id, content) {
-    const resp = await apiFetch('/api/chat/stream', {
+    const resp = await apiFetch(streamUrl(), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id, content, thinking: conn?.thinkingSupported ? thinking : undefined }),
@@ -992,7 +1037,7 @@
   async function reconcileFinal(id, arr) {
     if (!id || !arr) return
     try {
-      const entries = (await apiFetch(`/api/conversations/${id}`).then((r) => r.json())) ?? []
+      const entries = (await apiFetch(convUrl(id)).then((r) => r.json())) ?? []
       let lastContent = null
       for (const e of entries) {
         if (e.kind === 'msg' && e.role === 'assistant') lastContent = e.content
@@ -1335,12 +1380,34 @@
 
       {#if serverLinked && !serverMode}
       <div class="switcher">Server Chats</div>
+      <button class="new" onclick={newServerChat}>+ New server chat</button>
       <ul class="list">
         {#each serverChats as c}
           <li class="rowwrap">
-            <button class="row" class:active={c.id === activeId} onclick={() => selectChat(c.id)}>
-              {c.title || 'Untitled'}
-            </button>
+            {#if editingId === c.id}
+              <input
+                class="field rename"
+                bind:value={editTitle}
+                use:renameInput
+                onkeydown={(e) => { if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') cancelRename() }}
+                onblur={commitRename}
+              />
+            {:else if confirmDeleteId === c.id}
+              <span class="confirmdel">Delete this chat?</span>
+              <button class="del-yes" onclick={() => doDelete(c.id, 'server')}>Delete</button>
+              <button class="del-no" onclick={() => (confirmDeleteId = null)}>Cancel</button>
+            {:else}
+              <button
+                class="row"
+                class:active={c.id === activeId}
+                onclick={() => selectChat(c.id, 'server')}
+                ondblclick={() => startRename(c.id, c.title, 'server')}
+                title="Double-click to rename"
+              >
+                {c.title || 'Untitled'}
+              </button>
+              <button class="del" aria-label="Delete chat" title="Delete chat" onclick={() => (confirmDeleteId = c.id)}>✕</button>
+            {/if}
           </li>
         {:else}
           <li class="row muted">No server chats yet</li>
@@ -1518,10 +1585,10 @@
          open this and switch to a live one (or reach Manage… / Settings). The
          state shows in the label and the dot rather than hiding the control. -->
     <div class="connwrap">
-      <button class="statusmodel connpick" onclick={() => { connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title="Switch connection">
+      <button class="statusmodel connpick" class:readonly={activeOrigin === 'server'} onclick={() => { if (activeOrigin === 'server') return; connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title={activeOrigin === 'server' ? 'The server sets this model' : 'Switch connection'}>
         <span class="dot" class:off={!reachable}></span>
-        <span class="connpick-label">{#if conn && reachable}{activeConnName ? `${activeConnName} (${modelName(conn.model)})` : `${modelName(conn.model)} · ${conn.nCtx} ctx`}{:else if !reachable}server unreachable — reconnecting…{:else if error}couldn't reach the server{:else}connecting…{/if}</span>
-        <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>
+        <span class="connpick-label">{#if conn && reachable}{activeOrigin !== 'server' && activeConnName ? `${activeConnName} (${modelName(conn.model)})` : `${modelName(conn.model)} · ${conn.nCtx} ctx`}{:else if !reachable}server unreachable — reconnecting…{:else if error}couldn't reach the server{:else}connecting…{/if}</span>
+        {#if activeOrigin !== 'server'}<svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>{/if}
       </button>
       {#if connOpen}
         <div class="conn-backdrop" onclick={() => (connOpen = false)}></div>
@@ -2724,6 +2791,14 @@
   }
   .statusmodel.connpick:hover {
     background: var(--paper);
+  }
+  /* A server chat's model is set on the server (admin-only), so the pill is a
+     read-only label there — no caret, no hover affordance, no click. */
+  .statusmodel.connpick.readonly {
+    cursor: default;
+  }
+  .statusmodel.connpick.readonly:hover {
+    background: none;
   }
   .connpick-label {
     overflow: hidden;
