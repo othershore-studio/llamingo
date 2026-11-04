@@ -206,10 +206,13 @@ for Windows, so one `.sh` is enough.
 - **P2 — accounts** ◀ *current* — the bbolt `Accounts` registry + optional login (bcrypt) + claim/merge +
   **roles** (admin vs user) + an admin-gated server-config UI. Forge becomes a logged-in perk.
   **Done:** the accounts seam (`b7a41ba`); login/logout/whoami + folder-anchored session identity (`ec7b460`);
-  the login UI — sidebar sign-in/profile + admin-gated settings, browser-verified vs `-fake` (`7e279da`).
-  **Remaining:** claim/merge (a session's anonymous chats follow it into the account on login) and the
-  config/data split + **server-side** role enforcement — today roles are UI-gated only (a non-admin's browser
-  hides Settings, but the per-user core would still answer `/api/settings` for that user's own store).
+  the login UI — sidebar sign-in/profile + admin-gated settings, browser-verified vs `-fake` (`7e279da`);
+  **claim/merge** — a session's anonymous chats follow it into the account on login, moved not copied
+  (`Store.AbsorbChats`, `78e4d55`). **Remaining:** the config/data split + **server-side** role enforcement —
+  today roles are UI-gated only (a non-admin's browser hides Settings, but the per-user core would still
+  answer `/api/settings` for that user's own store). Likely shape: an additive `httpapi.WithConfigStore`
+  Option (default = the data store, so desktop/mobile/CLI stay byte-for-byte) + taita opens one shared config
+  store and gates config *writes* to the admin.
 - **P3 — clients see remote** — mechanism landed: the two-list split + the sidecar→taita proxy + the Settings
   URL field (commits `0a015fc`, `7d1b47f`, `106a94c`; round-trip unit-tested). A *meaningful* client
   connection (persistent, cross-device identity) needs P2 accounts — anon only tests the plumbing.
