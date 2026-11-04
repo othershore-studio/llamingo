@@ -73,41 +73,35 @@ func (s *Server) currentTaita() *taitaLink {
 	return s.taita
 }
 
-// handleServerConversation proxies opening a server chat's log to the linked taita.
-func (s *Server) handleServerConversation(w http.ResponseWriter, r *http.Request) {
-	link := s.currentTaita()
-	if link == nil {
-		http.Error(w, "no taita linked", http.StatusBadGateway)
-		return
+// proxyServer returns a handler that forwards a /api/server/* request to the linked
+// taita at the path pathFn builds from it — the two-worlds proxy, where a server
+// chat's every op (open, stream, budget, tools, memory, props) runs on taita. With
+// no taita linked it is a 502. proxyToTaita streams and flushes, so an SSE turn is
+// live. See docs/taita.md: the active chat's origin is the only router.
+func (s *Server) proxyServer(pathFn func(*http.Request) string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		link := s.currentTaita()
+		if link == nil {
+			http.Error(w, "no taita linked", http.StatusBadGateway)
+			return
+		}
+		s.proxyToTaita(w, r, link, pathFn(r))
 	}
-	s.proxyToTaita(w, r, link, "/api/conversations/"+r.PathValue("id"))
 }
 
-// handleServerBudget proxies a server chat's context budget to the linked taita.
-func (s *Server) handleServerBudget(w http.ResponseWriter, r *http.Request) {
-	link := s.currentTaita()
-	if link == nil {
-		http.Error(w, "no taita linked", http.StatusBadGateway)
-		return
-	}
-	path := "/api/conversations/" + r.PathValue("id") + "/budget"
+// serverConvPath / serverConvToolsPath / serverConvBudgetPath build the taita path
+// for a server chat's conversation endpoints, carrying the {id} (and the budget's
+// ?fresh query) through.
+func serverConvPath(r *http.Request) string { return "/api/conversations/" + r.PathValue("id") }
+func serverConvToolsPath(r *http.Request) string {
+	return "/api/conversations/" + r.PathValue("id") + "/tools"
+}
+func serverConvBudgetPath(r *http.Request) string {
+	p := "/api/conversations/" + r.PathValue("id") + "/budget"
 	if r.URL.RawQuery != "" {
-		path += "?" + r.URL.RawQuery
+		p += "?" + r.URL.RawQuery
 	}
-	s.proxyToTaita(w, r, link, path)
-}
-
-// handleServerChatStream proxies a turn in a server chat to the linked taita,
-// streaming the SSE reply back (proxyToTaita flushes). The turn runs on taita with
-// taita's own backend and tools — the "two worlds" model (docs/taita.md): the
-// active chat's origin is the only router.
-func (s *Server) handleServerChatStream(w http.ResponseWriter, r *http.Request) {
-	link := s.currentTaita()
-	if link == nil {
-		http.Error(w, "no taita linked", http.StatusBadGateway)
-		return
-	}
-	s.proxyToTaita(w, r, link, "/api/chat/stream")
+	return p
 }
 
 // proxyToTaita forwards the request to the linked taita at path, carrying its

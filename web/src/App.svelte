@@ -96,6 +96,7 @@
   let loginBusy = $state(false)
   let activeId = $state(null)
   let activeOrigin = $state('local') // 'local' | 'server' — the active chat's world, and the only router (docs/taita.md two-worlds)
+  let propsOrigin = 'local' // which world the loaded props (conn) reflect, so we only reload on a world change
   let streamingChatId = $state(null) // the chat the in-flight stream belongs to
   let streamMessages = null // its live message array, so switching chats mid-stream keeps the turn alive
   let messages = $state([]) // { role, content }
@@ -310,15 +311,7 @@
     // A failing /props (e.g. the model is down) must not block the chat list,
     // which comes from the local store and is always available: load props on
     // its own and fall back to "unreachable" instead of throwing.
-    try {
-      const r = await apiFetch('/api/props')
-      if (!r.ok) throw new Error('props unavailable')
-      conn = await r.json()
-      reachable = true
-    } catch {
-      conn = null
-      reachable = false
-    }
+    await loadProps()
     // Mode is server-declared (backend-independent), so the layout is correct even
     // when the model is down: taita → "server" (one chat list, no Projects).
     try {
@@ -348,10 +341,27 @@
   // a local chat's hit the local core. The active chat's origin is the only switch.
   const convUrl = (id) => (activeOrigin === 'server' ? `/api/server/conversations/${id}` : `/api/conversations/${id}`)
   const streamUrl = () => (activeOrigin === 'server' ? '/api/server/chat/stream' : '/api/chat/stream')
+  const memoryUrl = () => (activeOrigin === 'server' ? '/api/server/memory' : '/api/memory')
+
+  // Load the model/context for the active chat's world (taita's for a server chat,
+  // the local backend's otherwise), so the status pill tells the truth.
+  async function loadProps() {
+    try {
+      const r = await apiFetch(activeOrigin === 'server' ? '/api/server/props' : '/api/props')
+      if (!r.ok) throw new Error('props unavailable')
+      conn = await r.json()
+      reachable = true
+    } catch {
+      conn = null
+      reachable = false
+    }
+    propsOrigin = activeOrigin
+  }
 
   // Open a conversation: the core owns history, so load its log from disk.
   async function selectChat(id, origin = 'local') {
     activeOrigin = origin
+    if (origin !== propsOrigin) await loadProps() // the model + context differ per world
     if (narrow) drawerOpen = false // thin mode: reveal the conversation after picking from the drawer
     // Returning to a chat whose stream is still in flight: show its own live array
     // so the in-progress turn keeps rendering, instead of reloading a partial copy
@@ -430,14 +440,14 @@
   // Personal memory is injected into every prompt (metered as its own segment)
   // and editable here. An edit made outside the app is flagged until accepted.
   async function openMemory() {
-    const m = await apiFetch('/api/memory').then((r) => r.json())
+    const m = await apiFetch(memoryUrl()).then((r) => r.json())
     memoryContent = m.content ?? ''
     memoryTampered = !!m.tampered
     memoryOpen = true
   }
 
   async function saveMemory() {
-    await apiFetch('/api/memory', {
+    await apiFetch(memoryUrl(), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ content: memoryContent }),
@@ -666,7 +676,7 @@
   async function openTools() {
     if (!activeId) return
     try {
-      const d = await apiFetch(`/api/conversations/${activeId}/tools`).then((r) => r.json())
+      const d = await apiFetch(`${convUrl(activeId)}/tools`).then((r) => r.json())
       toolGroups = (d.groups ?? []).map((g) => ({ ...g, _open: g.kind === 'system' }))
     } catch {
       toolGroups = []
@@ -676,7 +686,7 @@
   async function saveTools() {
     if (!activeId) return
     const disabled = toolGroups.flatMap((g) => g.tools.filter((t) => !t.enabled).map((t) => t.name))
-    await apiFetch(`/api/conversations/${activeId}/tools`, {
+    await apiFetch(`${convUrl(activeId)}/tools`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ disabled }),
@@ -756,7 +766,7 @@
   }
 
   async function ackMemory() {
-    await apiFetch('/api/memory/ack', { method: 'POST' })
+    await apiFetch(`${memoryUrl()}/ack`, { method: 'POST' })
     memoryTampered = false
   }
 
@@ -1541,10 +1551,10 @@
          open this and switch to a live one (or reach Manage… / Settings). The
          state shows in the label and the dot rather than hiding the control. -->
     <div class="connwrap">
-      <button class="statusmodel connpick" onclick={() => { connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title="Switch connection">
+      <button class="statusmodel connpick" class:readonly={activeOrigin === 'server'} onclick={() => { if (activeOrigin === 'server') return; connOpen = !connOpen; if (connOpen) loadConnections() }} aria-haspopup="true" aria-expanded={connOpen} title={activeOrigin === 'server' ? 'The server sets this model' : 'Switch connection'}>
         <span class="dot" class:off={!reachable}></span>
-        <span class="connpick-label">{#if conn && reachable}{activeConnName ? `${activeConnName} (${modelName(conn.model)})` : `${modelName(conn.model)} · ${conn.nCtx} ctx`}{:else if !reachable}server unreachable — reconnecting…{:else if error}couldn't reach the server{:else}connecting…{/if}</span>
-        <svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>
+        <span class="connpick-label">{#if conn && reachable}{activeOrigin !== 'server' && activeConnName ? `${activeConnName} (${modelName(conn.model)})` : `${modelName(conn.model)} · ${conn.nCtx} ctx`}{:else if !reachable}server unreachable — reconnecting…{:else if error}couldn't reach the server{:else}connecting…{/if}</span>
+        {#if activeOrigin !== 'server'}<svg class="caret" width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M2.5 4 L5 6.5 L7.5 4" /></svg>{/if}
       </button>
       {#if connOpen}
         <div class="conn-backdrop" onclick={() => (connOpen = false)}></div>
@@ -2747,6 +2757,14 @@
   }
   .statusmodel.connpick:hover {
     background: var(--paper);
+  }
+  /* A server chat's model is set on the server (admin-only), so the pill is a
+     read-only label there — no caret, no hover affordance, no click. */
+  .statusmodel.connpick.readonly {
+    cursor: default;
+  }
+  .statusmodel.connpick.readonly:hover {
+    background: none;
   }
   .connpick-label {
     overflow: hidden;
