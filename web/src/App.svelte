@@ -1491,7 +1491,11 @@
         {#if error}<p class="error">{error}</p>{/if}
         {#each messages as m, i}
           {#if showDetail && m.reasoning}
-            <details class="thinking" open={streaming && i === messages.length - 1 && !m.content}>
+            <!-- Don't auto-expand the live thinking once a tool is in play: a small model
+                 pre-drafts the caption ("here's your image") in its reasoning before the tool
+                 even runs, so an expanded panel shows it mid-generation. It stays collapsed
+                 (click to open), and a reopened chat is unaffected (streaming is false). -->
+            <details class="thinking" open={streaming && i === messages.length - 1 && !m.content && !m.tools?.length}>
               <summary>Thinking</summary>
               <div class="rtext prose">{@html md.render(m.reasoning)}</div>
             </details>
