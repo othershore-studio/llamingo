@@ -474,6 +474,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
+	// Tell an nginx-family reverse proxy (incl. Nginx Proxy Manager / openresty) not
+	// to buffer this response — SSE must stream, or a buffered + idle stream is dropped
+	// on the proxy's read-timeout, taking a pending permission prompt with it. The proxy
+	// still needs HTTP/1.1 upstream to stream at all; see docs/taita.md.
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	bld := contextbudget.New(s.be)
 	segs := s.segmentsFor(body.ID, messages, nil)
