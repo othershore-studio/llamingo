@@ -11,6 +11,28 @@ import (
 	"github.com/othershore-studio/llamingo/internal/backend"
 )
 
+func TestStripImageMarkdown(t *testing.T) {
+	// A generated-image link in a reply becomes a neutral marker, so a small model's
+	// history can't teach it to emit `![](attachments/…)` and confabulate a file name.
+	in := "Here is your cat!\n\n![generated image](attachments/cb597f9a51e7a205.png)"
+	want := "Here is your cat!\n\n[generated an image]"
+	if got := StripImageMarkdown(in); got != want {
+		t.Errorf("stripped = %q,\nwant %q", got, want)
+	}
+
+	// Multiple images (local + remote) all replaced; surrounding text preserved.
+	multi := "![a](attachments/1.png) and ![b](https://host/2.png) done"
+	if got := StripImageMarkdown(multi); got != "[generated an image] and [generated an image] done" {
+		t.Errorf("multi = %q", got)
+	}
+
+	// Plain prose (no image) is untouched.
+	plain := "Just text, no image here."
+	if got := StripImageMarkdown(plain); got != plain {
+		t.Errorf("plain content altered: %q", got)
+	}
+}
+
 func TestStripLeadingToolBlob(t *testing.T) {
 	// A ReAct blob (with an escaped-JSON action_input) before the real answer.
 	blob := `{

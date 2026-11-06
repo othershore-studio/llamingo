@@ -375,7 +375,10 @@ func messagesFrom(entries []store.Entry) []backend.Message {
 			msgs = append(msgs, backend.Message{Role: backend.RoleSystem, Content: "Summary of earlier conversation:\n" + e.Content})
 			continue
 		}
-		msgs = append(msgs, backend.Message{Role: backend.Role(e.Role), Content: e.Content})
+		// Strip image markdown from the model's history (mirrors httpapi) so a small
+		// model doesn't mimic `![](attachments/…)` and invent a file name instead of
+		// calling the tool. Display reads the raw entry, so the picture still shows.
+		msgs = append(msgs, backend.Message{Role: backend.Role(e.Role), Content: toolreply.StripImageMarkdown(e.Content)})
 	}
 	return msgs
 }

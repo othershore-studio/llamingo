@@ -603,7 +603,11 @@ func messagesFromEntries(entries []store.Entry) []backend.Message {
 			msgs = append(msgs, backend.Message{Role: backend.RoleSystem, Content: "Summary of earlier conversation:\n" + e.Content})
 			continue
 		}
-		msgs = append(msgs, backend.Message{Role: backend.Role(e.Role), Content: e.Content})
+		// Rewrite any image markdown out of the model's history so a small model
+		// doesn't learn to emit `![](attachments/…)` itself and confabulate a file name
+		// instead of calling the tool (see toolreply.StripImageMarkdown). The display
+		// reads the raw entry, so the picture still shows.
+		msgs = append(msgs, backend.Message{Role: backend.Role(e.Role), Content: toolreply.StripImageMarkdown(e.Content)})
 	}
 	return msgs
 }
