@@ -39,6 +39,13 @@ import (
 // request context.
 const permissionTimeout = 2 * time.Minute
 
+// permissionKeepalive is how often, while blocked waiting for the user's answer,
+// the prompter pings the otherwise-idle SSE stream. A buffering reverse proxy
+// (e.g. Nginx Proxy Manager with its default read-timeout) would otherwise drop
+// the silent connection — and the pending permission with it — before the user
+// clicks, so the late answer 404s. Keeping bytes flowing resets the read-timeout.
+const permissionKeepalive = 15 * time.Second
+
 // emitter writes an SSE event on the in-flight chat stream. handleChatStream
 // stashes one in the request context so the gate's prompter — reached deep in
 // the tool loop — can surface a consent prompt on the very stream that provoked
@@ -137,13 +144,24 @@ func (p *ssePrompter) Ask(ctx context.Context, req permission.Request, allowed [
 		"scopes": scopeNames(allowed),
 	})
 
-	select {
-	case dec := <-ch:
-		return dec, nil
-	case <-ctx.Done():
-		return permission.Decision{}, ctx.Err()
-	case <-time.After(p.timeout):
-		return permission.Decision{}, nil // auto-deny on silence
+	// Keep the idle stream alive while waiting for the human. Ask runs on the handler
+	// goroutine (blocked inside the tool loop), so it is the stream's sole writer here —
+	// the ticker case is race-free. The keepalive stops a buffering proxy's read-timeout
+	// from dropping the connection (and this pending permission) before the user clicks.
+	ticker := time.NewTicker(permissionKeepalive)
+	defer ticker.Stop()
+	timeout := time.After(p.timeout)
+	for {
+		select {
+		case dec := <-ch:
+			return dec, nil
+		case <-ctx.Done():
+			return permission.Decision{}, ctx.Err()
+		case <-timeout:
+			return permission.Decision{}, nil // auto-deny on silence
+		case <-ticker.C:
+			emit("ping", nil) // keepalive; the UI ignores unknown events (handleEvent)
+		}
 	}
 }
 

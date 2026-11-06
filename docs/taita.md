@@ -218,6 +218,22 @@ shared-root embed (would force the Wails desktop `main.go` off the repo root —
 client) and disk-serve (gives up the single-file binary). `build.ps1` was dropped — Git Bash ships with Git
 for Windows, so one `.sh` is enough.
 
+**Behind a reverse proxy — SSE must stream, not buffer.** taita's chat is Server-Sent Events, and the image-gen
+permission handshake *pauses mid-stream* for the user's consent. An nginx-family proxy (incl. **Nginx Proxy
+Manager** / openresty) defaults to **buffering** the upstream and talking **HTTP/1.0** to it — which holds the
+whole stream until close, so the consent prompt never appears and the idle connection is dropped on the
+read-timeout (the pending permission dies with it, and the later "allow" 404s). Plain chat still "works" but
+lands all at once. The proxy must stream:
+
+- **Nginx Proxy Manager:** enable **"Websockets Support"** on the proxy host — it sets `proxy_http_version 1.1`
+  plus the upgrade headers. SSE is *not* WebSockets, but that toggle is NPM's switch for "1.1 streaming mode," so
+  it is what fixes it.
+- **Raw nginx:** `proxy_http_version 1.1;` and `proxy_buffering off;` in the taita `location`.
+
+taita sends `X-Accel-Buffering: no` on the stream (a proxy that honors it won't buffer) and emits a keepalive
+during a permission wait (so an idle stream isn't read-timed-out mid-prompt), but it cannot set the proxy's HTTP
+version from a response — that stays a deployment setting.
+
 ## 10. Phase plan & status
 
 - **P0 — foundation** ✅ `internal/taita` per-session registry + anon cookie + `/api`-vs-SPA mux + the
