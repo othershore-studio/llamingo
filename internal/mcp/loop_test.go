@@ -115,6 +115,47 @@ func TestRunLoop(t *testing.T) {
 	}
 }
 
+const reactBlobTurnSSE = `data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"{\"action\":\"echo\",\"action_input\":{\"text\":\"hi\"}}"}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":5,"total_tokens":25}}
+
+data: [DONE]
+`
+
+// A small model that writes the tool call as a ReAct JSON blob in its text (no native
+// tool_call) is rescued: the loop parses the blob, runs the tool for real, and drops the
+// blob so it isn't fed back.
+func TestRunLoopRescuesReActToolCall(t *testing.T) {
+	srv := lcpptest.NewServerScript(reactBlobTurnSSE, textTurnSSE)
+	t.Cleanup(srv.Close)
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()))
+	reg := &echoReg{}
+
+	msgs, err := mcp.Run(context.Background(), be, reg, []backend.Message{{Role: backend.RoleUser, Content: "say hi via echo"}}, nil, 8, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.calls != 1 {
+		t.Fatalf("tool calls = %d, want 1 (the ReAct blob should be rescued and run)", reg.calls)
+	}
+	var rescued bool
+	for _, m := range msgs {
+		if m.Role == backend.RoleAssistant && len(m.ToolCalls) == 1 && m.ToolCalls[0].Function.Name == "echo" && m.Content == "" {
+			rescued = true
+		}
+	}
+	if !rescued {
+		t.Error("no rescued assistant turn (tool call set, blob content cleared)")
+	}
+	if last := msgs[len(msgs)-1]; last.Content != "The echo said hi." {
+		t.Errorf("final = %q, want the caption", last.Content)
+	}
+}
+
 func TestServerRegistryGating(t *testing.T) {
 	ctx := context.Background()
 
