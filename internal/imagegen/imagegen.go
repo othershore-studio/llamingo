@@ -116,8 +116,9 @@ func (t *Tool) Tools() []backend.ToolDef {
 	return []backend.ToolDef{
 		{
 			Name: ToolName,
-			Description: "Generate an image from a text prompt. Give the prompt, and optionally a negative prompt, a seed, or a model name; " +
-				"the sampling settings come from config. Returns a reference to the saved image.",
+			Description: "Generate an image from a text prompt — this is the ONLY way to show an image. Give the prompt, and optionally a " +
+				"negative prompt, a seed, or a model name; sampling comes from config. The image is shown to the user automatically: never " +
+				"write a markdown image link or an attachments/ path yourself, and never invent a file name.",
 			Parameters: json.RawMessage(`{"type":"object","properties":{` +
 				`"prompt":{"type":"string","description":"what to draw; match the model's prompt style"},` +
 				`"negative_prompt":{"type":"string","description":"what to avoid (ignored by CFG-1 models)"},` +

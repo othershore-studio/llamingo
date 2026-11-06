@@ -80,6 +80,16 @@ func SurfaceImageDenial(answer string, msgs []backend.Message) string {
 
 var imageMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\([^)\s]+\)`)
 
+// StripImageMarkdown replaces image markdown (![alt](url)) destined for the MODEL's
+// context with a neutral text marker, so a prior turn's generated-image link doesn't
+// teach a small model to emit `![](attachments/…)` itself (it then invents a file name
+// instead of calling the image tool). The DISPLAY keeps the real markdown; only the
+// model's projected history is rewritten. Both httpapi's messagesFromEntries and the
+// TUI's messagesFrom call this, so the two projections stay identical.
+func StripImageMarkdown(content string) string {
+	return imageMarkdownRe.ReplaceAllString(content, "[generated an image]")
+}
+
 // firstImageMarkdown finds an ![alt](url) image in s, unescaping a JSON-escaped blob first
 // so a markdown image buried in a string field is still matched.
 func firstImageMarkdown(s string) string {
