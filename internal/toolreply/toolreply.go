@@ -11,6 +11,7 @@
 package toolreply
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 
@@ -88,6 +89,40 @@ var imageMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\([^)\s]+\)`)
 // TUI's messagesFrom call this, so the two projections stay identical.
 func StripImageMarkdown(content string) string {
 	return imageMarkdownRe.ReplaceAllString(content, "[generated an image]")
+}
+
+// ReActToolCall extracts a tool call a small model wrote as a leading ReAct JSON blob
+// ({"action":"<tool>","action_input":<args>}) instead of a native function call — Gemma
+// under a large toolset degrades like this, so the native call never fires and the reply
+// comes back empty. It returns the tool name and its arguments as a JSON string; ok is
+// false when content is not such a blob. action_input may be a JSON object OR a
+// JSON-encoded string of one (Gemma double-encodes it); both yield an args JSON string.
+// The caller must still check the name is a tool it actually offers before running it.
+func ReActToolCall(content string) (name, args string, ok bool) {
+	t := strings.TrimLeft(content, " \t\r\n")
+	if !strings.HasPrefix(t, "{") {
+		return "", "", false
+	}
+	end := jsonObjectEnd(t)
+	if end < 0 {
+		return "", "", false
+	}
+	var blob struct {
+		Action      string          `json:"action"`
+		ActionInput json.RawMessage `json:"action_input"`
+	}
+	if json.Unmarshal([]byte(t[:end+1]), &blob) != nil || blob.Action == "" || len(blob.ActionInput) == 0 {
+		return "", "", false
+	}
+	args = strings.TrimSpace(string(blob.ActionInput))
+	// Unwrap the double-encoded form: action_input is a JSON string holding the args JSON.
+	if strings.HasPrefix(args, `"`) {
+		var inner string
+		if json.Unmarshal(blob.ActionInput, &inner) == nil {
+			args = strings.TrimSpace(inner)
+		}
+	}
+	return blob.Action, args, true
 }
 
 // firstImageMarkdown finds an ![alt](url) image in s, unescaping a JSON-escaped blob first

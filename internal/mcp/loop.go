@@ -15,6 +15,7 @@ import (
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/debuglog"
 	"github.com/othershore-studio/llamingo/internal/permission"
+	"github.com/othershore-studio/llamingo/internal/toolreply"
 )
 
 // Registry is the set of tools the loop can offer the model and execute. The
@@ -69,12 +70,25 @@ func Run(ctx context.Context, be backend.Backend, reg Registry, msgs []backend.M
 			return msgs, err
 		}
 
-		assistant := backend.Message{Role: backend.RoleAssistant, Content: content.String()}
+		raw := content.String()
+		assistant := backend.Message{Role: backend.RoleAssistant, Content: raw}
+		// ReAct rescue: a small model sometimes writes the tool call as a text blob
+		// ({"action":…,"action_input":…}) instead of a native call, so nothing fires and
+		// the reply is empty. If the blob names a tool we offer, run it as a real call and
+		// drop the blob from the turn, so it is neither shown nor fed back and reinforced.
+		if len(toolCalls) == 0 {
+			if name, args, ok := toolreply.ReActToolCall(raw); ok && hasTool(tools, name) {
+				toolCalls = []backend.ToolCall{{ID: debuglog.NewID(), Type: "function", Function: backend.FunctionCall{Name: name, Arguments: args}}}
+				assistant.Content = ""
+			}
+		}
 		if len(toolCalls) > 0 {
 			assistant.ToolCalls = toolCalls
 		}
 		msgs = append(msgs, assistant)
-		debuglog.Record(ctx, debuglog.ChannelLlama, debuglog.KindResponse, llamaID, map[string]any{"content": assistant.Content, "toolCalls": toolCalls})
+		// Log the raw model output alongside the (possibly rescued) tool calls, so a
+		// rescued turn is visible: content is the blob, toolCalls is non-empty.
+		debuglog.Record(ctx, debuglog.ChannelLlama, debuglog.KindResponse, llamaID, map[string]any{"content": raw, "toolCalls": toolCalls})
 
 		if len(toolCalls) == 0 {
 			return msgs, nil // the model answered without calling a tool
@@ -97,6 +111,18 @@ func Run(ctx context.Context, be backend.Backend, reg Registry, msgs []backend.M
 		}
 	}
 	return msgs, fmt.Errorf("mcp: tool loop did not settle within %d rounds", maxRounds)
+}
+
+// hasTool reports whether name is one of the tools offered this round — guarding the
+// ReAct rescue so a stray JSON object in the model's text can't invoke a tool that was
+// never on the menu.
+func hasTool(tools []backend.ToolDef, name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // shapingGuidance steers the model's reply on the round right after a tool has

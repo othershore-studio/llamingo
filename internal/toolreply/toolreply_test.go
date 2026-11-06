@@ -33,6 +33,28 @@ func TestStripImageMarkdown(t *testing.T) {
 	}
 }
 
+func TestReActToolCall(t *testing.T) {
+	// Gemma's shape: action_input is a JSON-encoded string of the args (double-encoded).
+	name, args, ok := ReActToolCall(`{"action":"generate_image","action_input":"{ \"prompt\": \"a black cat\" }"}`)
+	if !ok || name != "generate_image" || args != `{ "prompt": "a black cat" }` {
+		t.Fatalf("string form: ok=%v name=%q args=%q", ok, name, args)
+	}
+
+	// action_input as a plain object is used as-is.
+	name, args, ok = ReActToolCall(`{"action":"echo","action_input":{"text":"hi"}}`)
+	if !ok || name != "echo" || args != `{"text":"hi"}` {
+		t.Fatalf("object form: ok=%v name=%q args=%q", ok, name, args)
+	}
+
+	// Ordinary prose and non-ReAct JSON are not tool calls.
+	if _, _, ok := ReActToolCall("Here is your answer."); ok {
+		t.Error("prose parsed as a tool call")
+	}
+	if _, _, ok := ReActToolCall(`{"name":"Ada","age":30}`); ok {
+		t.Error("non-ReAct JSON parsed as a tool call")
+	}
+}
+
 func TestStripLeadingToolBlob(t *testing.T) {
 	// A ReAct blob (with an escaped-JSON action_input) before the real answer.
 	blob := `{
