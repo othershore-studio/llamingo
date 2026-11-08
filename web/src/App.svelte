@@ -499,6 +499,17 @@
     activeId = null
     await refresh()
   }
+  // A backdrop click closes a modal only when the press STARTED on the backdrop —
+  // otherwise a text-selection drag that ends just outside the modal (its mouseup
+  // lands on the backdrop, so the click targets the backdrop) would close it mid-select.
+  let backdropDown = false
+  function backdropMousedown(e) {
+    backdropDown = e.target === e.currentTarget
+  }
+  function backdropClick(e, close) {
+    if (backdropDown && e.target === e.currentTarget) close()
+  }
+
   async function openSettings() {
     const s = await apiFetch('/api/settings').then((r) => r.json())
     settingsLocation = s.location ?? ''
@@ -1658,7 +1669,7 @@
   </div>
 
   {#if memoryOpen}
-    <div class="modal-backdrop" onclick={() => (memoryOpen = false)}>
+    <div class="modal-backdrop" onmousedown={backdropMousedown} onclick={(e) => backdropClick(e, () => (memoryOpen = false))}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-head">
           <span>Memory</span>
@@ -1677,7 +1688,7 @@
   {/if}
 
   {#if toolsOpen}
-    <div class="modal-backdrop" onclick={() => (toolsOpen = false)}>
+    <div class="modal-backdrop" onmousedown={backdropMousedown} onclick={(e) => backdropClick(e, () => (toolsOpen = false))}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-head">
           <span>Tools</span>
@@ -1727,7 +1738,7 @@
   {/if}
 
   {#if projectOpen}
-    <div class="modal-backdrop" onclick={() => (projectOpen = false)}>
+    <div class="modal-backdrop" onmousedown={backdropMousedown} onclick={(e) => backdropClick(e, () => (projectOpen = false))}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-head">
           <span>Project</span>
@@ -1783,7 +1794,7 @@
   {/if}
 
   {#if loginOpen}
-    <div class="modal-backdrop" onclick={() => (loginOpen = false)}>
+    <div class="modal-backdrop" onmousedown={backdropMousedown} onclick={(e) => backdropClick(e, () => (loginOpen = false))}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-head">
           <span>Sign in</span>
@@ -1809,7 +1820,7 @@
   {/if}
 
   {#if prefsOpen}
-    <div class="modal-backdrop" onclick={() => (prefsOpen = false)}>
+    <div class="modal-backdrop" onmousedown={backdropMousedown} onclick={(e) => backdropClick(e, () => (prefsOpen = false))}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-head">
           <span>Preferences</span>
@@ -1837,7 +1848,7 @@
   {/if}
 
   {#if settingsOpen}
-    <div class="modal-backdrop" onclick={() => (settingsOpen = false)}>
+    <div class="modal-backdrop" onmousedown={backdropMousedown} onclick={(e) => backdropClick(e, () => (settingsOpen = false))}>
       <div class="modal" onclick={(e) => e.stopPropagation()}>
         <div class="modal-head">
           <span>Settings</span>
