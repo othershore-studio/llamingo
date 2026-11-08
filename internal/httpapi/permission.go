@@ -208,8 +208,13 @@ func (s *Server) gateFor(convID string) *permission.Gate {
 func (s *Server) registryFor(convID string) mcp.Registry {
 	gate := s.gateFor(convID)
 	var fetchOpts []fetchtool.Option
-	if cfg, err := s.st.Config(); err == nil && cfg.FetchMaxChars != 0 {
-		fetchOpts = append(fetchOpts, fetchtool.WithMaxOutput(cfg.FetchMaxChars))
+	if cfg, err := s.st.Config(); err == nil {
+		if cfg.FetchMaxChars != 0 {
+			fetchOpts = append(fetchOpts, fetchtool.WithMaxOutput(cfg.FetchMaxChars))
+		}
+		if cfg.UserAgent != "" {
+			fetchOpts = append(fetchOpts, fetchtool.WithUserAgent(cfg.UserAgent))
+		}
 	}
 	regs := []mcp.Registry{s.globalServers(), memtool.NewTool(s.st, gate), localtools.NewTool(s.locationSetting), fetchtool.NewTool(gate, fetchOpts...)}
 	// The project file tools are confined to the session's project folder, so

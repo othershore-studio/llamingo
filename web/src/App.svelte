@@ -201,6 +201,8 @@
   let settingsForgeUrl = $state('') // editable Forge Neo image-server URL
   let settingsTaitaUrl = $state('') // editable Taita server URL (links this client's Server Chats)
   let settingsDebug = $state(false) // debug logging: raw llama/Forge/tool payloads to each chat's logs/
+  let settingsUserAgent = $state('') // User-Agent the fetch tool sends (blank = honest default)
+  let settingsFetchMaxChars = $state('') // cap on fetched page chars given to the model (blank = default, -1 = no limit)
   let prefsOpen = $state(false) // the per-user Preferences modal (everyone, not just admin)
   let prefsLocation = $state('') // the user's own location override (per-user, /api/prefs)
   let prefsSystemPrompt = $state('') // the user's own standing instructions (per-user, /api/prefs)
@@ -503,6 +505,8 @@
     settingsForgeUrl = s.forgeUrl ?? ''
     settingsTaitaUrl = s.taitaUrl ?? ''
     settingsDebug = s.debug ?? false
+    settingsUserAgent = s.userAgent ?? ''
+    settingsFetchMaxChars = s.fetchMaxChars || ''
     // Login autostart is a desktop-only, per-OS setting (the OS entry is the source
     // of truth); the browser skips it and the controls stay hidden.
     if (isDesktop) {
@@ -539,7 +543,7 @@
     await apiFetch('/api/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), taitaUrl: settingsTaitaUrl.trim(), debug: settingsDebug }),
+      body: JSON.stringify({ location: settingsLocation.trim(), forgeUrl: settingsForgeUrl.trim(), taitaUrl: settingsTaitaUrl.trim(), debug: settingsDebug, userAgent: settingsUserAgent.trim(), fetchMaxChars: Number(settingsFetchMaxChars) || 0 }),
     })
     // The taita link may have changed — refresh the Server Chats list + flag.
     try {
@@ -1998,6 +2002,27 @@
             <div class="imgmodels-hint muted">No MCP servers. Add one to bring in external tools.</div>
           {/if}
         </div>
+
+        <div class="group-head">Web fetch <span class="muted">(the fetch tool)</span></div>
+        <label class="setting">
+          <span>User-Agent <span class="muted">(blank = the honest llaminGO default; set a browser UA for a site that needs one)</span></span>
+          <input
+            class="field"
+            bind:value={settingsUserAgent}
+            placeholder="llaminGO (+https://github.com/othershore-studio/llamingo)"
+            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
+          />
+        </label>
+        <label class="setting">
+          <span>Max page characters <span class="muted">(text given to the model; blank = ~48K default; -1 = no limit, for a big-context model)</span></span>
+          <input
+            class="field"
+            type="number"
+            bind:value={settingsFetchMaxChars}
+            placeholder="0"
+            onkeydown={(e) => e.key === 'Enter' && saveSettings()}
+          />
+        </label>
 
         {#if serverMode}
         <div class="group-head">Location</div>

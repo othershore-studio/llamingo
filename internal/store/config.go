@@ -38,6 +38,10 @@ type Config struct {
 	// context from that spike; raise it (or set it negative) for a large-context model.
 	FetchMaxChars int `json:"fetchMaxChars,omitempty"`
 
+	// UserAgent is the User-Agent the fetch tool sends (empty = the honest default
+	// that names llaminGO). A user may set a browser UA for a site that requires one.
+	UserAgent string `json:"userAgent,omitempty"`
+
 	// ActiveID is which saved Connection is active (stable across url/name edits),
 	// so two connections on the same url are distinguishable. URL/Token and
 	// Temperature/MinP below mirror the active connection for the backend + startup.
