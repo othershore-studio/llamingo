@@ -209,7 +209,7 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 	fmt.Fprintf(&b, "Fetched %s\nStatus: %d %s\nContent-Type: %s\nBytes: %d%s\n\n",
 		final, resp.StatusCode, http.StatusText(resp.StatusCode),
 		resp.Header.Get("Content-Type"), len(body), trunc)
-	b.Write(body)
+	b.WriteString(renderContent(resp.Header.Get("Content-Type"), body))
 	return b.String(), nil
 }
 
