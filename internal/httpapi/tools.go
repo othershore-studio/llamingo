@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/othershore-studio/llamingo/internal/fetchtool"
 	"github.com/othershore-studio/llamingo/internal/filetools"
 	"github.com/othershore-studio/llamingo/internal/localtools"
 	"github.com/othershore-studio/llamingo/internal/mcp"
@@ -94,6 +95,7 @@ func (s *Server) handleGetConversationTools(w http.ResponseWriter, r *http.Reque
 	sys := toolGroup{Kind: "system", Name: "System"}
 	sys.Tools = append(sys.Tools, toolItemsOf(memtool.NewTool(s.st, nil), disabled)...)
 	sys.Tools = append(sys.Tools, toolItemsOf(localtools.NewTool(s.locationSetting), disabled)...)
+	sys.Tools = append(sys.Tools, toolItemsOf(fetchtool.NewTool(nil), disabled)...)
 	if hasRoot && root != "" {
 		sys.Tools = append(sys.Tools, toolItemsOf(filetools.NewTool(root, nil, nil), disabled)...)
 	}
