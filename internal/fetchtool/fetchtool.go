@@ -34,10 +34,11 @@ import (
 const ToolName = "fetch"
 
 const (
-	defaultMaxBytes = 512 << 10 // 512 KiB of body read into context by default
-	hardMaxBytes    = 4 << 20   // ceiling even if the model asks for more
-	defaultTimeout  = 30 * time.Second
-	maxRedirects    = 5
+	defaultMaxBytes  = 512 << 10 // 512 KiB of body read into context by default
+	hardMaxBytes     = 4 << 20   // ceiling even if the model asks for more
+	defaultMaxOutput = 48 << 10  // ~48K chars of extracted text returned to the model by default
+	defaultTimeout   = 30 * time.Second
+	maxRedirects     = 5
 )
 
 // defaultUserAgent is honest: it names the client and links the project, so a
@@ -52,6 +53,7 @@ type Tool struct {
 	client    *http.Client
 	userAgent string
 	maxBytes  int64
+	maxOutput int
 }
 
 // Option configures a Tool.
@@ -75,6 +77,15 @@ func WithMaxBytes(n int64) Option {
 	}
 }
 
+// WithMaxOutput caps the characters of extracted text returned to the model
+// (default defaultMaxOutput). A non-positive value removes the cap — for a
+// large-context model that wants the whole page. The big result lives in context
+// for only the one post-fetch round (it is not persisted or replayed), so this
+// just protects a small context from that single spike.
+func WithMaxOutput(n int) Option {
+	return func(t *Tool) { t.maxOutput = n }
+}
+
 // WithHTTPClient replaces the SSRF-guarded client. Tests inject one pointed at a
 // local httptest server, which the guard would otherwise, correctly, refuse.
 func WithHTTPClient(c *http.Client) Option {
@@ -92,6 +103,7 @@ func NewTool(gate *permission.Gate, opts ...Option) *Tool {
 		gate:      gate,
 		userAgent: defaultUserAgent,
 		maxBytes:  defaultMaxBytes,
+		maxOutput: defaultMaxOutput,
 	}
 	t.client = &http.Client{
 		Timeout:   defaultTimeout,
@@ -200,16 +212,28 @@ func (t *Tool) Call(ctx context.Context, name, arguments string) (string, error)
 		return "", fmt.Errorf("fetchtool: %s returned HTTP %d %s", final, resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 
-	// Honest header, then the body text. (Readability + content-type routing next.)
+	// The readable content, capped to maxOutput characters so a huge page doesn't
+	// swamp a small context on the post-fetch round (configurable; see WithMaxOutput).
+	content := renderContent(resp.Header.Get("Content-Type"), body)
+	outCapped := false
+	if t.maxOutput > 0 {
+		if r := []rune(content); len(r) > t.maxOutput {
+			content = string(r[:t.maxOutput])
+			outCapped = true
+		}
+	}
 	trunc := ""
 	if truncated {
-		trunc = " (truncated)"
+		trunc = " (raw body truncated)"
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Fetched %s\nStatus: %d %s\nContent-Type: %s\nBytes: %d%s\n\n",
 		final, resp.StatusCode, http.StatusText(resp.StatusCode),
 		resp.Header.Get("Content-Type"), len(body), trunc)
-	b.WriteString(renderContent(resp.Header.Get("Content-Type"), body))
+	b.WriteString(content)
+	if outCapped {
+		fmt.Fprintf(&b, "\n\n(… text truncated to the configured %d-character limit)", t.maxOutput)
+	}
 	return b.String(), nil
 }
 

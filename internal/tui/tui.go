@@ -177,10 +177,14 @@ func (s *Session) connectServers(reg *mcp.ServerRegistry, globalPath, projectPat
 func (s *Session) buildTools() (mcp.Registry, []*mcp.ServerRegistry, []string) {
 	var notes []string
 	var servers []*mcp.ServerRegistry
+	var fetchOpts []fetchtool.Option
+	if c, _ := s.st.Config(); c.FetchMaxChars != 0 {
+		fetchOpts = append(fetchOpts, fetchtool.WithMaxOutput(c.FetchMaxChars))
+	}
 	regs := []mcp.Registry{
 		memtool.NewTool(s.st, s.gate),
 		localtools.NewTool(func() string { c, _ := s.st.Config(); return c.Location }),
-		fetchtool.NewTool(s.gate),
+		fetchtool.NewTool(s.gate, fetchOpts...),
 		filetools.NewTool(s.dir, s.gate, map[string]bool{}),
 	}
 	if g := s.connectServers(mcp.NewRegistry(nil), globalMCPPath(s.st.Root()), "", &notes); g != nil {
