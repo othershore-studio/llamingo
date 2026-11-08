@@ -32,6 +32,12 @@ type Config struct {
 	DNS      string `json:"dns,omitempty"`      // DNS server for name resolution (host or host:port); mainly Android/Termux, where Go's resolver finds no nameserver. Empty = the OS resolver.
 	Debug    bool   `json:"debug,omitempty"`    // write raw llama/Forge/tool payloads to each chat's logs/ (debug mode)
 
+	// FetchMaxChars caps how many characters of fetched page text the fetch tool
+	// hands the model (0 = the ~48K default; negative = no limit). The big result
+	// lives in context for only the one post-fetch round, so this protects a small
+	// context from that spike; raise it (or set it negative) for a large-context model.
+	FetchMaxChars int `json:"fetchMaxChars,omitempty"`
+
 	// ActiveID is which saved Connection is active (stable across url/name edits),
 	// so two connections on the same url are distinguishable. URL/Token and
 	// Temperature/MinP below mirror the active connection for the backend + startup.

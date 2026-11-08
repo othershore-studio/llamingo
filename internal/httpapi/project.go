@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/othershore-studio/llamingo/internal/fetchtool"
 	"github.com/othershore-studio/llamingo/internal/filetools"
 	"github.com/othershore-studio/llamingo/internal/localtools"
 	"github.com/othershore-studio/llamingo/internal/mcp"
@@ -32,6 +33,7 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	system := make([]toolItem, 0, 6)
 	system = append(system, toolItemsOf(memtool.NewTool(s.st, nil), disabled)...)
 	system = append(system, toolItemsOf(localtools.NewTool(s.locationSetting), disabled)...)
+	system = append(system, toolItemsOf(fetchtool.NewTool(nil), disabled)...)
 	system = append(system, toolItemsOf(filetools.NewTool(root, nil, nil), disabled)...)
 	if tool := s.imageTool(conv, nil); tool != nil {
 		system = append(system, toolItemsOf(tool, disabled)...)

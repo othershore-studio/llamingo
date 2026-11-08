@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
+	"github.com/othershore-studio/llamingo/internal/fetchtool"
 	"github.com/othershore-studio/llamingo/internal/filetools"
 	"github.com/othershore-studio/llamingo/internal/imagegen"
 	"github.com/othershore-studio/llamingo/internal/localtools"
@@ -206,7 +207,11 @@ func (s *Server) gateFor(convID string) *permission.Gate {
 // local and file tools are read-only.
 func (s *Server) registryFor(convID string) mcp.Registry {
 	gate := s.gateFor(convID)
-	regs := []mcp.Registry{s.globalServers(), memtool.NewTool(s.st, gate), localtools.NewTool(s.locationSetting)}
+	var fetchOpts []fetchtool.Option
+	if cfg, err := s.st.Config(); err == nil && cfg.FetchMaxChars != 0 {
+		fetchOpts = append(fetchOpts, fetchtool.WithMaxOutput(cfg.FetchMaxChars))
+	}
+	regs := []mcp.Registry{s.globalServers(), memtool.NewTool(s.st, gate), localtools.NewTool(s.locationSetting), fetchtool.NewTool(gate, fetchOpts...)}
 	// The project file tools are confined to the session's project folder, so
 	// they are offered only in a project session (a free chat has no root); the
 	// project's own MCP servers (its .mcp.json) are offered there too.
@@ -253,7 +258,7 @@ func (s *Server) fileReadsFor(convID string) map[string]bool {
 // trip its per-project gate); its cost lands in the authoritative count once a
 // turn runs and is then persisted (see SetConversationBudget).
 func (s *Server) budgetTools(convID string) []backend.ToolDef {
-	regs := []mcp.Registry{memtool.NewTool(s.st, nil), localtools.NewTool(s.locationSetting)}
+	regs := []mcp.Registry{memtool.NewTool(s.st, nil), localtools.NewTool(s.locationSetting), fetchtool.NewTool(nil)}
 	if g := s.globalServers(); g != nil {
 		regs = append(regs, g)
 	}
