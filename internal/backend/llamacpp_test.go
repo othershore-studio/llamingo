@@ -131,6 +131,52 @@ func TestChatStreamIdleTimeout(t *testing.T) {
 	}
 }
 
+// A model "lost in thought" never stops generating: it streams reasoning (or
+// tokens) continuously, so the idle-timeout — which resets on every line — can
+// never fire. The lost-in-thought watchdog bounds the total generation time and
+// aborts with a clear error, after delivering whatever streamed first. A damaged
+// or incompletely-downloaded model can fail this way, not only an abliterated one.
+func TestChatStreamLostInThought(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		// Stream reasoning forever (never a [DONE] or finish), keeping the stream
+		// live so only the lost-in-thought cap — not the idle-timeout — can stop it.
+		for {
+			if _, err := io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"and another thought \"}}]}\n\n"); err != nil {
+				return
+			}
+			if f != nil {
+				f.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}))
+	defer srv.Close()
+
+	be := backend.New(srv.URL, backend.WithHTTPClient(srv.Client()), backend.WithLostInThoughtTimeout(200*time.Millisecond))
+	var reasoning strings.Builder
+	err := be.ChatStream(context.Background(),
+		backend.ChatRequest{Messages: []backend.Message{{Role: backend.RoleUser, Content: "hi"}}},
+		func(d backend.Delta) error {
+			reasoning.WriteString(d.Reasoning)
+			return nil
+		})
+	if err == nil {
+		t.Fatal("expected a lost-in-thought error from a never-ending stream, got nil")
+	}
+	if !strings.Contains(err.Error(), "lost in thought") {
+		t.Errorf("error = %v, want a 'lost in thought' error", err)
+	}
+	if reasoning.Len() == 0 {
+		t.Error("expected the partial reasoning that streamed before the cap to be delivered")
+	}
+}
+
 func TestChatStreamToolCalls(t *testing.T) {
 	// Tool-call arguments arrive as two fragments and must be accumulated.
 	const toolSSE = `data: {"choices":[{"index":0,"delta":{"role":"assistant"}}]}

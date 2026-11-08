@@ -23,13 +23,14 @@ import (
 // (/props, /tokenize, /apply-template) and the OpenAI-compatible streaming chat
 // endpoint. It is the only Backend implementation.
 type LlamaCppNative struct {
-	mu          sync.RWMutex
-	baseURL     string
-	token       string
-	temperature *float64
-	minP        *float64
-	http        *http.Client
-	idleTimeout time.Duration
+	mu                   sync.RWMutex
+	baseURL              string
+	token                string
+	temperature          *float64
+	minP                 *float64
+	http                 *http.Client
+	idleTimeout          time.Duration
+	lostInThoughtTimeout time.Duration
 }
 
 // streamIdleTimeout is how long ChatStream waits for any data from llama-server
@@ -39,6 +40,24 @@ type LlamaCppNative struct {
 // shared-GPU image load), so the read is aborted and an error surfaced rather than
 // freezing the turn forever. Override with WithStreamIdleTimeout.
 const streamIdleTimeout = 120 * time.Second
+
+// defaultLostInThought bounds how long a single generation may run in total before
+// ChatStream treats the model as "lost in thought" and aborts. The idle-timeout
+// above catches a *silent* stream (a dead backend); this catches the opposite — a
+// stream that never stops, emitting reasoning or tokens without ever finishing. A
+// damaged or incompletely-downloaded model (an abliterated one whose refusal path
+// was removed is the extreme case) can loop like this and hold the turn open
+// forever. The cap is deliberately generous — far longer than any normal reply — so
+// it never truncates a real, even slow, generation; it only guarantees the turn
+// always ends on its own, with a clear message, instead of freezing. Override with
+// WithLostInThoughtTimeout.
+const defaultLostInThought = 5 * time.Minute
+
+// errLostInThought is the error ChatStream returns when the lost-in-thought watchdog
+// fires: a single generation ran past d without ever finishing.
+func errLostInThought(d time.Duration) error {
+	return fmt.Errorf("llama: the model got lost in thought — it ran for %s without finishing. The model may be damaged, incompletely downloaded, or stuck; try regenerating or switching models", d)
+}
 
 // Option configures a LlamaCppNative.
 type Option func(*LlamaCppNative)
@@ -60,13 +79,22 @@ func WithStreamIdleTimeout(d time.Duration) Option {
 	}
 }
 
+// WithLostInThoughtTimeout overrides how long ChatStream lets a single generation
+// run before treating the model as lost in thought and aborting (default
+// defaultLostInThought). Tests set it small; a caller on very slow hardware may
+// raise it. A non-positive value disables the cap.
+func WithLostInThoughtTimeout(d time.Duration) Option {
+	return func(l *LlamaCppNative) { l.lostInThoughtTimeout = d }
+}
+
 // New returns a LlamaCppNative for the given base URL (e.g.
 // "http://localhost:8080" or "https://host/llama"); a trailing slash is fine.
 func New(baseURL string, opts ...Option) *LlamaCppNative {
 	l := &LlamaCppNative{
-		baseURL:     strings.TrimRight(baseURL, "/"),
-		http:        http.DefaultClient,
-		idleTimeout: streamIdleTimeout,
+		baseURL:              strings.TrimRight(baseURL, "/"),
+		http:                 http.DefaultClient,
+		idleTimeout:          streamIdleTimeout,
+		lostInThoughtTimeout: defaultLostInThought,
 	}
 	for _, o := range opts {
 		o(l)
@@ -205,8 +233,25 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn fun
 	})
 	defer watchdog.Stop()
 
+	// Second watchdog, the opposite failure: a model "lost in thought" that never
+	// stops generating. The idle one above resets on every line, so a stream that
+	// keeps emitting (endless reasoning from a damaged or looping model) would hold
+	// the turn open forever. This one is NOT reset — it fires once, l.lostInThoughtTimeout
+	// after the request starts, and cancels. See defaultLostInThought.
+	var lostInThought atomic.Bool
+	if l.lostInThoughtTimeout > 0 {
+		hardStop := time.AfterFunc(l.lostInThoughtTimeout, func() {
+			lostInThought.Store(true)
+			cancel()
+		})
+		defer hardStop.Stop()
+	}
+
 	resp, err := l.post(reqCtx, "/v1/chat/completions", body)
 	if err != nil {
+		if lostInThought.Load() {
+			return errLostInThought(l.lostInThoughtTimeout)
+		}
 		if timedOut.Load() {
 			return fmt.Errorf("llama: backend went silent for %s before responding — it may have crashed or run out of memory", l.idleTimeout)
 		}
@@ -285,6 +330,9 @@ func (l *LlamaCppNative) ChatStream(ctx context.Context, req ChatRequest, fn fun
 			break
 		}
 		if readErr != nil {
+			if lostInThought.Load() {
+				return errLostInThought(l.lostInThoughtTimeout)
+			}
 			if timedOut.Load() {
 				return fmt.Errorf("llama: backend went silent for %s — it may have crashed or run out of memory", l.idleTimeout)
 			}
