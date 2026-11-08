@@ -272,7 +272,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, _ := s.cfg.Config()
-	writeJSON(w, map[string]any{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location, "forgeUrl": cfg.ForgeURL, "taitaUrl": cfg.TaitaURL, "debug": cfg.Debug})
+	writeJSON(w, map[string]any{"url": rc.BaseURL(), "token": rc.Token(), "location": cfg.Location, "forgeUrl": cfg.ForgeURL, "taitaUrl": cfg.TaitaURL, "debug": cfg.Debug, "userAgent": cfg.UserAgent, "fetchMaxChars": cfg.FetchMaxChars})
 }
 
 // PUT /api/settings {url, token, location, forgeUrl, debug} — persist and hot-swap
@@ -284,12 +284,14 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		URL      string `json:"url"`
-		Token    string `json:"token"`
-		Location string `json:"location"`
-		ForgeURL string `json:"forgeUrl"`
-		TaitaURL string `json:"taitaUrl"`
-		Debug    bool   `json:"debug"`
+		URL           string `json:"url"`
+		Token         string `json:"token"`
+		Location      string `json:"location"`
+		ForgeURL      string `json:"forgeUrl"`
+		TaitaURL      string `json:"taitaUrl"`
+		Debug         bool   `json:"debug"`
+		UserAgent     string `json:"userAgent"`
+		FetchMaxChars int    `json:"fetchMaxChars"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -309,6 +311,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	cfg.ForgeURL = strings.TrimSpace(body.ForgeURL)
 	cfg.TaitaURL = strings.TrimSpace(body.TaitaURL)
 	cfg.Debug = body.Debug
+	cfg.UserAgent = strings.TrimSpace(body.UserAgent)
+	cfg.FetchMaxChars = body.FetchMaxChars
 	if err := s.cfg.SetConfig(cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

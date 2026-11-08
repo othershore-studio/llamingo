@@ -177,9 +177,13 @@ func (s *Session) connectServers(reg *mcp.ServerRegistry, globalPath, projectPat
 func (s *Session) buildTools() (mcp.Registry, []*mcp.ServerRegistry, []string) {
 	var notes []string
 	var servers []*mcp.ServerRegistry
+	fcfg, _ := s.st.Config()
 	var fetchOpts []fetchtool.Option
-	if c, _ := s.st.Config(); c.FetchMaxChars != 0 {
-		fetchOpts = append(fetchOpts, fetchtool.WithMaxOutput(c.FetchMaxChars))
+	if fcfg.FetchMaxChars != 0 {
+		fetchOpts = append(fetchOpts, fetchtool.WithMaxOutput(fcfg.FetchMaxChars))
+	}
+	if fcfg.UserAgent != "" {
+		fetchOpts = append(fetchOpts, fetchtool.WithUserAgent(fcfg.UserAgent))
 	}
 	regs := []mcp.Registry{
 		memtool.NewTool(s.st, s.gate),
@@ -1136,6 +1140,7 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 	var (
 		showSettings     func()
 		showForge        func()
+		showFetch        func()
 		showMCP          func()
 		showDNS          func()
 		mcpActions       func(string, mcp.ServerConfig)
@@ -1184,6 +1189,15 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 		list.AddItem("DNS resolver", dnsStatus, 0, func() {
 			pages.RemovePage("settings")
 			showDNS()
+		})
+
+		fetchStatus := "defaults"
+		if cfg.FetchMaxChars != 0 || strings.TrimSpace(cfg.UserAgent) != "" {
+			fetchStatus = "customized"
+		}
+		list.AddItem("Web fetch", fetchStatus, 0, func() {
+			pages.RemovePage("settings")
+			showFetch()
 		})
 
 		list.SetDoneFunc(func() {
@@ -1286,6 +1300,56 @@ func Run(be backend.Backend, st *store.Store, dir, system string, resume bool, s
 			showSettings()
 		})
 		pages.AddPage("forge", centeredModal(form), true, true)
+		app.SetFocus(form)
+	}
+
+	// showFetch sets the web-fetch tool's User-Agent and per-page character cap; both
+	// apply live via reloadTools (the tool is rebuilt from config). Blank UA = the
+	// honest default; blank cap = the ~48K default; -1 = no limit (a big-context model).
+	showFetch = func() {
+		cfg, _ := st.Config()
+		maxStr := ""
+		if cfg.FetchMaxChars != 0 {
+			maxStr = strconv.Itoa(cfg.FetchMaxChars)
+		}
+		form := tview.NewForm()
+		form.SetBorder(true).SetTitle(" web fetch (the fetch tool) — Esc back ")
+		form.AddInputField("User-Agent (blank = default)", cfg.UserAgent, 50, nil, nil)
+		form.AddInputField("Max page chars (blank = ~48K; -1 = none)", maxStr, 20, nil, nil)
+		fld := func(label string) string {
+			return strings.TrimSpace(form.GetFormItemByLabel(label).(*tview.InputField).GetText())
+		}
+		form.AddButton("Save", func() {
+			c, _ := st.Config()
+			c.UserAgent = fld("User-Agent (blank = default)")
+			c.FetchMaxChars = 0
+			if mx := fld("Max page chars (blank = ~48K; -1 = none)"); mx != "" {
+				n, err := strconv.Atoi(mx)
+				if err != nil {
+					form.SetTitle(" max page chars must be a number — Esc back ")
+					return
+				}
+				c.FetchMaxChars = n
+			}
+			if err := st.SetConfig(c); err != nil {
+				form.SetTitle(" couldn't save — Esc back ")
+				return
+			}
+			pages.RemovePage("fetch")
+			v.notice("[::d]web fetch settings saved[-]")
+			v.render()
+			reloadTools()
+			app.SetFocus(input)
+		})
+		form.AddButton("Cancel", func() {
+			pages.RemovePage("fetch")
+			showSettings()
+		})
+		form.SetCancelFunc(func() {
+			pages.RemovePage("fetch")
+			showSettings()
+		})
+		pages.AddPage("fetch", centeredModal(form), true, true)
 		app.SetFocus(form)
 	}
 
