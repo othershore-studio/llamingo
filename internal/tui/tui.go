@@ -507,6 +507,17 @@ func (s *Session) systemSegments() []contextbudget.Segment {
 	if mem, _, err := s.st.Memory(); err == nil && strings.TrimSpace(mem) != "" {
 		segs = append(segs, contextbudget.Segment{Name: "memory", Messages: []backend.Message{{Role: backend.RoleSystem, Content: "Personal memory:\n" + mem}}})
 	}
+	// The connected MCP servers' own usage guidance (from their handshake), so a
+	// small model learns how to drive their tools — llama.cpp injects none of it.
+	var instr []string
+	for _, sr := range s.servers {
+		for _, si := range sr.Instructions(s.disabledSet()) {
+			instr = append(instr, fmt.Sprintf("How to use the %q tools:\n%s", si.Server, si.Text))
+		}
+	}
+	if len(instr) > 0 {
+		segs = append(segs, contextbudget.Segment{Name: "mcp-instructions", Messages: []backend.Message{{Role: backend.RoleSystem, Content: strings.Join(instr, "\n\n")}}})
+	}
 	return segs
 }
 

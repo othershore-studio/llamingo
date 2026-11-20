@@ -150,9 +150,10 @@ func withShapingGuidance(msgs []backend.Message) []backend.Message {
 }
 
 type connected struct {
-	server Server
-	client *Client
-	tools  []Tool
+	server       Server
+	client       *Client
+	tools        []Tool
+	instructions string
 }
 
 // ServerRegistry is a Registry backed by connected MCP servers, with the
@@ -181,7 +182,7 @@ func (r *ServerRegistry) Add(ctx context.Context, s Server, c *Client) error {
 	if err != nil {
 		return fmt.Errorf("mcp: list tools of %q: %w", s.Name, err)
 	}
-	cc := &connected{server: s, client: c, tools: tools}
+	cc := &connected{server: s, client: c, tools: tools, instructions: c.Instructions()}
 	r.conns = append(r.conns, cc)
 	for _, t := range tools {
 		r.byTool[t.Name] = cc
@@ -226,6 +227,36 @@ func (r *ServerRegistry) Close() {
 	for _, cc := range r.conns {
 		_ = cc.client.Close()
 	}
+}
+
+// ServerInstructions is one server's handshake usage guidance, tagged with its name.
+type ServerInstructions struct {
+	Server string
+	Text   string
+}
+
+// Instructions returns the guidance from each connected server that sent some and
+// still has at least one tool enabled (not in disabled) — the server author's own
+// coaching, to surface to the model as a system message (llama.cpp does not inject
+// it). A server with no instructions, or whose every tool is curated off, is skipped.
+func (r *ServerRegistry) Instructions(disabled map[string]bool) []ServerInstructions {
+	var out []ServerInstructions
+	for _, cc := range r.conns {
+		if strings.TrimSpace(cc.instructions) == "" {
+			continue
+		}
+		enabled := false
+		for _, t := range cc.tools {
+			if !disabled[t.Name] {
+				enabled = true
+				break
+			}
+		}
+		if enabled {
+			out = append(out, ServerInstructions{Server: cc.server.Name, Text: cc.instructions})
+		}
+	}
+	return out
 }
 
 // Call routes a tool invocation to its server. A trusted (global) server runs

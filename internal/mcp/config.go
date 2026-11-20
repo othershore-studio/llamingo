@@ -42,6 +42,37 @@ func (c ServerConfig) Transport() string {
 	}
 }
 
+// expanded returns a copy with ${VAR} / $VAR substituted from the process
+// environment in the values the transport uses (URL, command, args, env + header
+// values). Done at connect time only, so a secret stays as ${VAR} in the file and
+// the UI and is never written back expanded. An unset variable becomes empty.
+func (c ServerConfig) expanded() ServerConfig {
+	c.URL = os.ExpandEnv(c.URL)
+	c.Command = os.ExpandEnv(c.Command)
+	if len(c.Args) > 0 {
+		args := make([]string, len(c.Args))
+		for i, a := range c.Args {
+			args[i] = os.ExpandEnv(a)
+		}
+		c.Args = args
+	}
+	if len(c.Env) > 0 {
+		env := make(map[string]string, len(c.Env))
+		for k, v := range c.Env {
+			env[k] = os.ExpandEnv(v)
+		}
+		c.Env = env
+	}
+	if len(c.Headers) > 0 {
+		headers := make(map[string]string, len(c.Headers))
+		for k, v := range c.Headers {
+			headers[k] = os.ExpandEnv(v)
+		}
+		c.Headers = headers
+	}
+	return c
+}
+
 // Scope is where a server was declared, which drives trust: global servers are
 // user-authored (trusted); project servers come from the repo and must clear
 // the permission gate before first run (the gate lands in increment #4).
