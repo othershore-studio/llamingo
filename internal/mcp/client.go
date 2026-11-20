@@ -70,7 +70,8 @@ func (r ToolResult) Text() string {
 // server is reached; a transport does the framing — a newline-delimited byte
 // stream (a subprocess's stdio) or Streamable HTTP. Calls are synchronous.
 type Client struct {
-	tr transport
+	tr           transport
+	instructions string
 }
 
 // transport carries one JSON-RPC conversation: a request/response call and a
@@ -102,11 +103,23 @@ func (c *Client) Initialize(ctx context.Context) error {
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "llaminGO", "version": "0"},
 	}
-	if _, err := c.call(ctx, "initialize", params); err != nil {
+	res, err := c.call(ctx, "initialize", params)
+	if err != nil {
 		return err
 	}
+	// The server's optional usage guidance for the model (the initialize result's
+	// "instructions"). Best-effort — a server that sends none just leaves it empty.
+	var init struct {
+		Instructions string `json:"instructions"`
+	}
+	_ = json.Unmarshal(res, &init)
+	c.instructions = strings.TrimSpace(init.Instructions)
 	return c.notify("notifications/initialized", nil)
 }
+
+// Instructions returns the server's usage guidance from the handshake, or "" if it
+// sent none. It is the server author's own coaching for the model.
+func (c *Client) Instructions() string { return c.instructions }
 
 // ListTools returns the server's advertised tools.
 func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {

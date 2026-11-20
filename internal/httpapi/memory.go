@@ -6,11 +6,13 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/othershore-studio/llamingo/internal/backend"
 	"github.com/othershore-studio/llamingo/internal/contextbudget"
+	"github.com/othershore-studio/llamingo/internal/mcp"
 )
 
 // GET /api/memory — the personal memory and whether it was edited outside the app.
@@ -85,6 +87,14 @@ func (s *Server) segmentsFor(convID string, messages []backend.Message, tools []
 			Messages: []backend.Message{{Role: backend.RoleSystem, Content: "Personal memory:\n" + mem}},
 		})
 	}
+	// The connected MCP servers' own usage guidance (from their handshake), so a
+	// small model learns how to drive their tools — llama.cpp injects none of it.
+	if instr := s.mcpInstructions(convID); instr != "" {
+		segs = append(segs, contextbudget.Segment{
+			Name:     "mcp-instructions",
+			Messages: []backend.Message{{Role: backend.RoleSystem, Content: instr}},
+		})
+	}
 	if len(tools) > 0 {
 		if b, err := json.Marshal(tools); err == nil {
 			segs = append(segs, contextbudget.Segment{
@@ -94,6 +104,24 @@ func (s *Server) segmentsFor(convID string, messages []backend.Message, tools []
 		}
 	}
 	return append(segs, contextbudget.Segment{Name: "conversation", Messages: messages})
+}
+
+// mcpInstructions gathers the handshake usage guidance from the connected GLOBAL
+// MCP servers whose tools are still enabled in this chat — the server authors'
+// own coaching — as one system message, so a small model learns how to drive
+// those tools (llama.cpp injects none of it). Project servers are left out here
+// (reading them would trip the project gate); global servers are trusted.
+func (s *Server) mcpInstructions(convID string) string {
+	reg, ok := s.globalServers().(*mcp.ServerRegistry)
+	if !ok {
+		return ""
+	}
+	disabled, _ := s.st.ConversationTools(convID)
+	var parts []string
+	for _, si := range reg.Instructions(toSet(disabled)) {
+		parts = append(parts, fmt.Sprintf("How to use the %q tools:\n%s", si.Server, si.Text))
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // workingDirNote is the environment note a project session prepends so the model

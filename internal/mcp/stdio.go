@@ -64,6 +64,7 @@ func dialStdio(cfg ServerConfig) (io.ReadWriteCloser, error) {
 // the server's URL. The legacy two-endpoint "sse" transport is not implemented —
 // its servers are configured as http in current clients.
 func Connect(s Server) (*Client, error) {
+	s.Config = s.Config.expanded() // ${VAR} from the environment, at connect time (never persisted)
 	switch s.Config.Transport() {
 	case "stdio":
 		rw, err := dialStdio(s.Config)
